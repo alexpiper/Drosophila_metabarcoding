@@ -90,6 +90,12 @@ ulimit -n 4000
 
 Then we can summarise the switch rate by counting unassigned reads
 
+First you need to change the grep call to specifically call the sequencers ID:
+
+Agribio miseq 1:
+Agribio miseq 2: @M03633
+Agribio NovaSeq: @A00878
+
 ```{bash undetermined}
 ###BASH###
 #Run 1
