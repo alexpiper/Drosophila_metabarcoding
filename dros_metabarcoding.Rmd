@@ -53,7 +53,8 @@ sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
 source('R/helper_functions.R')
 
 #devtools::install_github("benjjneb/dada2")
-
+#devtools::install_github("alexpiper/taxreturn")
+library(taxreturn)
 ```
 
 # Calculate index switch rate
@@ -131,7 +132,6 @@ To differentiate unused indices arising from switching, from unused indices arri
 
 Can i just bind the read numbers onto the samplesheet here? - can get from a HTML file in /group/sequencing/191015_A00878_0012_AHLVKYDMXX/Unaligned-Single8-Lane1/Reports/html/HLVKYDMXX/all/all/all
 
-BasecallQC package https://bioconductor.org/packages/devel/bioc/vignettes/basecallQC/inst/doc/basecallQC.html
 
 ```{r index switching, eval=TRUE}
 #Read in original sample sheet
@@ -229,11 +229,14 @@ gg.popgen <- ggplot(data=popgen, aes(x=fct_rev(Sample_Name),y=count),stat="ident
 
 ```
 
-#Implement savr quality check
+#Quality checks:
 
 https://www.bioconductor.org/packages/release/bioc/vignettes/savR/inst/doc/savR.pdf
 
 
+BasecallQC package https://bioconductor.org/packages/devel/bioc/vignettes/basecallQC/inst/doc/basecallQC.html
+
+also fastqc: fastqcr
 
 
 # Demultiplex by primer & trim
@@ -262,7 +265,7 @@ bbmap_install()
 
 #Demultiplex samples
 
-runs <- dir("data/", pattern="run3")
+runs <- dir("data/", pattern="run4")
 path <- paste0("data/",runs[i]) # CHANGE ME to the directory containing your demultiplexed forward-read fastq files
 
 demuxpath <- file.path(path, "demux") # Filtered forward files go into the path/filtered/ subdirectory
@@ -273,12 +276,12 @@ fastqRs <- sort(list.files(path, pattern="R2_001.*", full.names = TRUE))
 
 
 bbtools_demux(install="bin/bbmap", fwds=fastqFs, revs=fastqRs,Fbarcodes = c("GAGGDACW","TGTGGDAC","AGAAGGDAC"),
-              Rbarcodes = c("ACGTRATW","TCCGTRAT","CTGCGTRA"),copyundefined=TRUE, outpath=demuxpath,hdist=0, overwrite=TRUE)
+              Rbarcodes = c("ACGTRATW","TCCGTRAT","CTGCGTRA"),copyundefined=TRUE, outpath=demuxpath, threads=4, mem=20,  hdist=0, overwrite=TRUE)
 
 demux_fastqs <- sort(list.files(paste0(demuxpath), pattern="_R1R2_", full.names = TRUE))
 
 
-bbtools_trim(install="bin/bbmap", fwd=demux_fastqs,primers=c("GGDACWGGWTGAACWGTWTAYCCHCC","GTRATWGCHCCDGCTARWACWGG"), copyundefined=TRUE, outpath="trimmed",ktrim="l", ordered=TRUE,mink=FALSE, hdist=2,maxlength=140, overwrite=TRUE)
+bbtools_trim(install="bin/bbmap", fwd=demux_fastqs,primers=c("GGDACWGGWTGAACWGTWTAYCCHCC","GTRATWGCHCCDGCTARWACWGG"), copyundefined=TRUE, outpath="trimmed",ktrim="l", ordered=TRUE,mink=FALSE, hdist=2, maxlength=140, overwrite=TRUE)
 
 #Re-split interleaved fastq's
 
