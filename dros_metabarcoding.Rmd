@@ -54,6 +54,8 @@ source('R/helper_functions.R')
 
 #devtools::install_github("benjjneb/dada2")
 #devtools::install_github("alexpiper/taxreturn")
+#devtools::install_github("thomasp85/patchwork")
+
 library(taxreturn)
 ```
 
@@ -78,14 +80,13 @@ BASH:
 ulimit -n 4000
 
 #Miseq Run 1 - Testing Primers
-/home/ap0y/usr/local/bin/bcl2fastq -p 12 --runfolder-dir /group/sequencing/190331_M03633_0310_000000000-CB3DR  --output-dir /group/pathogens/Alexp/Metabarcoding/Run1_primertest --sample-sheet /group/pathogens/Alexp/Metabarcoding/Run1_primertest/SampleSheet_primertest.csv --no-lane-splitting --barcode-mismatches 0
-
+/home/ap0y/usr/local/bin/bcl2fastq -p 12 --runfolder-dir /group/sequencing/190331_M03633_0310_000000000-CB3DR  --output-dir /group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/run1_CB3DR --sample-sheet /group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/run1_CB3DR/SampleSheet_CB3DR.csv --no-lane-splitting --barcode-mismatches 0
 
 #Miseq Run 2 - Testing replicate tagged primers & SynMock
-/home/ap0y/usr/local/bin/bcl2fastq -p 12 --runfolder-dir /group/sequencing/190628_M03633_0331_000000000-CK3HD  --output-dir /group/pathogens/Alexp/Metabarcoding/Run2_reptest --sample-sheet /group/pathogens/Alexp/Metabarcoding/Run2_reptest/SampleSheet_reptest.csv --no-lane-splitting --barcode-mismatches 0
+/home/ap0y/usr/local/bin/bcl2fastq -p 12 --runfolder-dir /group/sequencing/190628_M03633_0331_000000000-CK3HD  --output-dir /group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/run2_CK3HD --sample-sheet /group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/run2_CK3HD/SampleSheet_CK3HD.csv --no-lane-splitting --barcode-mismatches 0
 
 #Miseq Run 3 - Ladder spike ins
-/home/ap0y/usr/local/bin/bcl2fastq -p 12 --runfolder-dir /group/sequencing/190722_M03633_0336_000000000-CJKFJ/  --output-dir /group/pathogens/Alexp/Metabarcoding/Run3_spikein --sample-sheet /group/pathogens/Alexp/Metabarcoding/Run3_spikein/SampleSheet_run3.csv --no-lane-splitting --barcode-mismatches 0
+/home/ap0y/usr/local/bin/bcl2fastq -p 12 --runfolder-dir /group/sequencing/190722_M03633_0336_000000000-CJKFJ/  --output-dir /group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/run3_CJKFJ --sample-sheet /group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/run3_CJKFJ/SampleSheet_CJKFJ.csv --no-lane-splitting --barcode-mismatches 0
 ```
 
 
@@ -229,7 +230,22 @@ gg.popgen <- ggplot(data=popgen, aes(x=fct_rev(Sample_Name),y=count),stat="ident
 
 ```
 
+
 #Quality checks:
+
+```{r}
+#Sequencing run quality using BasecallQC package
+#
+
+## Sample quality using fastqc
+library(ngsReports)
+taxreturn::fastqc_install()
+test <- taxreturn::fastqc(fq.dir=trimmedpath, threads=2)
+
+# ngsreports of fastqc
+fileDir <- file.path("data/run_4/FASTQC")
+writeHtmlReport(fileDir, overwrite = TRUE, quiet=FALSE)
+```
 
 https://www.bioconductor.org/packages/release/bioc/vignettes/savR/inst/doc/savR.pdf
 
@@ -259,127 +275,122 @@ REVERSE PRIMERS:
     fwhR2nT2_P7	GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT	TCCGTRATWGCHCCDGCTARWACWGG
     fwhR2nT3_P7	GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT	CTGCGTRATWGCHCCDGCTARWACWGG
     
-```{r Demultiplex,message=FALSE}
+```{r primer trimming , message=FALSE}
 #Install bbmap
 bbmap_install()
 
+#Load sample sheet
+samdf <- read.csv("sample_data/Sample_info.csv", stringsAsFactors = FALSE)
+
 #Demultiplex samples
+runs <- dir("data/", pattern="run")
 
-runs <- dir("data/", pattern="run4")
-path <- paste0("data/",runs[i]) # CHANGE ME to the directory containing your demultiplexed forward-read fastq files
+i=1
 
-demuxpath <- file.path(path, "demux") # Filtered forward files go into the path/filtered/ subdirectory
-dir.create(demuxpath)
-
-fastqFs <- sort(list.files(path, pattern="R1_001.*", full.names = TRUE))
-fastqRs <- sort(list.files(path, pattern="R2_001.*", full.names = TRUE))
-
-
-bbtools_demux(install="bin/bbmap", fwds=fastqFs, revs=fastqRs,Fbarcodes = c("GAGGDACW","TGTGGDAC","AGAAGGDAC"),
-              Rbarcodes = c("ACGTRATW","TCCGTRAT","CTGCGTRA"),copyundefined=TRUE, outpath=demuxpath, threads=4, mem=20,  hdist=0, overwrite=TRUE)
-
-demux_fastqs <- sort(list.files(paste0(demuxpath), pattern="_R1R2_", full.names = TRUE))
-
-
-bbtools_trim(install="bin/bbmap", fwd=demux_fastqs,primers=c("GGDACWGGWTGAACWGTWTAYCCHCC","GTRATWGCHCCDGCTARWACWGG"), copyundefined=TRUE, outpath="trimmed",ktrim="l", ordered=TRUE,mink=FALSE, hdist=2, maxlength=140, overwrite=TRUE)
-
-#Re-split interleaved fastq's
-
-trimmedpath <- file.path(demuxpath, "trimmed") # Filtered forward files go into the path/filtered/ subdirectory
-trimmed_fastqs <- sort(list.files(trimmedpath, pattern="_R1R2_", full.names = TRUE))
-
-bbtools_split(install="bin/bbmap",files=trimmed_fastqs, overwrite=TRUE)
-
-
-#test deal with qualities
-
-#aqhist.txt <- average read quality
-#qhist.txt <- read quality across length
-#bhist <- base pair composition
-#gchist <- read gc content
-#lhist <- length histogram
-
-qual <- read_table2("qhist.txt")
-#Plot read 1 qualities
-plot(qual$Read1_linear)
-#plot read 2 qualities
-plot(qual$fraction2)
-
-
-```
-
-
-## Error visualisation
-
-We start by visualizing the quality profiles of the forward read and reverse reads for each run:
-
-
-## Sequence quality control
-
-Options here - if using LINUX/MAC do fastqcr - If using windows use shortrread
-
-```{r }
-library(ShortRead)
-
-runs <- dir("data/", pattern="run3")
+#Create vectors to track reads
+trimmed <- vector("list", length=length(runs))
+demux <- vector("list", length=length(runs))
 
 for (i in seq(along=runs)){
-path <- paste0("data/",runs[i],"/demux/trimmed/") # CHANGE ME to the directory containing your demultiplexed forward-read fastq files
-
-  #path <- paste0("data/",runs[i])
-
-#Plot number of reads
-dat <- as.data.frame(countLines(dirPath=path, pattern=".fastq")) %>%
-  rownames_to_column()  %>%
-   `colnames<-`(c("Sample", "Reads")) %>%
-  filter(str_detect(Sample,"R1"))
-
-#Plot pooling
-
-gg.pooling <- ggplot(data=dat, aes(x=Sample,y=Reads),stat="identity") + 
-  geom_bar(aes(fill=Reads),stat="identity")  + 
-  scale_fill_viridis(name = "Reads", begin=0.1) + 
-  theme(axis.text.x = element_text(angle=90, hjust=1), plot.title=element_text(hjust = 0.5), plot.subtitle =element_text(hjust = 0.5))+ 
-  geom_hline(aes(yintercept = mean(Reads)))  +
-  xlab("sample name")+
-  ylab("Number of reads") + 
-  labs(title= "Pooling", subtitle = paste0("Total Reads: ", sum(dat$Reads), " Average reads: ",  sprintf("%.0f",mean(dat$Reads))," Standard deviation: ", sprintf("%.0f",sd(dat$Reads)))) +
-  coord_flip()
-
-# Put in a check for operating system here 
-sys <- Sys.info()[['sysname']]
-
-#if (sys == "Mac") send to fastqcr 
-#if (sys == "Windows") send to Shortread
+  path <- paste0("data/", runs[i]) # CHANGE ME to the directory containing your demultiplexed forward-read fastq files
   
-# Plot quality stat using shortread
-
-#fls <- dir(path, "fastq.gz", full=TRUE)
-
-fastqFs <- sort(list.files(path, pattern="R1_001.*", full.names = TRUE))
-fastqRs <- sort(list.files(path, pattern="R2_001.*", full.names = TRUE))
-
-fls <- fastqRs[30:40]
-
-coll <- QACollate(QAFastqSource(fls), QAReadQuality(),
-    QAAdapterContamination(), QANucleotideUse(),
-    QAQualityUse(), QASequenceUse(),
-    QAFrequentSequence(n=10), QANucleotideByCycle(),
-    QAQualityByCycle())
-x <- qa2(coll, BPPARAM=SerialParam(), verbose=TRUE)
-
-res <- report(x)
-if (interactive()) browseURL(res)  
-
-
-#fastqFs <- sort(list.files(path, pattern="R1_001.*", full.names = TRUE))
-#fastqRs <- sort(list.files(path, pattern="R2_001.*", full.names = TRUE))
-# p1 <- plotQualityProfile(fastqFs[50:60]) + ggtitle(paste0(runs[i]," Forward Reads"))
-#  p2 <- plotQualityProfile(fastqRs[1:4]) + ggtitle(paste0(runs[i]," Reverse Reads"))
-#  print(p1+p2)
+  run_data <- samdf %>%
+    filter(FCID== runs[i] %>% str_split_fixed(pattern="_", n=2) %>% as_tibble() %>% pull(V2))
+  
+  #Get primer sequences
+  primers <- c(unique(run_data$F_seq), unique(run_data$R_seq))
+  
+  #Check if samples were twin tagged - these require extra round of demultiplexing
+  twintagged <- any(!is.na(run_data$twintagF))
+  if (twintagged == TRUE) {
+      demuxpath <- file.path(path, "demux") # Filtered forward files go into the path/filtered/ subdirectory
+      dir.create(demuxpath)
+      
+      fastqFs <- sort(list.files(path, pattern="R1_001.*", full.names = TRUE))
+      fastqRs <- sort(list.files(path, pattern="R2_001.*", full.names = TRUE))
+      
+      demux[[i]] <- bbdemux(install="bin/bbmap", fwd=fastqFs, rev=fastqRs, Fbarcodes = unique(run_data$twintagF),
+                    Rbarcodes = unique(run_data$twintagR), degenerate=TRUE, out.dir=demuxpath, threads=1 ,
+                    mem=4,  hdist=0, overwrite=TRUE, tidylog = TRUE)
+      
+      demux_fastqs <- sort(list.files(paste0(demuxpath), pattern="_R1R2_", full.names = TRUE))
+    
+      trimmed[[i]] <- bbtrim(install="bin/bbmap", fwd=demux_fastqs, 
+                    primers = primers, 
+                    degenerate = TRUE, out.dir="trimmed", trim.end = "left",
+                    ordered=TRUE, mink=FALSE, hdist=2, 
+                    maxlength= (max(run_data$readlength) - sort(nchar(primers), decreasing=FALSE)[1]) +5,
+                    overwrite=TRUE, quality=FALSE, tidylog=TRUE)
+      
+      #Re-split interleaved fastq's
+      trimmedpath <- file.path(demuxpath, "trimmed") # Filtered forward files go into the path/filtered/ subdirectory
+      trimmed_fastqs <- sort(list.files(trimmedpath, pattern="_R1R2_", full.names = TRUE))
+      bbsplit(install="bin/bbmap", files=trimmed_fastqs, overwrite=TRUE)
+  
+      
+  } else if (twintagged == FALSE) {
+    
+    fastqFs <- sort(list.files(paste0(path), pattern="_R1_", full.names = TRUE))
+    fastqRs <- sort(list.files(paste0(path), pattern="_R2_", full.names = TRUE))
+    
+    trimmed[[i]] <- bbtrim(install="bin/bbmap", fwd=fastqFs, rev=fastqRs,
+                    primers=primers, 
+                    degenerate = TRUE, out.dir="trimmed", trim.end = "left",
+                    ordered=TRUE, mink=FALSE, hdist=2,
+                    maxlength=(max(run_data$readlength) - sort(nchar(primers), decreasing=FALSE)[1]) +5,
+                    overwrite=TRUE, quality=FALSE, tidylog=TRUE)
+    }
 }
+  
+write_tsv(bind_rows(demux), "logs/demux.tsv")
+write_tsv(bind_rows(trimmed), "logs/trimmed.tsv")
+  
 ```
+  
+  
+## Plot read quality & lengths
+  
+  
+```{r QA plot, eval = TRUE, cache= TRUE}
+runs <- dir("data/", pattern="run")
+#Load sample sheet
+samdf <- read.csv("sample_data/Sample_info.csv", stringsAsFactors = FALSE)
 
+
+for (i in seq(along=runs)){
+  run_data <- samdf %>%
+    filter(FCID== runs[i] %>% str_split_fixed(pattern="_", n=2) %>% as_tibble() %>% pull(V2))
+  
+  #Check if run used twin tags
+  twintagged <- any(!is.na(run_data$twintagF))
+  
+  if (twintagged == TRUE) {
+    path <- paste0("data/", runs[i], "/demux/trimmed" )# CHANGE ME to the directory containing primer trimmed fastq files
+  } else if (twintagged == FALSE) {
+    path <- paste0("data/", runs[i], "/trimmed" )# CHANGE ME to the directory containing primer trimmed fastq files
+  }
+ 
+  ##Get trimmed files, accounting for empty files (28 indicates empty sample)
+  trimmedFs <- sort(list.files(path, pattern="_R1_", full.names = TRUE))
+  trimmedFs <- trimmedFs[file.size(trimmedFs)>28]
+
+  #Plot an aggregate quality of random samples
+  sampleF <- sample(trimmedFs, 12)
+  sampleR <- sampleF %>% str_replace(pattern="_R1_", replacement = "_R2_")
+  
+  p1 <- plotQualityProfile(sampleF, aggregate = FALSE) + ggtitle(paste0(runs[i], " Forward Reads")) 
+  p2 <- plotQualityProfile(sampleR, aggregate = FALSE) + ggtitle(paste0(runs[i], " Reverse Reads"))
+  
+  #output plots
+  dir.create("output")
+  dir.create("output/figures/")
+  pdf(paste0("output/figures/", runs[i], "_prefilt_quality.pdf"), width = 11, height = 8 , paper="a4r")
+  plot(p1)
+  plot(p2)
+  dev.off()
+}
+
+```
 
 In gray-scale is a heat map of the frequency of each quality score at each base position. The median quality score at each position is shown by the green line, and the quartiles of the quality score distribution by the orange lines. The red line shows the scaled proportion of reads that extend to at least that position (this is more useful for other sequencing technologies, as Illumina reads are typically all the same lenghth, hence the flat red line).
 
@@ -389,92 +400,29 @@ The reverse reads are of significantly worse quality, especially at the end, whi
 
 ## Filter and trim
 
-The forward reads for the hemiptera metabarcoding data are of good quality, while The reverse reads are of slightly worse worse quality at the end, which is common in Illumina sequencing. Informed by these profiles, we will use the Truncate quality function (TruncQ=2) to cut the reads at any point the Q score crashes below 2.
+The max expected error function is used as the primary quality filter, and all reads containing N bases were removed
 
-the maxEE should be used as the primary quality filter. TruncQ is mostly to remove very low quality sequences
-
-In general pick truncLen parameters that avoid the worst parts of the quality profiles but ensure that enough sequence is kept to healthily overlap (truncLen[[1]] + truncLen[[2]] > amplicon_length+25), leave truncQ=2, and try a couple maxEE values until I get a satisfactory number of reads through the filter
-
-
-## Qual vs MaxEE plot - Can we make this with the output of Shortreads QA instead
-
-To help visualise the effects of filtering, it can be helpful to use a read quality VS maxEE plot
-
-To get the data for this plot, firstly the following code needs to be run in BASH on the primer trimmed reads:
-
-NOTE: Combine this code into the initial BBDuk Setup so we arent bouncing back and forth
-
-NOTE: Make this work in linux with fastqcr
-
-```{r fastqc}
-library(fastqcr)
-fastqc_installer() #My custom function
-
-
-runs <- dir("data/", pattern="run3")
-path <- paste0("data/",runs[i],"/test") # CHANGE ME to the directory containing your demultiplexed forward-read fastq files
-
-fastqFs <- sort(list.files(path, pattern="R1_*", full.names = TRUE,recursive=TRUE))
-
-fastqc_local(fq.dir=path,fastqc.path = "C:/FastQC")
-
-
-qc <- qc_aggregate(qc.dir="C:/Users/ap0y/Dropbox/workprojects/PHD/Metabarcoding/Dros_metabarcoding/data/run3_spikein/test/")
-qc
-
-# Inspecting QC Problems
-
-# See which modules failed in the most samples
-qc_fails(qc, "module")
-# Or, see which samples failed the most
-qc_fails(qc, "sample")
-
-
-# Building Multi QC Reports
-qc_report("C:/Users/ap0y/Dropbox/workprojects/PHD/Metabarcoding/Dros_metabarcoding/data/run3_spikein/test/", result.file = "C:/Users/ap0y/Dropbox/workprojects/PHD/Metabarcoding/Dros_metabarcoding/multi-qc-report" )
-
-# Building One-Sample QC Reports (+ Interpretation)
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-qc.file <- system.file("fastqc_results", "S1_fastqc.zip", package = "fastqcr")
-qc_report(qc.file, result.file = "one-sample-report",
-          interpret = TRUE)
-
-```
-
-Once fastQC has been run - In R Run the following to make the plot:
-
-```{r qual vs maxEE plot}
-runs <- dir("data/", pattern="run2")
-
-for (i in seq(along=runs)){
-path <- paste0("data/",runs[i],"/fastqc") # CHANGE ME to the directory containing your demultiplexed forward-read fastq files
-
-#Grab 5 random samples to plot quality
-QualF <- sample(sort(list.files(path, pattern=".qualF.csv", full.names = TRUE)),20)
-QualR <- QualF %>% 
-  str_replace(".qualF.csv",".qualR.csv") %>%
-  str_replace("R1_001","R2_001")
-
-pdf(paste(path,"/QualPlots.pdf", sep=""),onefile=T, width=20, height=20)
-for (q in seq(along=QualF)){
-  fastq.r1 <- read.csv(file=QualF[q], sep = "\t", header = TRUE)
-  fastq.r2 <- read.csv(file=QualR[q], sep = "\t", header = TRUE)
-
-  p1 <- qualMaxEEplot(fastq.r1 = fastq.r1, fastq.r2 = fastq.r2,name1= QualF[q], name2=QualR[q])
-  print(p1)
-}
-dev.off()
-}
-
-```
 
 ```{r filter and trim}
-##Note - for filtering stage, these parameters may not be optimal for each run or testset, use the previous plotting step to inform this
-runs <- dir("data/", pattern="run3")
-filtered_out <- list()
+runs <- dir("data/", pattern="run")
+filtered_out <- vector("list", length=length(runs))
 
-for (i in seq(along=runs)){
-  path <- paste0("data/",runs[i],"/demux/trimmed/") # CHANGE ME to the directory containing your demultiplexed forward-read fastq files
+samdf <- read.csv("sample_data/Sample_info.csv", stringsAsFactors = FALSE)
+
+for (i in 1:length(runs)){
+  
+   run_data <- samdf %>%
+    filter(FCID== runs[i] %>% str_split_fixed(pattern="_", n=2) %>% as_tibble() %>% pull(V2))
+  
+  #Check if run used twin tags
+  twintagged <- any(!is.na(run_data$twintagF))
+  
+  if (twintagged == TRUE) {
+    path <- paste0("data/", runs[i], "/demux/trimmed" )
+  } else if (twintagged == FALSE) {
+    path <- paste0("data/", runs[i], "/trimmed" )
+  }
+
   filtpath <- file.path(path, "filtered") # Filtered forward files go into the path/filtered/ subdirectory
   dir.create(filtpath)
   fastqFs <- sort(list.files(path, pattern="R1_001.*"))
@@ -482,97 +430,149 @@ for (i in seq(along=runs)){
   
   if(length(fastqFs) != length(fastqRs)) stop(paste0("Forward and reverse files for ",runs[i]," do not match."))
   
-  filtered_out[[i]] <- (filterAndTrim(fwd=file.path(path, fastqFs), filt=file.path(filtpath, fastqFs),
+  filtered_out[[i]] <- filterAndTrim(fwd=file.path(path, fastqFs), filt=file.path(filtpath, fastqFs),
                                       rev=file.path(path, fastqRs), filt.rev=file.path(filtpath, fastqRs),
-                                      maxEE=2, truncQ=15, maxN = 0,trimLeft = c(51,0), truncLen = 125,
-                                      rm.phix=TRUE, compress=TRUE, verbose=TRUE))
-}
-print(filtered_out)
+                                      maxEE=2, truncQ = 2, maxN = 0,
+                                      rm.phix=TRUE, rm.lowcomplex=0,
+                                      multithread=TRUE, compress=TRUE, verbose=TRUE)
 
-```
-
-
-## Post filtering error plotting
-
-sanity check to see the effects of the filter and trim step
-
-```{r Post filter plot, eval = TRUE, cache= TRUE}
-runs <- dir("data/", pattern="run3")
-
-##Post filtering plotting
-for (i in seq(along=runs)){
- path <- paste0("data/",runs[i],"/demux/trimmed/" )# CHANGE ME to the directory containing your demultiplexed forward-read fastq files
-  filtpath <- file.path(path, "filtered") # Filtered forward files go into the path/filtered/ subdirectory
-  
+  # post filtering plot
   filtFs <- sort(list.files(filtpath, pattern="R1_001.*", full.names = TRUE))
-  filtRs <- sort(list.files(filtpath, pattern="R2_001.*", full.names = TRUE))
-  p1 <- plotQualityProfile(filtFs[1:20]) + ggtitle(paste0(runs[i]," Filtered Forward Reads"))
-  p2 <- plotQualityProfile(filtRs[1:20]) + ggtitle(paste0(runs[i]," Filtered Reverse Reads"))
-  print(p1+p2)
+  #filtRs <- sort(list.files(filtpath, pattern="R2_001.*", full.names = TRUE))
+  
+  sampleF <- sample(filtFs, 12)
+  sampleR <- sampleF %>% str_replace(pattern="R1_001", replacement = "R2_001")
+  
+  p1 <- plotQualityProfile(sampleF, aggregate = FALSE) + ggtitle(paste0(runs[i]," Forward Reads")) 
+  p2 <- plotQualityProfile(sampleR, aggregate = FALSE) + ggtitle(paste0(runs[i]," Reverse Reads"))
+  
+  #output plots
+  dir.create("output/figures/")
+  pdf(paste0("output/figures/",runs[i],"_postfilt_quality.pdf"), width = 11, height = 8 , paper="a4r")
+  plot(p1)
+  plot(p2)
+  dev.off()
 }
+
+filtered_out %>%
+  map(as_tibble, rownames=NA) %>%
+  map(rownames_to_column, var="Sample") %>%
+  bind_rows() %>%
+  write_tsv("logs/filtered.tsv")
+  print(filtered_out)
 
 ```
 
 
-## Infer sequence variants
+# Sequence processing
+
+## Infer sequence variants for each run
+
+The divisive partition algorithm is initial- ized by placing all unique sequences into a single partition and assigning the most abundant sequence as the center of that partition. All unique sequences are then compared to the center of their partition, error rates are calculated and stored, and the abundance p-value is calculated for each unique sequence. If the smallest p-value, after Bonferroni correction, falls below the user-settable threshold OMEGA_A, a new partition is formed with the unique sequence with the smallest p-value as its center, and all unique sequences are compared to the center of that new partition. After a new partition is formed, every unique sequence is
+allowed to join the partition most likely to have produced it (i.e., the partition that produces the highest expected number of that unique sequence). At that point, the division procedure iterates, with each iteration consisting of identifying the unique sequence with the smallest p-value, forming a new partition with that sequence as its center, and reshuffling sequences to their most likely partition. Division continues until all abundance p-values are greater than
+OMEGA_A; i.e., all unique sequences are consistent with being produced by amplicon sequencing the center of their partition. The inferred composition of the sample is then the set of central sequences and the corresponding total abundances of those parti- tions (alternatively, each read is denoised by replacing it with the central
+
+
+DADA2 depends on a param- eterized error model (the 16 × 41 transition probabilities, for example, p(A→C, 35)), but if parameters are not known a priori then DADA2 can estimate them from the data. Given an inferred partition of the amplicon sequences, DADA2 records the mismatches between every sequence and the center of its partition and counts each type of mismatch (for example, the number of A→C mismatches where Q = 35). The resulting table of observed mismatches represents the errors inferred by DADA2 and can be used to estimate the parameters of the error model. 
+
+DADA2’s default parameter estimation method is to perform a weighted loess fit to the regularized log of the observed mismatch rates as a function of their quality, separately for each transition type (for example, A→C mismatches are fit separately from A→G mismatches).
+
+The problem with novaseq data is the binned quality scores.
+
+NovaSeq error rate conversions
+
+0-2 -> 2
+3-14 -> 12
+15-30 -> 23
+31-40 -> 37
+
+However, the error rate estimation function is a modular part of the algorithm, and users can provide their own R function to estimate the parameters of the error model from the observed mismatches if they prefer a different method.
 
 Every amplicon dataset has a different set of error rates and the DADA2 algorithm makes use of a parametric error model (err) to model this and infer real biological sequence variation from error. Following error model learning, all identical sequencing reads are dereplicated into into “Exact sequence variants” with a corresponding abundance equal to the number of reads with that unique sequence. The forward and reverse reads are then merged together by aligning the denoised forward reads with the reverse-complement of the corresponding reverse reads, and then constructing the merged “contig” sequences. Following this step, a sequence variant table is constructed and saved as an RDS file.
 
-For this analysis we will use all the reads to estimate error rate, and plot the error model for each run as a sanity check
-
-Is it worth playing with to increase sensitivity for target pests here?
-https://benjjneb.github.io/dada2/pseudo.html#Pseudo-pooling
+For this analysis we will use all the reads to estimate error rate, and plot the error model for each run as a sanity check. In this plot you generally want to see if the fitted error rates (black line) reasonably fit the observations (black points) and generally decrease with increasing Q (towards right of plot)?
 
 The purpose of priors is to increase sensitivity to a restricted set of sequences, including singleton detection, without increasing false-positives from the unrestricted set of all possible amplicon sequences that must be considered by the naive algorithm
 
+NOTE: Try a comparison between using the conventional pooling, pseudo pooling, and using the reference database as a prior 
+
 ```{r Learn error rates }
-runs <- dir("data/", pattern="run3")
+runs <- dir("data/", pattern="run")
 set.seed(100)
 
+samdf <- read.csv("sample_data/Sample_info.csv", stringsAsFactors = FALSE)
+
+
 for (i in seq(along=runs)){
- path <- paste0("data/",runs[i],"/demux/trimmed/" )# CHANGE ME to the directory containing your demultiplexed forward-read fastq files
-  filtpath <- file.path(path, "filtered") # Filtered forward files go into the path/filtered/ subdirectory
+  
+  run_data <- samdf %>%
+    filter(FCID== runs[i] %>% str_split_fixed(pattern="_", n=2) %>% as_tibble() %>% pull(V2))
+  
+  #Check if run used twin tags
+  twintagged <- any(!is.na(run_data$twintagF))
+  if (twintagged == TRUE) {
+    filtpath <- paste0("data/", runs[i], "/demux/trimmed/filtered" )
+  } else if (twintagged == FALSE) {
+    filtpath <- paste0("data/", runs[i], "/trimmed/filtered" )
+  }
   
   filtFs <- list.files(filtpath, pattern="R1_001.*", full.names = TRUE)
   filtRs <- list.files(filtpath, pattern="R2_001.*", full.names = TRUE)
   
-    # Learn error rates from samples
+  # Learn error rates from a subset of the samples and reads (rather than running self-consist with full dataset)
   # nread tells the function how many reads to use in error learning, this can be increased for more accuracy at the expense of runtime
   
-  errF <- learnErrors(filtFs, multithread=TRUE, randomize=TRUE)
-  errR <- learnErrors(filtRs, multithread=TRUE, randomize=TRUE)
+  errF <- learnErrors(filtFs, multithread = 20, nbases = 1e+09, randomize = TRUE, qualityType = "FastqQuality", verbose=TRUE)
+  errR <- learnErrors(filtRs, multithread = 20, nbases = 1e+09, randomize = TRUE, qualityType = "FastqQuality", verbose=TRUE)
   
   ##Print error plots to see how well the algorithm modelled the errors in the different runs
-  print(plotErrors(errF, nominalQ=TRUE)+ ggtitle(paste0(runs[i]," Forward Reads")))
-  print(plotErrors(errR, nominalQ=TRUE)+ ggtitle(paste0(runs[i]," Reverse Reads")))
+  print(plotErrors(errF, nominalQ=TRUE) + ggtitle(paste0(runs[i], " Forward Reads")))
+  print(plotErrors(errR, nominalQ=TRUE) + ggtitle(paste0(runs[i], " Reverse Reads")))
+  
+  #check if any run uses a platform with binned quality scores - if so enforce monotonicity
+  binnedqual <-  any(run_data$seq_platform %in% c("Novaseq", "Nextseq"))
+  if (binnedqual == TRUE){
+  enforce_mono <- function(err){
+    err.mat <- getErrors(err, detailed=TRUE)
+    for(trans in c("A2C", "A2G", "A2T", "C2A", "C2G", "C2T", "G2A", "G2C", "G2T", "T2A", "T2C", "T2G")) {
+      #Transform each error rate that is below the model value at the max Q score (40) to the model value at that max Q score.
+      err.mat$err_out[trans,] <- pmax(err.mat$err_out[trans,], err.mat$err_out[trans,ncol(err.mat$err_out)])
+    }
+    return(err.mat)
+  }
+  
+  mono.errmatF <- enforce_mono(errF)
+  mono.errmatR <- enforce_mono(errR)
+  
+  print(plotErrors(mono.errmatF, nominalQ=TRUE)+ ggtitle("Monotonicity enforced Forward Reads"))
+  print(plotErrors(mono.errmatR, nominalQ=TRUE)+ ggtitle("Monotonicity enforced Reverse Reads"))
+
+  errF <- mono.errmatF
+  errR <- mono.errmatR
+  }
   
   #Error inference and merger of reads - Using pseudo pooling for increased sensitivity
-
-  dadaFs <- dada(filtFs, err=errF, multithread=TRUE, pool="pseudo")
-  dadaRs <- dada(filtRs, err=errR, multithread=TRUE, pool="pseudo")
+  dadaFs <- dada(filtFs, err=errF, multithread=20, pool="pseudo", verbose=TRUE)
+  dadaRs <- dada(filtRs, err=errR, multithread=20, pool="pseudo", verbose=TRUE)
  
-  mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+  mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE, minOverlap = 20)
   
-# Construct sequence table
-
-seqtab <- makeSequenceTable(mergers)
-
-saveRDS(seqtab, paste0(path,"/seqtab.rds")) # CHANGE ME to where you want sequence table saved
+  # Construct sequence table
+  dir.create("output/rds/")
+  seqtab <- makeSequenceTable(mergers)
+  saveRDS(seqtab, paste0("output/rds/",runs[i], "_seqtab.rds"))
 }
 ```
 
-Check for length variation by primer
-
 ## Merge Runs, Remove Chimeras
 
-Now that the sequence tables are created for each run, they need to be merged into a larger table representing the entire study. Following this, chimeric sequences are identified and removed using removeBimeraDenovo, and any identical sequences with the only difference being length variation are collapsed using collapseNoMismatch.
 
 ```{r merge runs and remove chimeras}
-runs <- dir("data/", pattern="run")
+runs <- dir("data/", pattern="run_")
 stlist <- vector()
 
 for (i in seq(along=runs)){
-  path <- paste0("data/",runs[i]) # CHANGE ME to the directory containing your demultiplexed forward-read fastq files
+  path <- paste0("data/",runs[i],"/trimmed/" )
   seqs <- list.files(path, pattern="seqtab.rds", full.names = TRUE)
   
   assign(paste("st", i, sep = ""),readRDS(seqs))
@@ -581,40 +581,36 @@ for (i in seq(along=runs)){
 
 st.all <- mergeSequenceTables(st1, st2, st3)
 
-#Collapse all sequences together when the only difference between them is length variation - This is unnecessary for single PCR markers, however as we are using 2 pcr amplicons with slightly different lengths this will simplify analysis
-#st.all <- st1
-
+#Test collapsed
 st.all <- collapseNoMismatch(st.all, minOverlap = 20, orderBy = "abundance",
-                                   vec = TRUE, verbose = TRUE)
+                                  vec = TRUE, verbose = TRUE)
 
 #Remove chimeras
-seqtab.nochim <- removeBimeraDenovo(st.all, method="consensus", multithread=FALSE, verbose=TRUE)
+seqtab.nochim <- removeBimeraDenovo(st.all, method="consensus", multithread=TRUE, verbose=TRUE)
 
 #Check output of chimera removal
 print(paste(sum(seqtab.nochim)/sum(st.all),"of the abundance remaining after chimera removal"))
 
 #Check complexity
-
 hist(seqComplexity(seqtab.nochim), 100)
 
-#Remove sequences of wrong size
-#seqtab2 <- seqtab[,nchar(colnames(seqtab)) %in% 250:256])
 
-
-#Fix names -removing read name, sample number etcc
-rownames(seqtab.nochim) <- rownames(seqtab.nochim) %>% 
-  str_replace_all(pattern="\\.rep",replacement="_Rep") %>% 
-  str_split_fixed("_",n=Inf) %>%
-  as_tibble() %>%
-  mutate(V5 = V5 %>% str_split_fixed("\\.",n=2) %>% as_tibble() %>% pull(V1))%>%
-  unite(V1,c(V1,V5),sep="_") %>%
-  pull(V1) %>%
-  str_replace(pattern="_$",replacement="") # Drop trailing underscore
+#Look at seqlengths
+plot(table(nchar(getSequences(seqtab.nochim))))
 
 dir.create("output/rds/")
-saveRDS(seqtab.nochim, "output/rds/seqtab_final_Run3.rds") # CHANGE ME to where you want sequence table saved
+saveRDS(seqtab.nochim, "output/rds/seqtab_final.rds") # CHANGE ME to where you want sequence table saved
 
 ```
+
+## Homology filter with PHMM
+
+use profile hidden markov model derived from the trimmed amplicon of the full database to filter for homology to COI
+
+
+## Coding sequence filtering - How to do this??
+
+Perhaps aligntranslation?
 
 ## Assign taxonomy with IDTAXA & Exact matching
 
@@ -636,7 +632,7 @@ trainingSet <- readRDS("reference/merged_arthropoda_idtaxa.rds")
 dna <- DNAStringSet(getSequences(seqtab.nochim)) # Create a DNAStringSet from the ASVs
 
 ##Decide on threshold
-ids <- IdTaxa(dna, trainingSet, processors=1,threshold = 60, verbose=TRUE)  #WARNING - assigning more than one processor currently crashes R
+ids <- IdTaxa(dna, trainingSet, processors=10,threshold = 60, verbose=TRUE)  #WARNING - assigning more than one processor currently crashes R
 
 #test <- ids
 plot(ids, trainingSet)
@@ -678,8 +674,9 @@ rownames(taxa.print) <- NULL
 head(taxa.print)
 
 # Write taxonomy table to disk
-saveRDS(tax, "output/rds/tax_IdTaxa_run2.rds") 
-tax <- readRDS("output/rds/tax_IdTaxa_run1.rds") 
+saveRDS(tax, "tax_IdTaxa.rds") 
+
+tax <- readRDS("output/rds/tax_IdTaxa.rds") 
 
 #Add missed species using exact matching
 
@@ -710,14 +707,14 @@ for (row in 1:nrow(tax)){
 }
 
 # Write taxonomy table to disk
-saveRDS(tax, "output/rds/tax_IdTaxaExact_run1.rds") 
+saveRDS(tax, "tax_IdTaxaExact.rds") 
 
 ```
 
 ## Make phylogenetic tree
 
 ```{r phylogenetic tree}
-seqtab.nochim <- readRDS("output/rds/seqtab_final_Run2.rds")
+#seqtab.nochim <- readRDS("output/rds/seqtab_final_Run2.rds")
 
 seqs <- getSequences(seqtab.nochim)
 names(seqs) <- seqs # This propagates to the tip labels of the tree
@@ -737,11 +734,37 @@ fitGTR <- optim.pml(fitGTR, model="GTR", optInv=TRUE, optGamma=TRUE,
 detach("package:phangorn", unload=TRUE)
 
 # Write taxonomy table to disk
-saveRDS(fitGTR, "output/rds/phytree.rds") 
+saveRDS(fitGTR, "phytree.rds") 
 
 ```
 
 
+
+## Track reads through process
+
+```{r }
+
+bbdemux_reads <- read_tsv("logs/bbdemux_tidy.tsv") %>% 
+  separate(sample, into="sample", sep="_S", extra= "drop") %>%
+  separate(sample, into=c("dir", "sample"), sep="X_", extra= "drop") %>%
+  select(-dir) %>%
+  dplyr::rename(input_reads_demux = input_reads)%>%
+  dplyr::rename(input_bases_demux = input_bases)
+
+
+bbtrim_reads <- read_tsv("logs/bbtrim_tidy.tsv") %>%
+  separate(sample, into=c("sample", "rep"), sep="_Rep", extra= "drop")%>% 
+  separate(sample, into="sample", sep="_S", extra= "drop") %>%
+  separate(sample, into=c("dir", "sample"), sep="X_", extra= "drop")%>%
+  select(-dir)  %>%
+  dplyr::rename(input_reads_trim = input_reads)%>%
+  dplyr::rename(input_bases_trim = input_bases)
+  
+sample_tracker <- right_join(bbdemux_reads, bbtrim_reads)
+
+#could make the above functions parse out objects in a list (ie one object for each quality) and then i join them to the samplesheet here
+ 
+```
 
 
 ## Make Phyloseq object
@@ -751,16 +774,29 @@ Following taxonomic assignment, the sequence table and taxonomic table are merge
 We then make a plot to evaluate the effectiveness of taxonomic assignment to each rank
 
 ```{r create PS, eval = FALSE}
-seqtab.nochim <- readRDS("output/rds/seqtab_final_Run2.rds")
-tax_plus <- readRDS("output/rds/tax_IdTaxaExact_run2.rds") 
+seqtab.nochim <- readRDS("output/rds/seqtab_final_nova.rds")
+
+#Fix seqtab names -removing read name, sample number etc
+rownames(seqtab.nochim) <- rownames(seqtab.nochim) %>% 
+  str_split_fixed("_",n=Inf) %>%
+    as_tibble() %>% 
+  separate(V7, into="rep", sep = "\\.", extra = "drop") %>%
+  unite(col=SampleID, c("V2","rep"),sep="-") %>%
+  pull(SampleID) %>%
+  str_replace(pattern="Rep", replacement="rep")
+
+tax_plus <- readRDS("output/rds/tax_IdTaxaExact_nova.rds") 
 
 #Load sample information
 ## ---- samdat ----
 samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE) %>%
-  filter(!duplicated(SampleID)) %>%
-  filter(seqrun==2) %>% # change for other runs
-  set_rownames(.$SampleID) %>%
-  dplyr::select(c("SampleID","ExtractID","seqrun","replicate","feature","target_subfragment","Trap","pcr_primers","experimental_factor"))
+  filter(!duplicated(sample_id)) %>%
+  filter(FCID== "HLVKYDMXX") %>% # change for other runs
+  magrittr::set_rownames(.$sample_id) %>%
+  dplyr::select(c("sample_id", "ExtractID", "Sample",
+                  "geo_loc_name", "material", 
+                  "target_subfragment", "F_primer", "R_primer",
+                  "FCID", "seq_platform_ID"))
 #Display samDF
 head(samdf)
 
@@ -774,46 +810,25 @@ rownames(samdf)[which(!rownames(samdf) %in% rownames(sample_data(ps)))]
 
 ##save phyloseq object
 #saveRDS(ps, "output/rds/ps_idtaxa.rds") 
-saveRDS(ps, "output/rds/ps_idtaxaExact.rds") 
+saveRDS(ps, "output/rds/ps_idtaxaExact_nova.rds") 
 #saveRDS(ps, "output/rds/ps_rdp.rds") 
-
-#Plot Assignment to each rank
-assign_ranks <- psmelt(ps) 
-
-p.fam <- assign_ranks %>% 
-  select(c("target_subfragment","OTU","Kingdom","Phylum","Class","Order","Family","Genus","Species")) %>%
-  distinct()%>%
-  gather(key="Rank", value="Taxon", -OTU, -target_subfragment) %>%
-  filter(!str_detect(Taxon,"__"))
-#%>%
- # mutate(Rank = fct_reorder(c("Kingdom","Phylum","Class","Order","Family","Genus","Species")))
-
-gg.ranks <- ggplot(data=p.fam, aes(x=Rank,fill=target_subfragment,group=target_subfragment)) + 
-        geom_bar(position="dodge") +
-  #facet_grid(~target_subfragment) +
-  #scale_fill_brewer(palette="Spectral") +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust=0)) +
-  scale_x_discrete(limits=c("Kingdom","Phylum","Class","Order","Family","Genus","Species"))+
-  ggtitle("ASVs sucessfully assigned using IDTAXA + Exact matching")+
-  ylab("Number of ASVs")+
-  xlab("Taxonomic rank")
-  
-#Output tables of results
 
 dir.create("output/csv")
 dir.create("output/csv/unfiltered/")
 
 ##Export raw csv
-export <- psmelt(ps)
+export <- speedyseq::psmelt(ps) %>%
+  filter(Abundance > 0)
 write.csv(export, file = "output/csv/rawdata.csv")
 
 #Summary export
-sp_summary <- summarize_taxa(ps, "Species", "SampleID")
-sp_summary <- spread(sp_summary, key="SampleID", value="totalRA")
+library(data.table)
+sp_summary <- summarize_taxa(ps, "Species", "sample_id")
+sp_summary <- spread(sp_summary, key="sample_id", value="totalRA")
 write.csv(sp_summary, file = "output/csv/unfiltered/spp_sum.csv")
 
-gen_summary <- summarize_taxa(ps, "Genus", "SampleID")
-gen_summary <- spread(gen_summary, key="SampleID", value="totalRA")
+gen_summary <- summarize_taxa(ps, "Genus", "sample_id")
+gen_summary <- spread(gen_summary, key="sample_id", value="totalRA")
 write.csv(gen_summary, file = "output/csv/unfiltered/gen_sum.csv")
 
 ##Output fasta of all ASV's - Name each one by abundance + Taxonomic assignment
@@ -821,6 +836,37 @@ write.csv(gen_summary, file = "output/csv/unfiltered/gen_sum.csv")
 
 ```
 
+
+### Summarise taxonomic assignment
+
+```{r sum taxa}
+#Fraction of reads assigned to each taxonomic rank
+sum_reads <- speedyseq::psmelt(ps) %>%
+  gather("Rank","Name",rank_names(ps)) %>%
+  group_by(Rank) %>% 
+  mutate(Name = replace(Name, str_detect(Name, "__"),NA)) %>% # This line turns the "__" we added to lower ranks back to NA's
+  summarize(Reads_classified = sum(Abundance * !is.na(Name))) %>%
+  mutate(Frac_reads = Reads_classified / sum(sample_sums(ps))) %>%
+  mutate(Rank = factor(Rank, rank_names(ps))) %>%
+  arrange(Rank)
+
+#Fraction of ASV's assigned to each taxonomic rank
+sum_otu <- tax_table(ps) %>%
+  as("matrix") %>%
+  as_tibble(rownames="OTU") %>%
+  gather("Rank","Name",rank_names(ps)) %>%
+  group_by(Rank) %>%
+  mutate(Name = replace(Name, str_detect(Name, "__"),NA)) %>% # This line turns the "__" we added to lower ranks back to NA's
+  summarize(OTUs_classified = sum(!is.na(Name))) %>%
+  mutate(Frac_OTUs = OTUs_classified / ntaxa(ps)) %>%
+  mutate(Rank = factor(Rank, rank_names(ps))) %>%
+  arrange(Rank)
+
+print(sum_reads)
+print(sum_otu)
+```
+
+This indicates a 
 
 
 ## Process replicates 
