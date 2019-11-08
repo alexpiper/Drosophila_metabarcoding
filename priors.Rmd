@@ -1,0 +1,194 @@
+---
+title: "priors"
+author: "Alexander Piper"
+date: "06/11/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{R load libraries}
+library(dada2)
+library(tidyverse)
+```
+
+
+see: https://benjjneb.github.io/dada2/pseudo.html
+
+# Load data and learn error rates
+
+For this validation experiment, we will use just the data from run 1 (or the novaseq run) and the forward reads
+
+## PROBLEM!
+priors need to be in amplicon sequence format, ie same length as reads - need to do a virtualPCR on the reference data first
+
+Also need to use a trunclength parameter. As reads will need to be same length as the reference database! 
+
+Would you need separate priors for 
+
+I have 2 different primer sets that amplify the same region, except for a few base pairs difference. If i was to use priors would i need to have sepearate sets of priors for each of them? how about for forward and reverse regions?separate priors
+
+
+```  ______________________
+```               _______________________ 
+  ______________________
+                _______________________
+
+```{R priors}
+#Take command line inputs
+args = commandArgs(TRUE)
+filtpath = args[1]
+input_priors = args[2]
+
+#Load packages
+library(dada2)
+library(tidyverse)
+library(Biostrings)
+
+#Read in priors
+if(!is.na(input_priors)) { 
+priors <- as.character(readDNAStringSet(input_priors))
+} else {priors <- character(0)}
+head(priors)
+
+# Model error
+set.seed(100)
+
+#filtpath <- "data/run1_CB3DR/trimmed/filtered"
+
+#Learn errors in forward reads
+filtFs <- sort(list.files(filtpath, pattern="R1_001.*", full.names = TRUE))
+errF <- learnErrors(filtFs, multithread = 20, randomize = TRUE, qualityType = "FastqQuality")
+
+## sample by sample
+dd.sep.time <- system.time(dd.sep <- dada(filtFs, err=errF, multithread=20, pool = FALSE, priors=priors))
+st <- makeSequenceTable(dd.sep)
+st.nochim <- removeBimeraDenovo(st, multithread=20)
+write_rds(st.nochim, paste0(input_priors,".sep.rds"))
+
+
+## Target-priors - Pseudo-pooled inference
+dd.pseudo.time <- system.time(dd.pseudo <- dada(filtFs, err=errF, multithread=20, pool = "pseudo", priors=priors))
+st <- makeSequenceTable(dd.pseudo)
+st.nochim <- removeBimeraDenovo(st, multithread=20)
+write_rds(st.nochim, paste0(input_priors,".pseudo.rds"))
+
+
+## Target-priors - Pooled inference
+dd.pool.time <- system.time(dd.pool <- dada(filtFs, err=errF, multithread=20, pool = TRUE, priors=priors))
+st <- makeSequenceTable(dd.pool)
+st.nochim <- removeBimeraDenovo(st, multithread=20)
+write_rds(st.nochim, paste0(input_priors,".pool.rds"))
+
+df <- data.frame(data.matrix(dd.sep.time),
+                 data.matrix(dd.pseudo.time),
+                 data.matrix(dd.pool.time)
+                 
+)
+
+write_tsv(df, path=paste0(input_priors,".times.tsv"))
+
+```
+
+#Read in time results
+```{r}
+#times
+path <- "priors"
+times <- data_frame(filename =  dir(path, "times.tsv")) %>% 
+  mutate(file_contents = map(filename,          # read files into
+           ~ read_tsv(file.path(path, .))) # a new data column
+        )   %>%
+  unnest() %>%
+  mutate(filename = case_when(
+    filename=="merged_rdp_species_synsadded.fa.gz.times.tsv" ~ "allpriors",
+    filename=="NA.times.tsv" ~ "nopriors",
+    filename=="targets.fa.times.tsv" ~ "targetpriors",
+  )) %>%
+  magrittr::set_colnames(c("filenames","sep","pseudo","pooled"))
+
+
+```
+
+# Read in seqtab results
+
+```{r}
+files <- dir("priors", ".rds")
+
+names <- files %>% 
+  str_replace(".rds", replacement="") %>%
+  str_replace(".fa", replacement="") %>%
+  str_replace(".gz", replacement="") %>%
+  str_replace("merged_rdp_species_synsadded.", replacement="all.") %>%
+  str_replace("NA.",replacement= "")
+
+for (i in seq(along=files)){
+  assign(names[i], readRDS(dir("priors", ".rds", full.names = TRUE)[i]))
+}
+
+```
+
+#Check differences in total ASV's
+
+This is probably confounded by different primers - Need to do a collapseNoMismatch, or just use a single primer set!
+```{r}
+nsam <- length(rownames(pool))
+df.obs <- data.frame(observed=c(rowSums(sep>0), rowSums(pseudo>0), rowSums(pool>0),
+                                rowSums(targets.sep>0), rowSums(targets.pseudo>0), rowSums(targets.pool>0),
+                                rowSums(all.sep>0), rowSums(all.pseudo>0), rowSums(all.pool>0)
+                                ),
+                     samplenames=c(rownames(sep>0), rownames(pseudo>0), rownames(pool>0),
+                                rownames(targets.sep>0), rownames(targets.pseudo>0), rownames(targets.pool>0),
+                                rownames(all.sep>0), rownames(all.pseudo>0), rownames(all.pool>0)
+                                ),
+                     mode=rep(c("independent", "pseudo", "pooled"), each=nsam),
+                     pseudo=rep(c("none", "targets", "all"), each=nsam*3),
+                     rank=rank(rowSums(pool>0)), times=3) %>%
+                    filter(!str_detect(samplenames, "Undetermined"))
+ggplot(data=df.obs, aes(x=rank, y=observed, color=mode)) +
+  geom_point() +
+  facet_grid(~pseudo) +
+  xlab("Samples") + ylab("Observed ASVs")
+
+```
+
+##Check differences in AsV's infered between the different priors
+
+```{r}
+identical(sort(getSequences(sep)), sort(getSequences(targets.sep)))
+identical(sort(getSequences(sep)), sort(getSequences(all.sep)))
+#TRUE
+
+#compare read numbers of targets
+#target priors
+library(Biostrings)
+target_priors <- as.character(readDNAStringSet("priors/targets.fa"))
+
+target <- target_priors[3]
+#suzukii
+c(naive=sum(sep[,target]>0), prior=sum(targets.sep[,target]>0))
+
+
+```
+
+
+#Check differnces in output
+```{r dif}
+
+dim(st.sep); dim(st.pool)
+
+sq.sep <- getSequences(st.sep)
+sq.pool <- getSequences(st.pool)
+sum(!sq.sep %in% sq.pool);sum(sq.sep %in% sq.pool); sum(!sq.pool %in% sq.sep)
+
+sum(st.sep[,!sq.sep %in% sq.pool])
+
+sum(st.sep[,sq.sep %in% sq.pool])
+
+sum(st.pool[,sq.pool %in% sq.sep])
+
+sum(st.pool[,!sq.pool %in% sq.sep])
+
+```
+
