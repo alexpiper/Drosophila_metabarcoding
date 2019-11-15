@@ -49,9 +49,6 @@ opts_chunk$set(dev = 'png')
 #Load all packages
 sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
 
-#Load helper functions 
-source('R/helper_functions.R')
-
 #devtools::install_github("benjjneb/dada2")
 #devtools::install_github("alexpiper/taxreturn")
 #devtools::install_github("thomasp85/patchwork")
@@ -608,6 +605,15 @@ saveRDS(seqtab.nochim, "output/rds/seqtab_final.rds") # CHANGE ME to where you w
 
 use profile hidden markov model derived from the trimmed amplicon of the full database to filter for homology to COI
 
+```{r}
+seqtab.nochim <- readRDS("output/rds/seqtab_final.rds")
+
+seqs <- DNAStringSet(colnames(seqtab.nochim))
+test <- taxreturn::codon_filter(seqs)
+clean
+
+```
+
 
 ## Coding sequence filtering - How to do this??
 
@@ -622,12 +628,8 @@ This requires training on a curated reference database - The pre-trained file ca
 Folllowing assignment with IDTAXA, we will also use exact matching with a reference database to assign more sequences (including the synthetic positive controls) to species level
 
 ```{r IDTAXA}
-#Run1
-#seqtab.nochim <- readRDS("output/rds/seqtab_final_Run1.rds")
-#Run2
-seqtab.nochim <- readRDS("output/rds/seqtab_final_Run2.rds")
-#Run3
-#seqtab.nochim <- readRDS("output/rds/seqtab_final_Run3.rds")
+#Run
+seqtab.nochim <- readRDS("output/rds/seqtab_final.rds")
 
 trainingSet <- readRDS("reference/merged_arthropoda_idtaxa.rds")
 dna <- DNAStringSet(getSequences(seqtab.nochim)) # Create a DNAStringSet from the ASVs
@@ -635,10 +637,9 @@ dna <- DNAStringSet(getSequences(seqtab.nochim)) # Create a DNAStringSet from th
 ##Decide on threshold
 ids <- IdTaxa(dna, trainingSet, processors=10,threshold = 60, verbose=TRUE)  #WARNING - assigning more than one processor currently crashes R
 
-#test <- ids
-plot(ids, trainingSet)
+writeRDS(ids, "ids.RDS")
+#plot(ids, trainingSet)
 
-#ids <- test
 
 #delete existing file
 cat("",file="idtaxa.csv")
@@ -675,7 +676,7 @@ rownames(taxa.print) <- NULL
 head(taxa.print)
 
 # Write taxonomy table to disk
-saveRDS(tax, "tax_IdTaxa.rds") 
+saveRDS(tax, "output/rds/tax_IdTaxa.rds") 
 
 tax <- readRDS("output/rds/tax_IdTaxa.rds") 
 
@@ -708,7 +709,7 @@ for (row in 1:nrow(tax)){
 }
 
 # Write taxonomy table to disk
-saveRDS(tax, "tax_IdTaxaExact.rds") 
+saveRDS(tax, "output/rds/tax_IdTaxaExact.rds") 
 
 ```
 
@@ -775,7 +776,7 @@ Following taxonomic assignment, the sequence table and taxonomic table are merge
 We then make a plot to evaluate the effectiveness of taxonomic assignment to each rank
 
 ```{r create PS, eval = FALSE}
-seqtab.nochim <- readRDS("output/rds/seqtab_final_nova.rds")
+seqtab.nochim <- readRDS("output/rds/seqtab_final.rds")
 
 #Fix seqtab names -removing read name, sample number etc
 rownames(seqtab.nochim) <- rownames(seqtab.nochim) %>% 
@@ -786,7 +787,7 @@ rownames(seqtab.nochim) <- rownames(seqtab.nochim) %>%
   pull(SampleID) %>%
   str_replace(pattern="Rep", replacement="rep")
 
-tax_plus <- readRDS("output/rds/tax_IdTaxaExact_nova.rds") 
+tax_plus <- readRDS("output/rds/tax_IdTaxaExact.rds") 
 
 #Load sample information
 ## ---- samdat ----
@@ -794,7 +795,7 @@ samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE) %>%
   filter(!duplicated(sample_id)) %>%
   filter(FCID== "HLVKYDMXX") %>% # change for other runs
   magrittr::set_rownames(.$sample_id) %>%
-  dplyr::select(c("sample_id", "ExtractID", "Sample",
+  dplyr::select(c("sample_id", "ExtractID",
                   "geo_loc_name", "material", 
                   "target_subfragment", "F_primer", "R_primer",
                   "FCID", "seq_platform_ID"))
@@ -807,11 +808,11 @@ ps <- phyloseq(tax_table(tax_plus), sample_data(samdf),
 
 if(nrow(seqtab.nochim) > nrow(sample_data(ps))){warning("Warning: All samples not included in phyloseq object, check sample names match the sample metadata")}
 
-rownames(samdf)[which(!rownames(samdf) %in% rownames(sample_data(ps)))]
+rownames(samdf)[which(!rownames(sample_data(ps))  %in% rownames(samdf))]
 
 ##save phyloseq object
 #saveRDS(ps, "output/rds/ps_idtaxa.rds") 
-saveRDS(ps, "output/rds/ps_idtaxaExact_nova.rds") 
+saveRDS(ps, "output/rds/ps_idtaxaExact.rds") 
 #saveRDS(ps, "output/rds/ps_rdp.rds") 
 
 dir.create("output/csv")
@@ -834,7 +835,7 @@ write.csv(gen_summary, file = "output/csv/unfiltered/gen_sum.csv")
 
 ##Output fasta of all ASV's - Name each one by abundance + Taxonomic assignment
 
-
+ps_to_fasta(ps, "output/all_taxa.fasta", rank="Species")
 ```
 
 
@@ -932,10 +933,14 @@ ps1 <- prune_samples(sample_sums(ps1)>=20, ps1) # Drop empty samples
 #
 
 #This loses the sample metadata - Need to add it agian
-samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE) %>%
-  filter(!duplicated(ExtractID)) %>%
-  set_rownames(.$ExtractID) %>%
-  dplyr::select(c("ExtractID","seqrun","feature","target_subfragment","pcr_primers","experimental_factor","Trap"))
+samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE)  %>%
+  #filter(FCID== "CK3HD2") %>% # change for other runs
+  filter(!duplicated(ExtractID))  %>%
+  magrittr::set_rownames(.$ExtractID) %>%
+  dplyr::select(c("sample_id", "ExtractID",
+                  "geo_loc_name", "material", 
+                  "target_subfragment", "F_primer", "R_primer",
+                  "FCID", "seq_platform_ID"))
 
 sample_data(ps.merged) <- samdf
 ps.merged <- filter_taxa(ps.merged, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
@@ -968,7 +973,7 @@ Somehow losing spikeins here
 Syn_taxa <- c("Synthetic_Acrididae", "Synthetic_Aphididae", "Synthetic_Apidae", "Synthetic_Cerambycidae", "Synthetic_Crambidae", "Synthetic_Culicidae","Synthetic_Drosophilidae","Synthetic_Nitidulidae","Synthetic_Siricidae","Synthetic_Tephritidae", "Synthetic_Thripidae", "Synthetic_Tortricidae", "Synthetic_Triozidae", "Carpophilus_Synthetic1", "Carpophilus_Synthetic2", "Carpophilus_Synthetic3", "Carpophilus_Synthetic4", "Carpophilus_Synthetic5", "Carpophilus_Synthetic6","Drosophila_Synthetic1", "Drosophila_Synthetic2", "Drosophila_Synthetic3", "Drosophila_Synthetic4", "Drosophila_Synthetic5", "Drosophila_Synthetic6")
 #Estimate switching from positive controls
 pos_switchrate <- psmelt(subset_taxa(ps.merged, Species %in% Syn_taxa)) %>%
-  group_by(feature) %>%
+  group_by(geo_loc_name) %>%
   summarise(Abundance = sum(Abundance))
 
 ##Plot synthetics
@@ -1097,6 +1102,8 @@ gg.spikedros / gg.spikecarp
 
 ## Comparison between primers for detection
 
+Doesnt seem to be any scaptodrosophila? need to do exact matching
+
 ```{r}
 #For run 1
 #rm_samples <- c("Undetermined")
@@ -1105,7 +1112,7 @@ gg.spikedros / gg.spikecarp
 #ps2 <- tax_glom(ps1,taxrank="Species") # Change to ps.merged for later runs
 
 #Agglomerate to species
-ps2 <- tax_glom(ps.merged,taxrank="Species") # Change to ps.merged for later runs
+ps2 <- speedyseq::tax_glom(ps.merged,taxrank="Species") # Change to ps.merged for later runs
 
 #For run2 
 rm_samples <- c("fwhF2-fwhR2n-CM4","fwhF2-HexCOIR4-CM4")
@@ -1123,7 +1130,7 @@ psbar <- subset_samples(ps2, !sample_names(ps2) %in% rm_samples) # Drop Undeterm
 
 Fig1 <- plot_bar(psbar,fill="Species") +
   theme_bw() +
-    scale_fill_manual(values=col2) + 
+    #scale_fill_manual(values=col2) + 
   theme(legend.position="none",
         axis.text.x = element_blank(),
         axis.ticks.x=element_blank())
@@ -1154,9 +1161,10 @@ ps.ord <- subset_taxa(ps2, !Species %in% Syn_taxa)
 ps.ord <- filter_taxa(ps.ord, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
 ps.ord <- prune_samples(sample_sums(ps.ord)>=20, ps2) # Drop empty samples
 GP.ord <- ordinate(ps.ord, "NMDS", "jaccard")
-p1 = plot_ordination(ps.ord, GP.ord, type="samples", color="Trap", shape="target_subfragment", title="Comparison of 2 primer sets") + 
+p1 = plot_ordination(ps.ord, GP.ord, type="samples", color="ExtractID", title="Comparison of 2 primer sets") + 
   theme_bw() +  
-  scale_color_manual(values=col)+ 
+  theme(legend.position = "none") +
+  #scale_color_manual(values=col)+ 
   geom_point(size=3) 
 
 #,guide=FALSE
@@ -1180,7 +1188,7 @@ The G(x) cannot be determined for sparse data without deleting, replacing or est
 library(metacal)
 library(tidyverse)
 
-ps_bias <- subset_samples(ps2, feature %in% c("Drosophilidae","Cherry"))
+ps_bias <- subset_samples(ps2, geo_loc_name %in% c("Colony","Red Hill"))
 tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <- "Carpophilus_nr.dimidiatus"
 tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
 tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
