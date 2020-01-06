@@ -504,7 +504,7 @@ samdf <- read.csv("sample_data/Sample_info.csv", stringsAsFactors = FALSE)
 for (i in seq(along=runs)){
   
   run_data <- samdf %>%
-    filter(FCID== runs[i] %>% str_split_fixed(pattern="_", n=2) %>% as_tibble() %>% pull(V2))
+    filter(FCID == runs[i] %>% str_split_fixed(pattern="_", n=2) %>% as_tibble() %>% pull(V2))
   
   #Check if run used twin tags
   twintagged <- any(!is.na(run_data$twintagF))
@@ -562,8 +562,9 @@ for (i in seq(along=runs)){
 }
 ```
 
-## Merge Runs, Remove Chimeras
+## Merge Runs, Remove Chimeras and filter
 
+All the below filters increase the proportion of reads classified to lower levels compared to higher levels
 
 ```{r merge runs and remove chimeras}
 seqtabs <- list.files("output/rds/", pattern="seqtab.rds", full.names = TRUE)
@@ -593,31 +594,30 @@ print(paste(sum(seqtab.nochim)/sum(st.all),"of the abundance remaining after chi
 #Check complexity
 hist(seqComplexity(seqtab.nochim), 100)
 
-
 #Look at seqlengths
 plot(table(nchar(getSequences(seqtab.nochim))))
+
+#cut to expected size allowing for some codon indels
+seqtab.nochim <- seqtab.nochim[,nchar(colnames(seqtab.nochim)) %in% 200:210]
+
+#Filter for stop codons
+seqs <- DNAStringSet(getSequences(seqtab.nochim))
+codon_filt <- taxreturn::codon_filter(seqs)
+seqtab.nochim <- seqtab.nochim[,colnames(seqtab.nochim) %in% codon_filt]
+
+#Filter for homology with the target marker
+fwh_ref <-  ape::read.dna("reference/fwh_insecta_aligned_curated.fasta", format="fasta")
+model <- aphid::derivePHMM(fwh_ref)
+
+seqs <- as.DNAbin(DNAStringSet(colnames(seqtab.nochim)))
+homology_filt <- taxreturn::clean_seqs(seqs, minscore = 100, shave = FALSE, model = model)
+
+seqtab.nochim <-  seqtab.nochim[,colnames(seqtab.nochim) %in% homology_filt]
 
 dir.create("output/rds/")
 saveRDS(seqtab.nochim, "output/rds/seqtab_final.rds") # CHANGE ME to where you want sequence table saved
 ```
 
-## Homology filter with PHMM
-
-use profile hidden markov model derived from the trimmed amplicon of the full database to filter for homology to COI
-
-```{r}
-seqtab.nochim <- readRDS("output/rds/seqtab_final.rds")
-
-seqs <- DNAStringSet(colnames(seqtab.nochim))
-test <- taxreturn::codon_filter(seqs)
-clean
-
-```
-
-
-## Coding sequence filtering - How to do this??
-
-Perhaps aligntranslation?
 
 ## Assign taxonomy with IDTAXA & Exact matching
 
@@ -683,13 +683,12 @@ tax <- readRDS("output/rds/tax_IdTaxa.rds")
 #Add missed species using exact matching
 
 #
-#exact <- assignSpecies(seqtab.nochim, "reference/merged_rdp_species_synsadded.fa.gz", allowMultiple = TRUE, tryRC = TRUE,
-#  n = 100, verbose = FALSE)
-#
-#exact <- exact %>% 
-#  as.tibble() %>%
-#  mutate(binomial =  case_when(!is.na(Species) ~  paste0(Genus,"_",Species)))
-#
+exact <- assignSpecies(seqtab.nochim, "reference/merged_rdp_species_synsadded.fa.gz", allowMultiple = TRUE, tryRC = TRUE, verbose = FALSE)
+
+exact <- exact %>% 
+  as_tibble() %>%
+  mutate(binomial =  case_when(!is.na(Species) ~  paste0(Genus,"_",Species)))
+
 ###Assign synthetics using exact matching
 
 exact <- assignSpecies(seqtab.nochim, "reference/inhouse_syns.fa", allowMultiple = TRUE, tryRC = TRUE, verbose = FALSE)
@@ -741,7 +740,6 @@ saveRDS(fitGTR, "phytree.rds")
 ```
 
 
-
 ## Track reads through process
 
 ```{r }
@@ -789,6 +787,25 @@ rownames(seqtab.nochim) <- rownames(seqtab.nochim) %>%
 
 tax_plus <- readRDS("output/rds/tax_IdTaxaExact.rds") 
 
+#### Rename problematic samples
+rownames(seqtab.nochim)  <- rownames(seqtab.nochim) %>%
+  str_replace_all("D250M1-", "D250M4REP-") %>%
+  str_replace_all("D250M2-", "D250M5REP-") %>%
+  str_replace_all("D250M3-", "D250M1REP-") %>%
+  str_replace_all("D250M4-", "D250M2REP-") %>%
+  str_replace_all("D250M5-", "D250M3REP-") %>%
+  str_replace_all("D500M1-", "D500M4REP-") %>%
+  str_replace_all("D500M2-", "D500M5REP-") %>%
+  str_replace_all("D500M3-", "D500M1REP-") %>%
+  str_replace_all("D500M4-", "D500M2REP-") %>%
+  str_replace_all("D500M5-", "D500M3REP-") %>% # This should maybe be M2?
+  str_replace_all("D1000M1-", "D1000M3REP-") %>%
+  str_replace_all("D1000M2-", "D1000M4REP-") %>%
+  str_replace_all("D1000M3-", "D1000M5REP-") %>%
+  str_replace_all("D1000M4-", "D1000M1REP-") %>%
+  str_replace_all("D1000M5-", "D1000M2REP-") %>%
+  str_replace_all("REP", "")
+
 #Load sample information
 ## ---- samdat ----
 samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE) %>%
@@ -810,10 +827,15 @@ if(nrow(seqtab.nochim) > nrow(sample_data(ps))){warning("Warning: All samples no
 
 rownames(samdf)[which(!rownames(sample_data(ps))  %in% rownames(samdf))]
 
-##save phyloseq object
-#saveRDS(ps, "output/rds/ps_idtaxa.rds") 
 saveRDS(ps, "output/rds/ps_idtaxaExact.rds") 
-#saveRDS(ps, "output/rds/ps_rdp.rds") 
+
+#Rename synthetic orders
+tax_table(ps)[,2][which(str_detect(tax_table(ps)[,7], "Synthetic"))] <- "Arthropoda"
+
+ps <- ps %>%
+  subset_samples(material %in% c("Drosophila Adults", "Drosophila Larvae", "Mixed Adults", "Mixed Larvae", "Synthetic", "Blank")) %>%
+  subset_taxa(Phylum == "Arthropoda") %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE) 
 
 dir.create("output/csv")
 dir.create("output/csv/unfiltered/")
@@ -825,13 +847,15 @@ write.csv(export, file = "output/csv/rawdata.csv")
 
 #Summary export
 library(data.table)
-sp_summary <- summarize_taxa(ps, "Species", "sample_id")
-sp_summary <- spread(sp_summary, key="sample_id", value="totalRA")
-write.csv(sp_summary, file = "output/csv/unfiltered/spp_sum.csv")
+summarise_taxa(ps, "Species", "sample_id") %>%
+  filter(str_detect(sample_id, "NTC")) %>%
+  #filter(str_detect(Species, "Drosophila|Scaptodrosophila")) %>%
+  spread(key="sample_id", value="totalRA") %>%
+  write.csv(file = "output/csv/unfiltered/spp_sum.csv")
 
-gen_summary <- summarize_taxa(ps, "Genus", "sample_id")
-gen_summary <- spread(gen_summary, key="sample_id", value="totalRA")
-write.csv(gen_summary, file = "output/csv/unfiltered/gen_sum.csv")
+summarise_taxa(ps, "Genus", "sample_id") %>%
+  spread(key="sample_id", value="totalRA") %>%
+  write.csv(file = "output/csv/unfiltered/gen_sum.csv")
 
 ##Output fasta of all ASV's - Name each one by abundance + Taxonomic assignment
 
@@ -844,7 +868,7 @@ ps_to_fasta(ps, "output/all_taxa.fasta", rank="Species")
 ```{r sum taxa}
 #Fraction of reads assigned to each taxonomic rank
 sum_reads <- speedyseq::psmelt(ps) %>%
-  gather("Rank","Name",rank_names(ps)) %>%
+  gather("Rank","Name", rank_names(ps)) %>%
   group_by(Rank) %>% 
   mutate(Name = replace(Name, str_detect(Name, "__"),NA)) %>% # This line turns the "__" we added to lower ranks back to NA's
   summarize(Reads_classified = sum(Abundance * !is.na(Name))) %>%
@@ -866,9 +890,24 @@ sum_otu <- tax_table(ps) %>%
 
 print(sum_reads)
 print(sum_otu)
-```
 
-This indicates a 
+
+ps_test <- speedyseq::tax_glom(ps, "Species")
+sum_test <- tax_table(ps_test) %>%
+  as("matrix") %>%
+  as_tibble(rownames="OTU") %>%
+  gather("Rank","Name",rank_names(ps)) %>%
+  group_by(Rank) %>%
+  mutate(Name = replace(Name, str_detect(Name, "__"),NA)) %>% # This line turns the "__" we added to lower ranks back to NA's
+  summarize(OTUs_classified = sum(!is.na(Name))) %>%
+  mutate(Frac_OTUs = OTUs_classified / ntaxa(ps)) %>%
+  mutate(Rank = factor(Rank, rank_names(ps))) %>%
+  arrange(Rank)
+
+
+unique_sp <- unique(tax_table(ps_test)[,7]) %>% unname() %>% as.data.frame() %>% filter(!str_detect(V1, "__"))
+
+```
 
 
 ## Process replicates 
@@ -962,12 +1001,122 @@ ps.merged <- filter_taxa(ps.merged, function(x) mean(x) > 0, TRUE) #Drop missing
     theme(axis.text.x=element_text(angle=90,hjust=1),
           axis.title = element_blank(),
           legend.position = "none")
+  
 
 ```
 
+## Check for concordance between mock
+
+
+```{r PCA}
+
+# Output drosophila summary
+ps.merged %>% 
+  subset_taxa(Family=="Drosophilidae") %>%
+  microbiome::transform("compositional") %>%
+  summarise_taxa("Species", "sample_id") %>%
+  filter(!str_detect(sample_id, "NTC")) %>%
+  #filter(str_detect(Species, "Drosophila|Scaptodrosophila")) %>%
+  spread(key="sample_id", value="totalRA") %>%
+  write.csv(file = "output/csv/unfiltered/drosophila_spp_sum.csv")
+
+# Read in expected table
+exp <- read_csv("sample_data/expected_quant.csv") %>%
+  gather(Species, Abundance, -X1) %>%
+  mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
+  filter(str_detect(X1,"D100M|D250M|D500M|D1000M|DLarv")) %>%
+  drop_na() %>%
+  set_colnames(c("Sample","Species","Actual"))
+
+# PCA on exp
+test <- exp %>%
+  pivot_wider(
+    names_from = Sample,
+    values_from = Actual,
+    values_fill = list(Actual=0),
+  ) %>%
+  column_to_rownames("Species") %>%
+  #group_by(Sample, Species) %>%
+  nest(data = everything()) %>%
+  mutate(pca = map(data, ~ prcomp(.x, 
+                                  center = TRUE, scale = TRUE)))
+
+library(broom)
+test$pca %>%
+  map(~tidy(.x, data = .y, "pcs")) %>%
+  as.data.frame() %>%
+  ggplot(aes(x = PC, y=percent)) +
+  geom_bar(stat="identity") + labs(x="PC",y="Variance Explained")
+
+test %>% 
+  mutate(pca_aug = map2(pca, data, ~augment(.x, data = .y))) %>%
+  unnest(pca_aug)
+
+test %>% 
+  mutate(pca_aug = map2(pca, data, ~augment(.x, data = .y))) %>%
+  unnest(pca_aug) %>%
+  ggplot(aes(x=.fittedPC1, y=.fittedPC2)) + geom_point(aes(color=.rownames),size=3, alpha=0.7) +
+  labs(x="PC1", y="PC2") +
+  theme(legend.position="top")
+
+# Mutate real one
+sam <- ps.merged %>%
+  speedyseq::tax_glom("Species") %>%
+  transform_sample_counts(function (x) x/sum(x)) %>%
+  speedyseq::psmelt() %>%
+  mutate(Species = str_replace(Species, pattern="Drosophila_mauritiana/simulans", replacement= "Drosophila_simulans")) %>%
+  filter(Sample %in% exp$Sample) %>%
+  arrange(Abundance) %>%
+  distinct() 
+
+```
+
+
 ## Process synthetic mock positive control
 
-Somehow losing spikeins here
+
+
+Identification of taxa that are poorly represented in an unsupervised manner can identify taxa that will have little to no effect on downstream analysis. Sufficient removal of these "low prevalance" features can enhance many analysis by focusing statistical testing on taxa common throughout the data. However, for our dataset the problem with prevalence filtering for our dataset is that we dont have many replicates of each psyllid species, and therefore there are some high abundance but low prevalence ASV's we dont want to lose.
+
+#
+
+```{r prevalence-assessment}
+# Calculate taxon prevalence across the data set
+prevdf <- apply(X = otu_table(ps.merged), MARGIN = ifelse(taxa_are_rows(ps.merged), yes = 1, no = 2),FUN = function(x){sum(x > 0)})
+
+# Add taxonomy and total read counts to prevdf - change this to tidyverse code
+prevdf <- data.frame(Prevalence = prevdf, TotalAbundance = taxa_sums(ps.merged), tax_table(ps.merged))
+
+#Prevalence plot
+gg.prev <- subset(prevdf, Order %in% get_taxa_unique(ps.merged, "Order")) %>%
+  ggplot(aes(TotalAbundance, Prevalence / nsamples(ps.merged),color=Genus)) +
+  geom_point(size = 3, alpha = 0.7) +
+  scale_x_log10() +
+  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Order) +
+  theme(legend.position="none") +
+  ggtitle("Phylum Prevalence in All Samples\nColored by Family")
+
+gg.prev
+```
+
+## ASV Filtering
+
+* remove samples with low reads
+* Remove all OTUS with an abundance less than 0.01 (or index switch estimate)
+  -This could be better estimated with an ROC curve of false positives and false negatives in mock communities?
+* Remove OTUs that are found in less than 20% of samples- For Quantitative analysis not for detection
+
+# Determine filtering threshold
+
+We will use 3 different methods to estimate the cross contamination rate:
+
+* Firstly we will use the synthetic mock community positive control
+* Secondly we will use the estimate from the number of expected vs unapplied index combinations
+* Thirdly, we will use ROC analysis of false positives and false negatives for all taxa in the mocks.
+
+## estimate cross contamination using positive control
+
 ```{r}
 #Process positive controls
 Syn_taxa <- c("Synthetic_Acrididae", "Synthetic_Aphididae", "Synthetic_Apidae", "Synthetic_Cerambycidae", "Synthetic_Crambidae", "Synthetic_Culicidae","Synthetic_Drosophilidae","Synthetic_Nitidulidae","Synthetic_Siricidae","Synthetic_Tephritidae", "Synthetic_Thripidae", "Synthetic_Tortricidae", "Synthetic_Triozidae", "Carpophilus_Synthetic1", "Carpophilus_Synthetic2", "Carpophilus_Synthetic3", "Carpophilus_Synthetic4", "Carpophilus_Synthetic5", "Carpophilus_Synthetic6","Drosophila_Synthetic1", "Drosophila_Synthetic2", "Drosophila_Synthetic3", "Drosophila_Synthetic4", "Drosophila_Synthetic5", "Drosophila_Synthetic6")
@@ -977,11 +1126,10 @@ pos_switchrate <- psmelt(subset_taxa(ps.merged, Species %in% Syn_taxa)) %>%
   summarise(Abundance = sum(Abundance))
 
 ##Plot synthetics
-ps_syn <- subset_samples(ps.merged, feature=="Synthetic")
-ps_syn <- subset_taxa(ps_syn,  Species %in% Syn_taxa)
-
-ps_syn <- filter_taxa(ps_syn, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
-ps_syn_prop <- transform_sample_counts(ps_syn, fun = proportions,na_rm=TRUE) # Breaking agglomeration
+ps_syn <- subset_samples(ps.merged, material=="Synthetic") %>%
+  subset_taxa(Species %in% Syn_taxa) %>%
+  filter_taxa(function(x) mean(x) > 0, TRUE) %>% #Drop missing taxa from table
+  microbiome::transform('compositional')
 
 #Colour scheme
 library(RColorBrewer)
@@ -990,112 +1138,153 @@ col <- colorRampPalette(brewer.pal(11, "Spectral"))(13)
 gg.syn <- plot_bar(ps_syn, fill="Species") +
   facet_grid(~target_subfragment,scales="free") + 
   scale_fill_manual(values=col) +
-  theme_bw() +
-  theme(axis.text.x=element_text(angle=90),
-        legend.position = "none")
-
-gg.propsyn <- plot_bar(ps_syn_prop, fill="Species") +
-  facet_grid(~target_subfragment,scales="free") + 
-  scale_fill_manual(values=col)+
-  theme_bw() +
-  theme(axis.text.x=element_text(angle=90))
-
-gg.syn + gg.propsyn
+  theme_bw()
 ```
 
+# Estimate rate using Expected vs observed combinations
 
-## Analyse spike ins for run 3
-```{r analyse spike ins}
-library(plotly)
-library(patchwork)
 
-#Remove blanks
-rm_samples <- sample_names(ps.merged)[which(str_detect(sample_names(ps.merged),"BLANK"))]
-ps1 <- subset_samples(ps.merged, !sample_names(ps.merged) %in% rm_samples) # Drop Undetermined reads
-ps1 <- prune_samples(sample_sums(ps1)>=20, ps1) # Drop empty samples
+# Estimate rate using known exp vs observed in mocks
 
-#Replace experimental factor column with spikeins name to allow faceting by
-spikeins <- c("DL1","DL2","DL3","DL4","DL5","DL6","CL1","CL2","CL3","CL4","CL5","CL6")
+From the use of the mock community we can see that the majority cross contamination must have come from DNA extraction and prior processes. Therefore we will also get an estimate 
 
-sample_data(ps1)$experimental_factor <- as.character(sample_data(ps1)$experimental_factor)
+```{r thresholds}
+#Flag True positives
 
-for (i in 1:length(spikeins)){
-  sample_data(ps1)$experimental_factor[which(str_detect(sample_data(ps1)$ExtractID,spikeins[i]))] <- spikeins[i]
+
+# Read in expected table
+exp <- read_csv("sample_data/expected_quant.csv") %>%
+  gather(Species, Abundance, -X1) %>%
+  mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
+  filter(str_detect(X1,"D100M|D250M|D500M|D1000M|DLarv")) %>%
+  drop_na() %>%
+  set_colnames(c("Sample","Species","Actual"))
+
+# Mutate real one
+sam <- ps.merged %>%
+  transform_sample_counts(function (x) x/sum(x)) %>%
+  speedyseq::tax_glom("Species") %>%
+  speedyseq::psmelt() %>%
+  mutate(Species = str_replace(Species, pattern="Drosophila_mauritiana/simulans", replacement= "Drosophila_simulans")) %>%
+  filter(Sample %in% exp$Sample) %>%
+  arrange(Abundance) %>%
+  distinct() %>%
+  left_join(exp, by=c("Sample", "Species")) %>%
+  mutate(switched = case_when(
+    Abundance > 0 & Actual == 0 ~ TRUE,
+    Abundance == 0 & is.na(Actual) ~ FALSE,
+    Abundance > 0 & Actual > 0 ~ FALSE
+  ))
+
+# Need to make a confusion matrix instead
+
+## Plot true and false carsonellas by run - this shows may need to filter seperately by run, as seqrun2 has much higher than others.
+gg.switch <- sam %>% 
+  group_by(switched) %>%
+  filter(!is.na(switched)) %>%
+  filter(Abundance > 0) %>%
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n)) %>%
+  ggplot(aes(x=seqrun, y=freq, group=switched, fill=switched)) +
+  geom_bar(stat="identity")
+
+
+#to check if index switching could explain the multiple OTU's check if top=FALSE carsonella exist as top in another sample in the same run
+
+thresholds <- seq(0,0.1,0.0001)
+
+df <- data.frame(thresh = thresholds, TP= thresholds, FP = thresholds)
+for(i in 1:length(thresholds)){
+  filt <- sam %>%
+    filter(Abundance > thresholds[i]) %>%
+    group_by(switched) %>%
+    summarise(sum=n())
+  df$FP[i] <- filt$sum[2]
+  df$TP[i] <- filt$sum[1]
 }
 
-#Add dataset column
-sample_data(ps1) <- data.frame(sample_data(ps1)) %>%
-  mutate(dataset = str_replace(experimental_factor,pattern=".$",replacement=""))%>%
-  set_rownames(.$ExtractID)
+gg.filt <- df %>%
+  bind_rows() %>%
+  gather(key=type, value=n, -thresh) %>%
+  ggplot(aes(x=thresh, y=n, fill=type)) + 
+  geom_density(stat="identity", alpha=0.5) + 
+  #scale_x_continuous(breaks=seq(0,0.05,0.001)) +
+  theme(axis.text.x = element_text(angle=45,hjust=1)) + 
+  geom_vline(xintercept = 0.0035)+ 
+  geom_vline(xintercept = 0.001)
 
-psprop <- transform_sample_counts(ps1, fun = proportions,na_rm=FALSE) # Breaking agglomeration
+print(gg.filt)
 
+## Filter run 2 
+run2_ps <- ps2 %>% 
+  subset_samples(seqrun==2)
 
-#only highlight syn & others
-tax.other <- data.frame(tax_table(psprop))
-for (i in 1:7){ tax.other[,i] <- as.character(tax.other[,i])}
-tax.other$Kingdom[which(str_detect(tax.other$Species,"_Synthetic"))] <- "Synthetic"
-tax.other$Kingdom[which(!str_detect(tax.other$Species,"_Synthetic"))] <- "Other"
-tax_table(psprop) <- as.matrix(tax.other)
+run2_pass <- run2_ps %>%
+    transform_sample_counts(function (x) x/sum(x)) %>%  # Convert to proportions
+    transform_sample_counts(function (x) (x > 0.001) * 1)
 
-gg.bardros <- plot_bar(subset_samples(psprop,dataset=="DL"), fill="Kingdom") +facet_grid(dataset~experimental_factor,scales="free",drop=TRUE) +
-  scale_fill_manual(values=c("#ef8a62","#67a9cf")) +
-  theme_bw() +
-  theme(axis.text.x=element_text(angle=90))
+newotu1 <- otu_table(run2_ps) * otu_table(run2_pass)
 
-gg.barcarp <- plot_bar(subset_samples(psprop,dataset=="CL"), fill="Kingdom") +facet_grid(dataset~experimental_factor,scales="free",drop=TRUE) +
-  scale_fill_manual(values=c("#ef8a62","#67a9cf")) +
-  theme_bw() +
-  theme(axis.text.x=element_text(angle=90))
+run2_newps <- run2_ps
+otu_table(run2_newps) <- otu_table(newotu1, taxa_are_rows = FALSE) 
 
-gg.bardros / gg.barcarp
+#Filter run 1 and 3 
+  
+run13_ps <- ps2 %>%
+    subset_samples(!seqrun == 2)
+                   
+run13_pass <- run13_ps %>%
+    transform_sample_counts(function (x) x/sum(x)) %>%  # Convert to proportions
+    transform_sample_counts(function (x) (x > 0.0005) * 1)
 
-#add extra column to refer to this, str_detect the spike in name ie DL1, CL1 etch
+newotu2  <- otu_table(run13_ps) * otu_table(run13_pass)
 
-#then plot that similar heatmap of detection of the spike ins
-#could we do this with a summarise taxa call then subset to synthetics only?
+run13_newps <- run13_ps
+otu_table(run13_newps) <- otu_table(newotu2, taxa_are_rows = FALSE) 
 
-test <- summarize_taxa(psprop, "Species", "ExtractID") %>%
-  dplyr::filter(str_detect(Species,"_Synthetic")) %>%
-  dplyr::filter(!str_detect(ExtractID,"BLANK")) %>%
-  mutate(experimental_factor="O") 
+# Create new phyloseq and drop missing taxa
+ps3 <- merge_phyloseq(run2_newps, run13_newps) %>%
+  filter_taxa(function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
+ps3 <- prune_samples(sample_sums(ps3) >0 , ps3) # Drop empty samples
 
-spikeins <- c("DL1","DL2","DL3","DL4","DL5","DL6","CL1","CL2","CL3","CL4","CL5","CL6")
+#Count number of overall taxa pre and post filtering
+print(paste(ntaxa(ps2) - ntaxa(ps3), " taxa Dropped when using filtering threshold of: ", 0.0035, " for run 2 and ", 0.001, "for run 1 and 3"))
 
-for (i in 1:length(spikeins)){
-  test$experimental_factor[which(str_detect(test$ExtractID,spikeins[i]))] <- spikeins[i]
-}
+# Count number of carsonella OTU's per sample pre and post filtering
+n_carson <- speedyseq::psmelt(ps2) %>% 
+  filter(Genus == "Candidatus_Carsonella") %>%
+  filter(Abundance > 0) %>%
+  dplyr::select(Sample.Name, OTU) %>%
+  group_by(Sample.Name) %>%
+  add_tally() %>%
+  dplyr::select(-OTU) %>%
+  unique() %>%
+  mutate(type = "pre") %>%
+  bind_rows(.,speedyseq::psmelt(ps3) %>% 
+  filter(Genus == "Candidatus_Carsonella") %>%
+  filter(Abundance > 0) %>%
+  dplyr::select(Sample.Name, OTU) %>%
+  group_by(Sample.Name) %>%
+  add_tally() %>%
+  dplyr::select(-OTU) %>%
+  unique() %>%
+  mutate(type = "post"))
 
-#add dataset column by removing last character of experimental factor
-test <- test %>%
-  mutate(dataset = str_replace(experimental_factor,pattern=".$",replacement=""))
+gg.ncarson <- ggplot(n_carson, aes(x=reorder(Sample.Name, -n), y=n)) + 
+  geom_bar(stat="identity") +
+  facet_grid(~type) + 
+  xlab("Sample.Name") +
+  ylab("Number of carsonella OTU's per sample") +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust=0))
 
-gg.spikedros <- ggplot(test %>% filter(dataset=="DL"),aes(x=ExtractID,y=Species,fill=totalRA)) + 
-  geom_tile()  +
-  scale_fill_viridis() + 
-  facet_grid(dataset~experimental_factor,scales="free",drop=TRUE) +
-  theme_bw()+
-  theme(axis.text.x = element_text(angle=90))
+print(gg.ncarson)
 
-gg.spikecarp <- ggplot(test %>% filter(dataset=="CL"),aes(x=ExtractID,y=Species,fill=totalRA)) + 
-  geom_tile() +
-  theme(axis.text.x = element_text(angle=90)) +
-  scale_fill_viridis() + 
-  facet_grid(dataset~experimental_factor,scales="free",drop=TRUE) +
-  theme_bw()+
-  theme(axis.text.x = element_text(angle=90))
+#check if any samples dont have carsonella
+table(!n_carson$Sample.Name %in% speedyseq::psmelt(ps2)$Sample.Name)
 
-gg.spikedros / gg.spikecarp
+## Get the name of taxa that dont have carsonella after filtering
 
 ```
-
-
-## ASV Filtering
-
-* remove samples with low reads
-* Remove all OTUS with an abundance less than 0.01 (or index switch estimate)
-  -This could be better estimated with an ROC curve of false positives and false negatives in mock communities?
-* Remove OTUs that are found in less than 20% of samples- For Quantitative analysis not for detection
 
 
 # Part 1: Primer comparison
@@ -1122,7 +1311,7 @@ ps2 <- filter_taxa(ps2, function(x) mean(x) > 0, TRUE) #Drop missing taxa from t
 ps2 <- prune_samples(sample_sums(ps2)>=20, ps2) # Drop empty samples
 
 
-#Rough barplot barplot
+#Rough barplot
 col2 <- colorRampPalette(brewer.pal(11, "Spectral"))(71)
 
 rm_samples <- sample_names(ps2)[which(str_detect(sample_names(ps2),"blank"))]
@@ -1132,8 +1321,7 @@ Fig1 <- plot_bar(psbar,fill="Species") +
   theme_bw() +
     #scale_fill_manual(values=col2) + 
   theme(legend.position="none",
-        axis.text.x = element_blank(),
-        axis.ticks.x=element_blank())
+        axis.text.x = element_text(angle=90))
 #Change sample names for plotting
 #
 #sample_names(ps2) <- sample_names(ps2) %>%
@@ -1141,7 +1329,7 @@ Fig1 <- plot_bar(psbar,fill="Species") +
 #  as_tibble() %>%
 #  pull(V3)
 
-gg.hmap <- plot_heatmap(ps2, "jaccard", "jsd", taxa.label="Species", na.value="white")   +
+gg.hmap <- plot_heatmap(ps2, "jaccard", "jsd", taxa.label="Species", na.value=NA, taxa.order="Family")   +
   theme_bw() +
   theme(axis.text.x = element_text(angle=60, hjust=1),
         axis.title.x=element_blank(),
@@ -1150,7 +1338,7 @@ gg.hmap <- plot_heatmap(ps2, "jaccard", "jsd", taxa.label="Species", na.value="w
         legend.position = "bottom",
         legend.direction = "horizontal") +
   facet_grid(~target_subfragment,scales="free",space="free", drop=TRUE) +
-    scale_fill_distiller(palette="Greens", direction= 1,trans = 'log10',  na.value = "white")
+    scale_fill_distiller(palette="Reds", direction= 1, trans = 'log10',  na.value = NA)
 
 
 #Summarise this also with a jaccard distance comparison!
