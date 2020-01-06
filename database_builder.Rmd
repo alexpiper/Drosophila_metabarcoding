@@ -1,0 +1,164 @@
+---
+title: "Database builder"
+output: html_notebook
+---
+
+## Load packages
+```{r setup}
+## Load Necessary packages
+sapply(c("rentrez", "bold", "taxize","taxizedb", "usethis", "tidyverse", "spider", "insect", "ape", "DECIPHER", "ggpubr", "RColorBrewer", "plotly", "ggforce", "seqinr", "shortread", "patchwork", "viridis","ggridges","UpSetR"), require, character.only = TRUE)
+
+
+# install.packages("devtools")
+#devtools::install_github("alexpiper/taxreturn")
+library(taxreturn)
+
+## Get an NCBI api key for taxize queries
+# use_entrez()
+
+# After generating your key set it as ENTREZ_KEY in .Renviron.
+# ENTREZ_KEY='1c0a0c4afa28448650a1450662a22c68f208'
+#usethis::edit_r_environ()
+```
+
+## Download and curate data for all insecta
+
+```{r retrieve sequences, eval=FALSE, include=FALSE}
+
+## Fetch sequences from GenBank 
+genbank <- fetchSeqs("Insecta", database="genbank", out.dir="genbank", downstream="Order",quiet=FALSE, marker="COI OR COI OR COX1 OR COXI", output = "gb-binom",compress=FALSE, cores=3)
+
+## Fetch sequences from BOLD
+bold <- fetchSeqs("Insecta", database="bold", out.dir="bold", downstream="Order",quiet=FALSE, marker="COI-5P", output = "gb-binom",compress=FALSE, cores=3)
+
+## Fetch mitochondrial genomes from genbank
+fetchSeqs("Insecta", database="genbank", out.dir="genbank", quiet=FALSE, marker="mitochondria", output = "gb-binom", compress=TRUE, cores=2)
+
+```
+
+# Get some outgroups using random subsampling of search
+```{r outgroups}
+outgroup_classes <- dplyr::bind_rows(taxize::downstream("Arthropoda", db="itis", downto="Class")) %>%
+  filter(!taxonname=="Insecta") %>%
+  pull(taxonname)
+outgroup_phyla <- dplyr::bind_rows(taxize::upstream("Insecta", db="itis", upto="Phylum")) %>%
+  pull(taxonname)
+outgroup_kingdoms <- c("Bacteria", "Fungi")
+
+outgroups <- c(outgroup_classes, outgroup_phyla, outgroup_kingdoms)
+
+fetchSeqs(outgroups, database="genbank", out.dir="outgroups", quiet=FALSE, output = "gb-binom", subsample = 100, compress=TRUE, cores=1)
+```
+
+## Clean sequences
+
+```{r Clean sequences}
+#build PHMM from midori longest - sequences need to be same length
+midori <-  Biostrings::readDNAStringSet("MIDORI_LONGEST_20180221_COI.fasta")
+insecta_midori <- as.DNAbin(midori[str_detect(names(midori),pattern=";Insecta;"),])
+folmer <- insect::virtualPCR(insecta_midori, up = "TITCIACIAAYCAYAARGAYATTGG",down= "TAIACYTCIGGRTGICCRAARAAYCA",cores=2, rcdown = TRUE, trimprimers = TRUE)
+filt <- folmer[lengths(folmer)==658]
+
+#Filtered was then aligned in MAFFT - mafft folmer_insecta_fullength.fa > folmer_insecta_fullength_aligned.fa
+#alignment was then manually curated in geneious primer
+folmer_curated <-  ape::read.dna("folmer_insecta_fullength_aligned_curated.fa",format="fasta")
+model <- aphid::derivePHMM(folmer_curated)
+
+#read in all fastas and merge
+library(Biostrings)
+gbSeqs <-  readDNAStringSet(sort(list.files("genbank", pattern = ".fa", full.names = TRUE)))
+boldSeqs <-  readDNAStringSet(sort(list.files("bold", pattern = ".fa", full.names = TRUE)))
+mergedSeqs <- c(gbSeqs, boldSeqs)
+uniqSeqs <- mergedSeqs[unique(names(mergedSeqs)),] # Remove those sequnce names that are identical across both databases
+
+filtered <- clean_seqs(uniqSeqs, model,minscore = 100, cores=2, shave=TRUE,maxNs = 0)
+
+
+#filter using insect::purge - Could wrap this in a function for ease of use?
+db <- insect::taxonomy(db = "NCBI", synonyms = TRUE)
+#filter db
+
+db <- db %>%
+  filter(!rank %in% c("varietas","subspecies","species subgroup")) %>%
+  dplyr::filter(!str_detect(name, fixed("sp."))) %>%
+  dplyr::filter(!str_detect(name, fixed("spp."))) %>%
+  dplyr::filter(!str_detect(name, fixed("aff."))) %>%
+  dplyr::filter(!str_detect(name, fixed("nr."))) %>%
+  dplyr::filter(!str_detect(name, fixed("bv."))) %>%
+  dplyr::filter(!str_detect(name, fixed("cf."))) %>%
+  dplyr::filter(!str_detect(name, fixed("nom."))) %>%
+  dplyr::filter(!str_detect(name, fixed("nud."))) %>%
+  dplyr::filter(!str_detect(name, fixed("environment"))) %>%
+  dplyr::filter(!str_detect(name, fixed("undescribed"))) %>%
+  dplyr::filter(!str_detect(name, fixed("unverified"))) %>%
+  dplyr::filter(!str_detect(name, fixed("unclassified"))) %>%
+  dplyr::filter(!str_detect(name, fixed("uncultured"))) %>%
+  dplyr::filter(!str_detect(name, fixed("unidentif"))) %>%
+  dplyr::filter(!str_detect(name, fixed("NA"))) %>%
+  dplyr::filter(!str_detect(name, fixed("error"))) %>% 
+  dplyr::filter(!str_detect(name,"[0-9]"))%>% 
+  dplyr::filter(!str_detect(name,"[:punct:]"))
+
+
+filtered <- ape::read.FASTA(gzfile("Sequences/filtered.fa.gz"))
+
+remove <- names(filtered)  %>% 
+  str_split_fixed(";", n = 2) %>% 
+  as_tibble() %>%
+  filter(V2 %in% db$name) %>%
+  unite(names,c("V1","V2"),sep=";")
+
+subset <- filtered[names(filtered) %in% remove$names]
+
+rm(filtered)
+
+resolved <- resolve_synonyms(subset, subspecies=FALSE, quiet=FALSE, missing="ignore", higherrank=FALSE, fuzzy=TRUE)
+
+insect::writeFASTA(resolved, file="Sequences/resolved.fa.gz",compress=TRUE)
+
+#Check differences in names
+length(names(resolved)[which(!names(resolved) %in% names(subset))])
+rm(subset)
+
+#Save old names into attributes
+attributes(resolved)$oldnames <- names(resolved)
+#Get names in format for insect::purge
+names(resolved) <- names(resolved) %>%
+  str_split_fixed(";",n=2) %>%
+  as_tibble() %>%
+  pull("V1") 
+
+#filter using insect::purge - Could wrap this in a function for ease of use?
+#db <- insect::taxonomy(db = "NCBI", synonyms = TRUE)
+
+#get unique names only
+resolved <- insect::subset.DNAbin(resolved, subset = !duplicated(names(resolved)))
+
+purged  <- insect::purge(resolved, db = db, level = "Genus", confidence = 0.8, threshold = 0.97, method = "farthest")
+
+#Restore old names
+names(purged) <- attributes(purged)$oldnames
+insect::writeFASTA(purged,file="Sequences/purged.fa.gz",compress=TRUE)
+
+##### PRUNE GROUP SIZES
+
+purged <- readFASTA("Sequences/purged.fa.gz")
+
+#Prune group sizes down to 5 - Is de-duplication actually a good thing? this may bias towards bad singleton sequences?
+pruned <- prune_groups(purged, maxGroupSize = 5, discardby="length",dedup=TRUE, quiet = FALSE)
+
+#Change to complete taxonomic heirarchy
+pruned <- reformat_heirarchy(pruned, ranks = c("kingdom","phylum", "class", "order", "family", "genus", "species"), quiet=FALSE)
+
+#Convert to DNAStringset
+save <- pruned
+
+pruned <-  pruned %>% as.character %>% lapply(.,paste0,collapse="") %>% unlist %>% DNAStringSet
+alphabetFrequency(pruned, collapse=TRUE)
+
+pruned <- replaceAmbiguities(pruned,new="N")
+pruned <- ShortRead::clean(pruned)
+
+writeXStringSet(pruned, filepath="Sequences/pruned.fa.gz",compress = TRUE, format = "fasta" )
+
+```
