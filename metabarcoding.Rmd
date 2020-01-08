@@ -3,6 +3,7 @@ title: "Drosophila Metabarcoding"
 author: "A.M. Piper"
 date: "2019/04/05"
 output:
+  
   html_document:
     highlighter: null
     theme: "flatly"
@@ -13,7 +14,8 @@ output:
       smooth_scroll: true
     df_print: paged    
   pdf_document: default
-  
+editor_options: 
+  chunk_output_type: console
 ---
 
 
@@ -32,7 +34,7 @@ opts_chunk$set(dev = 'png')
 ```{r install & Load packages} 
 #Set required packages
 .cran_packages <- c("ggplot2", "gridExtra","tidyverse","scales","stringdist","patchwork","vegan","ggpubr","seqinr","viridis")
-.bioc_packages <- c("dada2", "phyloseq", "DECIPHER","Biostrings","ShortRead","psadd")
+.bioc_packages <- c("dada2", "phyloseq", "DECIPHER","Biostrings","ShortRead","psadd", "broom", "ggfortify")
 #.github_packages <- c("metacal", "taxreturn", "piperline")
 
 #.inst <- .cran_packages %in% installed.packages()
@@ -789,9 +791,9 @@ tax_plus <- readRDS("output/rds/tax_IdTaxaExact.rds")
 
 #### Rename problematic samples
 rownames(seqtab.nochim)  <- rownames(seqtab.nochim) %>%
-  str_replace_all("D250M1-", "D250M4REP-") %>%
-  str_replace_all("D250M2-", "D250M5REP-") %>%
-  str_replace_all("D250M3-", "D250M1REP-") %>%
+  str_replace_all("D250M1-", "D250M4REP-") %>% #Dont think this is necessart
+  str_replace_all("D250M2-", "D250M5REP-") %>% # Makes sense on PCA
+  str_replace_all("D250M3-", "D250M1REP-") %>% # Way off on PCA
   str_replace_all("D250M4-", "D250M2REP-") %>%
   str_replace_all("D250M5-", "D250M3REP-") %>%
   str_replace_all("D500M1-", "D500M4REP-") %>%
@@ -909,7 +911,6 @@ unique_sp <- unique(tax_table(ps_test)[,7]) %>% unname() %>% as.data.frame() %>%
 
 ```
 
-
 ## Process replicates 
 
 In this section we will estimate within sample consistency using Kulczynski distance, which is a presence/absense distance measure.
@@ -922,6 +923,60 @@ Adapted from Mike mclarens code: https://github.com/benjjneb/dada2/issues/745
 
 This could probably go before taxonomic assignment?
 
+## Look at taxon overlap between replicates
+
+Venn diagrams? - Heatmap of presence absense
+
+Species accumulation curve- adding more extraction reps, pcr reps, biological samples, sequence depth
+
+Want to show - Different extraction replicates adds more - but this is probably due to contamination
+PCR replicates doesnt add more
+
+
+## Look at species accumulation curves
+```{r replicate reproducibility}
+
+
+
+#Rarefy replicates to same read depth
+nspec <- specnumber(otu_table(ps1)) # observed number of species
+raremax <- min(rowSums(otu_table(ps.reps)))
+rare <- rrarefy(otu_table(ps.reps),raremax)
+
+#PCA of rarefied samples
+raredist <- vegan::vegdist(rare, method="euclidean")
+
+r.pcx <- prcomp(raredist)
+
+pc_samp <- data.frame(SampleID = rownames(r.pcx$x), r.pcx$x[, 1:2])%>%
+  left_join(samdf, by="SampleID")
+pc_otu <- data.frame(OTU = rownames(r.pcx$rotation), r.pcx$rotation[, 1:2])
+
+# calculate percent variance explained for the axis labels
+pc1 <- round(r.pcx$sdev[1]^2/sum(r.pcx$sdev^2),2)
+pc2 <- round(r.pcx$sdev[2]^2/sum(r.pcx$sdev^2),2)
+pc_xlab <- paste("PC1: ", pc1, sep="")
+pc_ylab <- paste("PC2: ", pc2, sep="")
+
+library(ggplot2)
+gg.reps <- ggplot(data=pc_samp, aes(x=PC1, y=PC2, colour=SampleID, label=SampleID)) + 
+  geom_point(alpha=0.5, size=3) +
+  geom_text() +
+  #geom_point(data=pc_otu,aes(PC1, PC2)) +
+  theme_bw() + 
+  geom_hline(yintercept = 0, linetype=2) +  
+  geom_vline(xintercept = 0, linetype=2) +
+  xlab(pc_xlab) + 
+  ylab(pc_ylab) +
+  theme(legend.position = "none")+
+  coord_fixed(ratio=pc2/pc1) # Scale plot by variance explained
+
+print(gg.reps)
+
+```
+
+## Merge replicates
+
 ```{r replicates}
 #ps <- readRDS("output/rds/ps_idtaxaExact.rds")
 
@@ -929,6 +984,14 @@ This could probably go before taxonomic assignment?
 rm_samples <- c("Undetermined")
 ps1 <- subset_samples(ps, sample_names(ps) !=rm_samples) # Drop Undetermined reads
 ps1 <- prune_samples(sample_sums(ps1)>=20, ps1) # Drop empty samples
+
+#Plot read differences between replicates
+gg.reps <- plot_bar(ps1, x="Sample", y="Abundance", fill="Genus") +
+  facet_grid(~sample_id, drop=TRUE, scales="free_x") +
+  geom_hline(yintercept=1000)
+
+#Plot rarefaction curve
+rarecurve(otu_table(ps1), step=50, cex=0.5)
 
 #Calculate for each primer
 #ps1 <- subset_samples(ps1,target_subfragment=="fwhF2-fwhR2n")
@@ -1005,10 +1068,100 @@ ps.merged <- filter_taxa(ps.merged, function(x) mean(x) > 0, TRUE) #Drop missing
 
 ```
 
-## Check for concordance between mock
+## Check for concordance between mock and real
 
 
 ```{r PCA}
+# Read in expected table
+exp <- read_csv("sample_data/expected_quant.csv") %>%
+  gather(Species, Abundance, -X1) %>%
+  mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
+  filter(str_detect(X1,"D100M|D250M|D500M|D1000M|DLarv")) %>%
+  drop_na() %>%
+  set_colnames(c("Sample","Species","Actual"))
+
+# Prepare observed table
+sam <- ps.merged %>%
+  speedyseq::tax_glom("Species") %>%
+  transform_sample_counts(function (x) x/sum(x)) %>%
+  speedyseq::psmelt() %>%
+  mutate(Species = str_replace(Species, pattern="Drosophila_mauritiana/simulans", replacement= "Drosophila_simulans")) %>%
+  mutate(Species = str_replace(Species, pattern="Drosophila_albomicans", replacement= "Drosophila_immigrans")) %>%
+  filter(Sample %in% exp$Sample) %>%
+  arrange(Abundance) %>%
+  distinct() %>%
+  select(Sample, Species, Abundance)
+
+# Join tables
+joint <- sam %>%
+  filter(Species %in% exp$Species) %>%
+  group_by(Species, Sample) %>% 
+  summarise(Abundance = sum(Abundance)) %>%
+  ungroup() %>%
+  #mutate(Type = ifelse(Sample %in% controls, "Est", "Eval")) %>%
+  bind_rows(exp %>%
+              mutate(Actual = replace_na(Actual, 0)) %>%
+              rename(Abundance = Actual) %>%
+              filter(str_detect(Sample, pattern="-ex1"))  %>%
+              mutate(Sample = str_replace_all(Sample, pattern="-ex1", replacement="-A")
+            
+            )) %>%
+  group_by(Sample) %>%  
+  mutate_at(vars(Abundance), ~ . / sum(.)) %>% # Convert to proportions
+  #mutate(Abundance = Abundance + 0.0001) %>% # Add pseudocount
+  #mutate(Abundance = clr(Abundance)) %>%
+  ungroup()
+
+# PCA
+joint_pca <- joint %>%
+  pivot_wider(
+    names_from = Species, #  Switch this to transpose
+    values_from = Abundance,
+    values_fill = list(Abundance=0),
+  ) %>%
+  mutate(Extract = Sample %>% str_replace_all(pattern="(-)(.*?)(?=$)", replacement="")) %>%
+  mutate(Mock = Sample %>% 
+           str_replace_all(pattern="(-)(.*?)(?=$)", replacement="") %>%
+           str_replace_all(pattern="(^)(.*?)(?<=M)", replacement="")) %>%
+  nest(data = everything()) %>%
+  mutate(pca = map(data, ~ prcomp(.x %>% select(-Sample, -Extract, -Mock), 
+                                  center = TRUE, scale = TRUE)),
+         pca_aug = map2(pca, data, ~augment(.x, data = .y))) 
+
+joint_pca$pca %>%
+  map(~tidy(.x, data = .y, "pcs")) %>%
+  as.data.frame() %>%
+  ggplot(aes(x = PC, y=percent)) +
+  geom_bar(stat="identity") + labs(x="PC",y="Variance Explained")
+
+
+library(RColorBrewer)
+col <- colorRampPalette(brewer.pal(11, "Spectral"))(25)
+
+joint_pca %>%
+  mutate(
+    pca_graph = map2(
+      .x = pca,
+      .y = data,
+      ~ autoplot(.x, loadings = TRUE, loadings.label = TRUE,
+                 loadings.label.repel = FALSE,
+                 data = .y, label = TRUE,
+                 label.label = "Sample",
+                 label.repel = TRUE, 
+                 colour='Extract') +
+       #theme_bw() +
+        labs(x = "Principal Component 1",
+             y = "Principal Component 2",
+             title = "First two principal components of PCA for expected and observed") +
+        coord_fixed()#+
+       # scale_colour_manual(values=col)
+    )
+  ) %>%
+  pull(pca_graph)
+
+
+## Heirarchial clustering
+
 
 # Output drosophila summary
 ps.merged %>% 
@@ -1020,63 +1173,18 @@ ps.merged %>%
   spread(key="sample_id", value="totalRA") %>%
   write.csv(file = "output/csv/unfiltered/drosophila_spp_sum.csv")
 
-# Read in expected table
-exp <- read_csv("sample_data/expected_quant.csv") %>%
-  gather(Species, Abundance, -X1) %>%
-  mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
-  filter(str_detect(X1,"D100M|D250M|D500M|D1000M|DLarv")) %>%
-  drop_na() %>%
-  set_colnames(c("Sample","Species","Actual"))
-
-# PCA on exp
-test <- exp %>%
-  pivot_wider(
-    names_from = Sample,
-    values_from = Actual,
-    values_fill = list(Actual=0),
-  ) %>%
-  column_to_rownames("Species") %>%
-  #group_by(Sample, Species) %>%
-  nest(data = everything()) %>%
-  mutate(pca = map(data, ~ prcomp(.x, 
-                                  center = TRUE, scale = TRUE)))
-
-library(broom)
-test$pca %>%
-  map(~tidy(.x, data = .y, "pcs")) %>%
-  as.data.frame() %>%
-  ggplot(aes(x = PC, y=percent)) +
-  geom_bar(stat="identity") + labs(x="PC",y="Variance Explained")
-
-test %>% 
-  mutate(pca_aug = map2(pca, data, ~augment(.x, data = .y))) %>%
-  unnest(pca_aug)
-
-test %>% 
-  mutate(pca_aug = map2(pca, data, ~augment(.x, data = .y))) %>%
-  unnest(pca_aug) %>%
-  ggplot(aes(x=.fittedPC1, y=.fittedPC2)) + geom_point(aes(color=.rownames),size=3, alpha=0.7) +
-  labs(x="PC1", y="PC2") +
-  theme(legend.position="top")
-
-# Mutate real one
-sam <- ps.merged %>%
-  speedyseq::tax_glom("Species") %>%
-  transform_sample_counts(function (x) x/sum(x)) %>%
-  speedyseq::psmelt() %>%
-  mutate(Species = str_replace(Species, pattern="Drosophila_mauritiana/simulans", replacement= "Drosophila_simulans")) %>%
-  filter(Sample %in% exp$Sample) %>%
-  arrange(Abundance) %>%
-  distinct() 
-
 ```
 
-
-## Process synthetic mock positive control
-
+# Detection of targets
 
 
-Identification of taxa that are poorly represented in an unsupervised manner can identify taxa that will have little to no effect on downstream analysis. Sufficient removal of these "low prevalance" features can enhance many analysis by focusing statistical testing on taxa common throughout the data. However, for our dataset the problem with prevalence filtering for our dataset is that we dont have many replicates of each psyllid species, and therefore there are some high abundance but low prevalence ASV's we dont want to lose.
+# Other taxa
+
+## Alpha diversity
+
+Phylogenetic diversity (Faiths PD)
+Species diversity
+Shannon diversity
 
 #
 
@@ -1116,6 +1224,11 @@ We will use 3 different methods to estimate the cross contamination rate:
 * Thirdly, we will use ROC analysis of false positives and false negatives for all taxa in the mocks.
 
 ## estimate cross contamination using positive control
+
+## Process synthetic mock positive control
+
+Identification of taxa that are poorly represented in an unsupervised manner can identify taxa that will have little to no effect on downstream analysis. Sufficient removal of these "low prevalance" features can enhance many analysis by focusing statistical testing on taxa common throughout the data. However, for our dataset the problem with prevalence filtering for our dataset is that we dont have many replicates of each psyllid species, and therefore there are some high abundance but low prevalence ASV's we dont want to lose.
+
 
 ```{r}
 #Process positive controls

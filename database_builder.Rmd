@@ -1,6 +1,8 @@
 ---
 title: "Database builder"
 output: html_notebook
+editor_options: 
+  chunk_output_type: console
 ---
 
 ## Load packages
@@ -21,18 +23,28 @@ library(taxreturn)
 #usethis::edit_r_environ()
 ```
 
-## Download and curate data for all insecta
+## Download data for all insecta
 
 ```{r retrieve sequences, eval=FALSE, include=FALSE}
-
 ## Fetch sequences from GenBank 
-genbank <- fetchSeqs("Insecta", database="genbank", out.dir="genbank", downstream="Order",quiet=FALSE, marker="COI OR COI OR COX1 OR COXI", output = "gb-binom",compress=FALSE, cores=3)
+genbank <- fetchSeqs("Insecta", database="genbank", out.dir="reference/insecta/genbank", downstream="Order", quiet=FALSE, marker="COI OR COI OR COX1 OR COXI", output = "gb-binom",compress=FALSE, cores=1)
 
 ## Fetch sequences from BOLD
-bold <- fetchSeqs("Insecta", database="bold", out.dir="bold", downstream="Order",quiet=FALSE, marker="COI-5P", output = "gb-binom",compress=FALSE, cores=3)
+bold <- fetchSeqs("Insecta", database="bold", out.dir="reference/insecta/bold", downstream="Order",quiet=FALSE, marker="COI-5P", output = "gb-binom",compress=FALSE, cores=3)
 
 ## Fetch mitochondrial genomes from genbank
-fetchSeqs("Insecta", database="genbank", out.dir="genbank", quiet=FALSE, marker="mitochondria", output = "gb-binom", compress=TRUE, cores=2)
+fetchSeqs("Insecta", database="genbank", out.dir="reference/insecta/genbank", quiet=FALSE, marker="mitochondria", output = "gb-binom", compress=TRUE, cores=2)
+
+```
+
+## Download data for Arachnida
+
+```{r retrieve arachnid seqs, eval=FALSE, include=FALSE}
+## Fetch sequences from GenBank 
+fetchSeqs("Arachnida", database="genbank", out.dir="genbank", downstream="Order", quiet=FALSE, output = "gb-binom", compress=TRUE, cores=1)
+
+## Fetch sequences from BOLD
+fetchSeqs("Arachnida", database="bold", out.dir="reference/arachnida/bold", downstream=TRUE, quiet=FALSE, downto="Order", marker="COI-5P", output = "gb-binom",compress=FALSE, cores=1)
 
 ```
 
@@ -47,8 +59,37 @@ outgroup_kingdoms <- c("Bacteria", "Fungi")
 
 outgroups <- c(outgroup_classes, outgroup_phyla, outgroup_kingdoms)
 
-fetchSeqs(outgroups, database="genbank", out.dir="outgroups", quiet=FALSE, output = "gb-binom", subsample = 100, compress=TRUE, cores=1)
+fetchSeqs(outgroups, database="genbank", out.dir="reference/outgroups", quiet=FALSE, output = "gb-binom", subsample = 100, compress=TRUE, cores=1)
 ```
+
+## Merge and summarise origin of sequences
+
+```{R}
+#read in all fastas and merge
+library(Biostrings)
+
+seqs <- c(readDNAStringSet(list.files("reference/insecta/genbank", pattern = ".fa", full.names = TRUE)),
+          readDNAStringSet(list.files("reference/insecta/bold", pattern = ".fa", full.names = TRUE)),
+          readDNAStringSet(list.files("reference/arachnida/genbank", pattern = ".fa", full.names = TRUE)),
+          readDNAStringSet(list.files("reference/arachnida/bold", pattern = ".fa", full.names = TRUE)),
+          readDNAStringSet(list.files("reference/outgroups", pattern = ".fa", full.names = TRUE))
+          )
+# Get heirarchy and summarise?
+
+# Summarise unique species and sequences
+
+
+# Dereplicate
+uniqSeqs <- seqs[unique(names(seqs)),] # Remove those sequnce names that are identical across both databases
+
+## summarise number of merged
+
+# Format
+# STAGE: # SPECIES # SEQUENCES
+
+
+```
+
 
 ## Clean sequences
 
@@ -61,17 +102,12 @@ filt <- folmer[lengths(folmer)==658]
 
 #Filtered was then aligned in MAFFT - mafft folmer_insecta_fullength.fa > folmer_insecta_fullength_aligned.fa
 #alignment was then manually curated in geneious primer
-folmer_curated <-  ape::read.dna("folmer_insecta_fullength_aligned_curated.fa",format="fasta")
+folmer_curated <-  ape::read.dna("reference/folmer_insecta_fullength_aligned_curated.fa",format="fasta")
 model <- aphid::derivePHMM(folmer_curated)
 
-#read in all fastas and merge
-library(Biostrings)
-gbSeqs <-  readDNAStringSet(sort(list.files("genbank", pattern = ".fa", full.names = TRUE)))
-boldSeqs <-  readDNAStringSet(sort(list.files("bold", pattern = ".fa", full.names = TRUE)))
-mergedSeqs <- c(gbSeqs, boldSeqs)
-uniqSeqs <- mergedSeqs[unique(names(mergedSeqs)),] # Remove those sequnce names that are identical across both databases
+filtered <- clean_seqs(uniqSeqs, model, minscore = 500, cores=2, shave=TRUE, maxNs = 0)
 
-filtered <- clean_seqs(uniqSeqs, model,minscore = 100, cores=2, shave=TRUE,maxNs = 0)
+# Summarise number of sequences and species left
 
 
 #filter using insect::purge - Could wrap this in a function for ease of use?
@@ -99,7 +135,6 @@ db <- db %>%
   dplyr::filter(!str_detect(name,"[0-9]"))%>% 
   dplyr::filter(!str_detect(name,"[:punct:]"))
 
-
 filtered <- ape::read.FASTA(gzfile("Sequences/filtered.fa.gz"))
 
 remove <- names(filtered)  %>% 
@@ -110,11 +145,15 @@ remove <- names(filtered)  %>%
 
 subset <- filtered[names(filtered) %in% remove$names]
 
+# Summarise number of sequences and species left
+
 rm(filtered)
 
 resolved <- resolve_synonyms(subset, subspecies=FALSE, quiet=FALSE, missing="ignore", higherrank=FALSE, fuzzy=TRUE)
 
 insect::writeFASTA(resolved, file="Sequences/resolved.fa.gz",compress=TRUE)
+
+# Summarise number of sequences and species left
 
 #Check differences in names
 length(names(resolved)[which(!names(resolved) %in% names(subset))])
@@ -140,6 +179,9 @@ purged  <- insect::purge(resolved, db = db, level = "Genus", confidence = 0.8, t
 names(purged) <- attributes(purged)$oldnames
 insect::writeFASTA(purged,file="Sequences/purged.fa.gz",compress=TRUE)
 
+
+# Summarise number of sequences and species left
+
 ##### PRUNE GROUP SIZES
 
 purged <- readFASTA("Sequences/purged.fa.gz")
@@ -161,4 +203,108 @@ pruned <- ShortRead::clean(pruned)
 
 writeXStringSet(pruned, filepath="Sequences/pruned.fa.gz",compress = TRUE, format = "fasta" )
 
+```
+
+## Trim to primer regions
+
+
+```{r Create taxonomic classifier database}
+#Trim to primer region using virtualPCR from insect package
+amplicon <- virtualPCR(filtseqs, up = "ACWGGWTGRACWGTNTAYCC",down= "ARYATDGTRATDGCHCCDGC",cores=3, rcdown = TRUE, trimprimers = TRUE)
+writeFASTA(amplicon,"gb_trimmed.fa")
+
+```
+
+## Train IDTAXA
+
+```{r IDTAXA}
+library(DECIPHER)
+
+merged <- readDNAStringSet("insecta_arachnida_28_10_19/insecta_arachnida_rdp_genus.fa.gz")
+
+#Reformat to complete taxonomic heirarchy 
+heirarchy <- reformat_heirarchy(amplicon, db=db, quiet=FALSE)
+
+#Convert to DNAstringset for DECIPHER
+seqs <- heirarchy %>% as.character %>% lapply(.,paste0,collapse="") %>% unlist %>% DNAStringSet
+
+
+# As taxonomies are encoded in the sequence names rather than a separate file, use:
+taxid <- NULL
+seqs <- RemoveGaps(seqs)
+seqs <- OrientNucleotides(seqs)
+
+# obtain the taxonomic assignments
+groups <- names(seqs) # sequence names
+
+#Replace metazoa with Root
+names(seqs) <- names(seqs) %>% str_replace(pattern="Metazoa", replacement="Root")
+
+# assume the taxonomy begins with 'Root;' 
+groups <- gsub("(.*)(Root;)", "\\2", groups) # extract the group label - May need to use a wild card for the root label as its split by 3 genes!
+groupCounts <- table(groups)
+u_groups <- names(groupCounts) # unique groups
+length(u_groups) # number of groups
+ 
+# Pruning training set
+
+maxGroupSize <- 10 # max sequences per label (>= 1)
+remove <- logical(length(seqs))
+for (i in which(groupCounts > maxGroupSize)) {
+  index <- which(groups==u_groups[i])
+  keep <- sample(length(index),
+  maxGroupSize)
+  remove[index[-keep]] <- TRUE
+}
+sum(remove) # number of sequences eliminated
+
+
+# Training the classifier
+maxIterations <- 3 # must be >= 1
+allowGroupRemoval <- TRUE
+probSeqsPrev <- integer() # suspected problem sequences from prior iteration
+for (i in seq_len(maxIterations)) {
+  cat("Training iteration: ", i, "\n", sep="")
+  # train the classifier
+  trainingSet <- LearnTaxa(seqs[!remove],
+  names(seqs)[!remove],
+  taxid)
+  
+  # look for problem sequences
+  probSeqs <- trainingSet$problemSequences$Index
+  if (length(probSeqs)==0) {
+    cat("No problem sequences remaining.\n")
+    break
+  } else if (length(probSeqs)==length(probSeqsPrev) &&
+  all(probSeqsPrev==probSeqs)) {
+    cat("Iterations converged.\n")
+    break
+    }
+  if (i==maxIterations)
+  break
+  probSeqsPrev <- probSeqs
+  
+  # remove any problem sequences
+  index <- which(!remove)[probSeqs]
+  remove[index] <- TRUE # remove all problem sequences
+  if (!allowGroupRemoval) {
+    # replace any removed groups
+    missing <- !(u_groups %in% groups[!remove])
+    missing <- u_groups[missing]
+    if (length(missing) > 0) {
+    index <- index[groups[index] %in% missing]
+    remove[index] <- FALSE # don't remove
+    }
+  }
+}
+sum(remove) # total number of sequences eliminated
+length(probSeqs) # number of remaining problem sequences
+
+# View the results of training
+
+trainingSet
+plot(trainingSet)
+
+#Write out training set
+saveRDS(trainingSet, file="reference/idtaxa.rds")
 ```
