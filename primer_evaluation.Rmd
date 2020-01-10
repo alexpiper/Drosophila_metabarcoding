@@ -98,7 +98,7 @@ write_csv(lineage, "primer_evaluation/pestlist.csv")
 
 ```
 
-## Figure 1 - Summary of pes tlist
+## Figure 1 - Summary of pestlist
 
 ```{r Figure 1}
 
@@ -147,7 +147,6 @@ Fig1b <- group_by(lineage, Order, Source) %>%
             color="black", fontface="bold", alpha=0.6, inherit.aes = FALSE)
 
 ```
-
 
 
 ## Subset DB to pest orders
@@ -213,7 +212,7 @@ gg.pass <- pass %>%
 
 ```
 
-# Figure 1 - Primer placement
+# Figure 2 - Primer placement
 
 ## Output pest families
 
@@ -602,7 +601,7 @@ Either add the N's, or generate a consensus, do an alignment to the consensus, g
 ```{r Primerminer, message=FALSE}
 library(PrimerMiner)
 
-primers <- read_csv("primer_candidates.csv")
+primers <- read_csv("primer_evaluation/primer_candidates.csv")
 Alignments <- sort(list.files("reference/pestfamilies/", pattern = ".fa.gz", full.names = TRUE)) # Read fasta filenames
 
 names <- Alignments %>%
@@ -673,7 +672,7 @@ for (i in 1:nrow(dat.passed)) {
 
 ```{r plot figure 2}
 #Read in all files
-files <- sort(list.files(list.dirs("PrimerMiner/"), pattern = ".csv", full.names = TRUE))
+files <- sort(list.files(list.dirs("primer_evaluation/PrimerMiner/"), pattern = ".csv", full.names = TRUE))
 
 dat <- files %>% 
   map_dfr(read_csv, col_types= cols_only(Template=col_character(),
