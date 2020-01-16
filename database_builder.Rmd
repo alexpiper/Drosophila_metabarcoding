@@ -62,44 +62,22 @@ outgroups <- c(outgroup_classes, outgroup_phyla, outgroup_kingdoms)
 fetchSeqs(outgroups, database="genbank", out.dir="reference/outgroups", quiet=FALSE, output = "gb-binom", subsample = 100, compress=TRUE, cores=1)
 ```
 
-## Merge and summarise origin of sequences
+## Merge and clean sequences
 
-```{R}
-#read in all fastas and summarise number of sequences and taxa.
-library(Biostrings)
+```{r merge and clean}
+seqs <- c(readDNAStringSet(list.files("reference/insecta/genbank", pattern = ".fa", full.names = TRUE)),
+          readDNAStringSet(list.files("reference/insecta/bold", pattern = ".fa", full.names = TRUE)),
+          readDNAStringSet(list.files("reference/arachnida/genbank", pattern = ".fa", full.names = TRUE)),
+          readDNAStringSet(list.files("reference/arachnida/bold", pattern = ".fa", full.names = TRUE)),
+          readDNAStringSet(list.files("reference/outgroups", pattern = ".fa", full.names = TRUE)))
 
-insecta_genbank <- readDNAStringSet(list.files("reference/insecta/genbank", pattern = ".fa", full.names = TRUE))
-insecta_bold <- readDNAStringSet(list.files("reference/insecta/bold", pattern = ".fa", full.names = TRUE))
-arachnida_genbank <- readDNAStringSet(list.files("reference/arachnida/genbank", pattern = ".fa", full.names = TRUE))
-arachnida_bold <- readDNAStringSet(list.files("reference/arachnida/bold", pattern = ".fa", full.names = TRUE))
-outgroups_genbank <- readDNAStringSet(list.files("reference/outgroups", pattern = ".fa", full.names = TRUE))
-# Unique sequences
-
-seqs <- c(insecta_genbank, insecta_bold, arachnida_genbank, arachnida_bold, outgroups_genbank)
-# Get heirarchy and summarise unique species as well?
+# write out merged seqs
+writeXStringSet(seqs, filepath = "reference/mergedseqs.fa.gz", compress=TRUE)
 
 # Dereplicate
 uniqSeqs <- seqs[unique(names(seqs)),] # Remove those sequnce names that are identical across both databases
-
 writeXStringSet(uniqSeqs, "reference/uniqSeqs.fa.gz", width=5000, compress=TRUE)
-## summarise number of sequences
 
-tracker <- tribble(
-  ~stage, ~species, ~seqs,
-  "insecta_genbank", NA, length(insecta_genbank),
-  "insecta_bold", NA, length(insecta_bold),
-  "arachnida_genbank", NA, length(arachnida_genbank),
-  "arachnida_bold", NA, length(arachnida_bold),
-  "outgroups", NA, length(outgroups_genbank),
-  "merged", NA, length(seqs),
-  "unique", NA, length(uniqSeqs)
-)
-```
-
-
-## Clean sequences
-
-```{r Clean sequences}
 #build PHMM from midori longest - sequences need to be same length
 midori <-  Biostrings::readDNAStringSet("MIDORI_LONGEST_20180221_COI.fasta")
 insecta_midori <- as.DNAbin(midori[str_detect(names(midori),pattern=";Insecta;"),])
@@ -111,16 +89,11 @@ filt <- folmer[lengths(folmer)==658]
 folmer_curated <-  ape::read.dna("reference/folmer_insecta_fullength_aligned_curated.fa",format="fasta")
 model <- aphid::derivePHMM(folmer_curated)
 
-filtered <- clean_seqs(uniqSeqs, model, minscore = 500, cores=2, shave=TRUE, maxNs = 0)
+filtered <- clean_seqs(uniqSeqs, model, minscore = 400, cores=2, shave=TRUE, maxNs = 0)
 insect::writeFASTA(filtered, file="reference/filtered.fa.gz",compress=TRUE)
 
-# Summarise number of sequences and species left
-
-#filter using insect::purge - Could wrap this in a function for ease of use?
-db <- insect::taxonomy(db = "NCBI", synonyms = TRUE)
-#filter db
-
-db <- db %>%
+# Remove non-binomial species names
+db <- insect::taxonomy(db = "NCBI", synonyms = TRUE) %>%
   filter(!rank %in% c("varietas","subspecies","species subgroup")) %>%
   dplyr::filter(!str_detect(name, fixed("sp."))) %>%
   dplyr::filter(!str_detect(name, fixed("spp."))) %>%
@@ -141,8 +114,6 @@ db <- db %>%
   dplyr::filter(!str_detect(name,"[0-9]"))%>% 
   dplyr::filter(!str_detect(name,"[:punct:]"))
 
-filtered <- ape::read.FASTA(gzfile("Sequences/filtered.fa.gz"))
-
 remove <- names(filtered)  %>% 
   str_split_fixed(";", n = 2) %>% 
   as_tibble() %>%
@@ -151,18 +122,15 @@ remove <- names(filtered)  %>%
 
 subset <- filtered[names(filtered) %in% remove$names]
 insect::writeFASTA(subset, file="reference/subset.fa.gz",compress=TRUE)
-# Summarise number of sequences and species left
-rm(filtered)
 
-resolved <- resolve_synonyms(subset, subspecies=FALSE, quiet=FALSE, missing="ignore", higherrank=FALSE, fuzzy=TRUE)
+# resolve synonyms
+resolved <- resolve_taxonomy(subset, subspecies=FALSE, quiet=FALSE, missing="ignore", higherrank=FALSE, fuzzy=TRUE)
 
-insect::writeFASTA(resolved, file="Sequences/resolved.fa.gz",compress=TRUE)
-
-# Summarise number of sequences and species left
-
-#Check differences in names
+#Check differences in names & Write out
 length(names(resolved)[which(!names(resolved) %in% names(subset))])
-rm(subset)
+insect::writeFASTA(resolved, file="reference/resolved.fa.gz", compress=TRUE)
+
+# Filter misannotated taxonomy
 
 #Save old names into attributes
 attributes(resolved)$oldnames <- names(resolved)
@@ -181,59 +149,145 @@ purged  <- insect::purge(resolved, db = db, level = "Genus", confidence = 0.8, t
 
 #Restore old names
 names(purged) <- attributes(purged)$oldnames
-insect::writeFASTA(purged,file="Sequences/purged.fa.gz",compress=TRUE)
+insect::writeFASTA(purged,file="reference/purged.fa.gz",compress=TRUE)
 
+# Filter for stop codons
+codon_filt <- taxreturn::codon_filter(purged)
 
-# Summarise number of sequences and species left
+# Prune large group sizes down to 5
+pruned <- prune_groups(as.DNAbin(codon_filt), maxGroupSize = 5, discardby="length",dedup=TRUE, quiet = FALSE)
 
-##### PRUNE GROUP SIZES
-
-#purged <- readFASTA("Sequences/purged.fa.gz")
-
-#Prune group sizes down to 5 - Is de-duplication actually a good thing? this may bias towards bad singleton sequences?
-pruned <- prune_groups(purged, maxGroupSize = 5, discardby="length",dedup=TRUE, quiet = FALSE)
-
-#Change to complete taxonomic heirarchy
+# Reformat to complete taxonomic heirarchy
 pruned <- reformat_heirarchy(pruned, ranks = c("kingdom","phylum", "class", "order", "family", "genus", "species"), quiet=FALSE)
-
-#Convert to DNAStringset
-save <- pruned
-
-pruned <-  pruned %>% as.character %>% lapply(.,paste0,collapse="") %>% unlist %>% DNAStringSet
-alphabetFrequency(pruned, collapse=TRUE)
-
-pruned <- replaceAmbiguities(pruned,new="N")
-pruned <- ShortRead::clean(pruned)
-
-writeXStringSet(pruned, filepath="Sequences/pruned.fa.gz",compress = TRUE, format = "fasta" )
-
+insect::writeFASTA(pruned, file="reference/pruned.fa.gz", compress=TRUE)
 ```
+
+
+## Summarise sequences lost at each stage
+```{r sequence tracker}
+# Create read origins table
+origin <- bind_rows(
+  #Genbank Insecta
+  fasta.index(list.files("reference/insecta/genbank", pattern = ".fa", full.names = TRUE)) %>%
+    mutate(seqid = desc %>%
+    str_replace(pattern="(\\|)(.*?)(?=$)", replacement="")) %>%
+  mutate(origin = "genbank_insecta") %>%
+  select(origin, seqid),
+  #BOLD Insecta
+  fasta.index(list.files("reference/insecta/bold", pattern = ".fa", full.names = TRUE)) %>%
+    mutate(seqid = desc %>%
+    str_replace(pattern="(\\|)(.*?)(?=$)", replacement="")) %>%
+  mutate(origin = "bold_insecta") %>%
+  select(origin, seqid),
+  #Genbank Arachnida
+  fasta.index(list.files("reference/arachnida/genbank", pattern = ".fa", full.names = TRUE)) %>%
+    mutate(seqid = desc %>%
+    str_replace(pattern="(\\|)(.*?)(?=$)", replacement="")) %>%
+  mutate(origin = "genbank_arachnida") %>%
+  select(origin, seqid),
+  #BOLD Arachnida
+  fasta.index(list.files("reference/arachnida/bold", pattern = ".fa", full.names = TRUE)) %>%
+    mutate(seqid = desc %>%
+    str_replace(pattern="(\\|)(.*?)(?=$)", replacement="")) %>%
+  mutate(origin = "bold_arachnida") %>%
+  select(origin, seqid),
+  #Outgroups
+  fasta.index(list.files("reference/outgroups", pattern = ".fa", full.names = TRUE)) %>%
+    mutate(seqid = desc %>%
+    str_replace(pattern="(\\|)(.*?)(?=$)", replacement="")) %>%
+  mutate(origin = "outgroups") %>%
+  select(origin, seqid),
+) %>%
+# Remove sequences imported from BOLD to genbank
+  mutate(Duplicated = case_when(
+    duplicated(seqid) & str_detect(origin, "bold") ~ TRUE,
+    TRUE ~ FALSE
+    )) %>%
+  filter(!Duplicated) %>%   
+  select(-Duplicated)
+
+
+## summarise number of sequences at each stage and their origins
+tracker <- bind_rows(
+                  taxreturn::summarise_fasta("reference/mergedseqs.fa.gz", label="merged", origin=origin),
+                  taxreturn::summarise_fasta("reference/uniqSeqs.fa.gz", label="unique", origin=origin),
+                  taxreturn::summarise_fasta("reference/filtered.fa.gz", label="phmm_filtered", origin=origin),
+                  taxreturn::summarise_fasta("reference/subset.fa.gz", label="subset", origin=origin),
+                  taxreturn::summarise_fasta("reference/resolved.fa.gz", label="resolved", origin=origin),
+                  taxreturn::summarise_fasta("reference/purged.fa.gz", label="purged", origin=origin),
+                  taxreturn::summarise_fasta("reference/codon_filt.fa.gz", label="codon_filt", origin=origin),
+                  taxreturn::summarise_fasta("reference/pruned.fa.gz", label="pruned", origin=origin)
+) %>%
+  mutate(label = factor(label, levels=c("merged", "unique", "phmm_filtered", "subset", "resolved", "purged", "codon_filt", "pruned" ))) %>%
+  pivot_longer(cols=starts_with("n"),
+               names_to = "Type",
+               values_to = "value"
+               )
+
+gg.cleaning <- ggplot(tracker, aes(x=label, y=value, group=origin, fill=origin)) +
+  geom_bar(stat="identity") +
+  facet_wrap(~Type, nrow=2, ncol=1, scales = "free") +
+  scale_fill_brewer(palette="Spectral") +
+  xlab("Filter stage") +
+  ylab("# Sequences") +
+  theme_bw() + 
+  scale_y_continuous(labels = scales::comma)
+```
+
+# Reformat and Merge in inhouse sequences
+```{r}
+# read in sequences
+seqs <- readDNAStringSet(list.files("reference/inhouse/", pattern = ".fa", full.names = TRUE))
+
+# Get ncbi taxid
+db <- get_ranked_lineage(synonyms = TRUE, force=FALSE)
+
+# Get heirarchy
+names(seqs) <- names(seqs) %>%
+  str_split_fixed(pattern="_", n=2) %>%
+  as_tibble() %>%
+  mutate(tax_name = str_replace(V2, "_", " ")) %>%
+  mutate(tax_name = case_when(
+    tax_name %in% (anti_join(., db, by="tax_name") %>% pull(tax_name)) ~ tax_name %>% str_replace(pattern="(\\ )(.*?)(?=$)", replacement=""),
+    !tax_name %in% (anti_join(., db, by="tax_name") %>% pull(tax_name)) ~ tax_name
+  )) %>%
+  left_join(db, by="tax_name") %>% # DUPLICATES HAPPENING HERE!
+  filter(!duplicated(V1)) %>%
+  mutate(genus = case_when(
+    is.na(genus) ~ tax_name,
+    !is.na(genus) & !str_detect(tax_name, pattern="\\ ") & !tax_name == genus ~ tax_name,
+    TRUE ~ genus
+  )) %>%
+  unite(col=tax, c("kingdom","phylum", "class", "order", "family", "genus","V2"), sep=";" ) %>%
+  unite(col=acc, c("V1", "tax_id"), sep="|") %>%
+  unite(col = names, c("acc", "tax"), sep=";") %>%
+  mutate(names = str_replace(names, pattern="_", replacement=" ")) %>%
+  pull(names)
+
+#filt using phmm
+folmer_curated <-  ape::read.dna("reference/folmer_insecta_fullength_aligned_curated.fa", format="fasta")
+model <- aphid::derivePHMM(folmer_curated)
+
+filtered <- clean_seqs(seqs, model, minscore = 200, cores=2, shave=TRUE, maxNs = 0)
+
+# Filter for stop codons
+codon_filt <- taxreturn::codon_filter(filtered %>% as.character %>% lapply(.,paste0,collapse="") %>% unlist %>% DNAStringSet)
+
+#merge
+mergedseqs <- c((insect::readFASTA(file="reference/pruned.fa.gz")), as.DNAbin(codon_filt))
+
+insect::writeFASTA(mergedseqs, file="merged_final.fa.gz")
+```
+
+# Create reference set for fwhf2-fwhR2n region of COI
 
 ## Trim to primer regions
 
-
 ```{r Create taxonomic classifier database}
-#Trim to primer region using virtualPCR from insect package
-amplicon <- virtualPCR(filtseqs, up = "ACWGGWTGRACWGTNTAYCC",down= "ARYATDGTRATDGCHCCDGC",cores=3, rcdown = TRUE, trimprimers = TRUE)
+#Trim to primer region using virtualPCR from insect package - using BF1 and BR1 primers
+amplicon <- virtualPCR(mergedseqs, up = "ACWGGWTGRACWGTNTAYCC",down= "ARYATDGTRATDGCHCCDGC", cores=3, rcdown = TRUE, trimprimers = TRUE)
 writeFASTA(amplicon,"gb_trimmed.fa")
 
-```
-
-
-## Track sequences lost at each stage
-```{r}
-## summarise number of sequences
-
-tracker <- tribble(
-  ~stage, ~species, ~seqs,
-  "insecta_genbank", NA, length(readDNAStringSet(list.files("reference/insecta/genbank", pattern = ".fa", full.names = TRUE))),
-  "insecta_bold", NA, length(readDNAStringSet(list.files("reference/insecta/bold", pattern = ".fa", full.names = TRUE))),
-  "arachnida_genbank", NA, length(readDNAStringSet(list.files("reference/arachnida/genbank", pattern = ".fa", full.names = TRUE))),
-  "arachnida_bold", NA, length(readDNAStringSet(list.files("reference/arachnida/bold", pattern = ".fa", full.names = TRUE))),
-  "outgroups", NA, length(readDNAStringSet(list.files("reference/outgroups", pattern = ".fa", full.names = TRUE))),
-  "merged", NA, length(seqs),
-  "unique", NA, length( readDNAStringSet("reference/uniqSeqs.fa.gz"))
-)
 ```
 
 ## Train IDTAXA
