@@ -285,7 +285,7 @@ Is there anyway to do an entropy measurement, or consensus alignment or somethin
 Here, information content is defined by the relative entropy of a column in the alignment (Yu et al., 2015), which is higher for conserved columns. The relative entropy is based on the background distribution of letter-frequencies in the alignment.
 
 ```{r entropy}
-path <- "primer_evaluation/pestorders/"
+path <- "primer_evaluation/pestfamilies/"
 vec <- sort(list.files(path, pattern = ".fa.gz", full.names = TRUE)) # Read fasta filenames
 length(vec)
 
@@ -302,11 +302,13 @@ dat <- vector("list",length=length(vec))
 for (i in 1:length(vec)) {
   file <- vec[i]
   seqs <- readDNAStringSet(file)
+  #frame <- median(taxreturn::get_reading_frame(seqs))
+  #seqs <- Biostrings::translate(seqs, genetic.code =getGeneticCode("SGC4"), no.init.codon=TRUE )
   
   #if(max(width(seqs)) == 658){
   values <- as_tibble(cbind(names[i], MaskAlignment(seqs, type="values",windowSize=1))) %>%
-    rename(Order = `names[i]`) %>%
-    mutate(Order = as.character(Order)) %>%
+    rename(Family = `names[i]`) %>%
+    mutate(Family = as.character(Family)) %>%
     mutate(pos = rownames(.))
   dat[[i]] <- values
  # }
@@ -323,17 +325,38 @@ pestlist <- read_csv("primer_evaluation/pestlist.csv") %>%
   #))
 
 #Set moving average function - Adjust smoothing (n=5?)
-ma <- function(x,n=5){stats::filter(x,rep(1/n,n), sides=2)}
+ma <- function(x,n=3){stats::filter(x,rep(1/n,n), sides=2)}
 
 
 ent <- bind_rows(dat) %>%
-  dplyr::select(Order, entropy, pos) %>%
-  mutate(ma = as.numeric(ma(entropy, n = 6)) %>%
+  dplyr::select(Family, entropy, pos) %>%
+  mutate(pos = as.numeric(pos)) %>%
+  filter(pos > 2) %>%
+  mutate(ma = as.numeric(ma(entropy, n = 3)) %>%
           replace_na(0))  %>%
-  left_join(pestlist, by="Order")# %>%
+  mutate(annot = case_when(
+    pos %in% seq(from=1, to=2, by=1) ~ "Loop 0",
+    pos %in% seq(from=3, to=78, by=1) ~ "Helix 1",
+    pos %in% seq(from=79, to=103, by=1)~ "Loop 1-2",
+    pos %in% seq(from=104, to=211, by=1)~ "Helix 2",    
+    pos %in% seq(from=212, to=235, by=1)~ "Loop 2-3",   
+    pos %in% seq(from=213, to=304, by=1)~ "Helix 3", 
+    pos %in% seq(from=305, to=373, by=1)~ "Loop 3-4", 
+    pos %in% seq(from=374, to=466, by=1)~ "Helix 4", 
+    pos %in% seq(from=467, to=499, by=1)~ "Loop 4-5", 
+    pos %in% seq(from=500, to=598, by=1)~ "Helix 5", 
+    pos %in% seq(from=599, to=634, by=1)~ "Loop 5-6", 
+    pos %in% seq(from=635, to=658, by=1)~ "Helix 6", 
+  )) %>%
+  mutate(structure = case_when(
+    str_detect(annot, "Helix") ~ "Helix",
+    str_detect(annot, "Loop") ~ "Loop",
+  )) %>%
+  left_join(pestlist, by="Family") %>%
  # right_join(sw_220, by="Family") %>%
-  arrange(Order)
+  arrange(Family) 
 ```
+
 
 ## Plotting Figure 1
 
@@ -367,26 +390,38 @@ primers <- bind_rows(Fprimers,Rprimers)
 Fprimerpos <- seq(1,nrow(primers %>% filter(Dir=="Forward")),1)/1000
 Rprimerpos <- seq(1,nrow(primers %>% filter(Dir=="Reverse")),1)/1000
 
-
-##Ridge & SW dot plot
-gg.ridge <- ggplot(ent, aes(x = as.numeric(pos), y=Order,height=ma, group=Order, fill=ma)) + 
-  geom_density_ridges_gradient(stat= "identity", scale = 4,size=0.5, gradient_lwd=0) +
-  scale_fill_viridis(option="C", direction = 1, begin=0, end=1) +
-  theme_pubclean() +    
+## GG Line
+gg.line <- ggplot(ent, aes(x = pos, y=ma*2)) + 
+  geom_line()+
+  facet_wrap(~Order, ncol = 1, strip.position="right") +
+  theme_void() +    
   theme(legend.position = "none") +
           ylab("Orders of Pest insects") +
   xlab("Position within COI folmer region") +
+  #scale_fill_viridis(option="C", direction = 1, begin=0, end=1) +
   scale_x_continuous(limits = c(min(primers$Start), max(primers$Stop)),breaks=seq(0,600,50),expand=c(0,0))  #+
  #geom_point(data=ent[ent$pos==1,], aes(x=jitter(position,factor=5), y=Order), size = 1,color="white",alpha=0.5)
 
+# Test boxplot
+
+gg.box <- ggplot(ent, aes(x = pos, y=ma, group=pos, colour=structure)) + 
+  geom_boxplot(outlier.shape = NA)+
+  theme_classic() +    
+  theme(legend.position = "bottom") +
+  ylab("Entropy") +
+  xlab("Position within COI folmer region") +
+  scale_color_manual(values=c("#ca0020", "#0571b0")) +
+  scale_x_continuous(limits = c(min(primers$Start), max(primers$Stop)),breaks=seq(0,600,50),expand=c(0,0))  #+
+ #geom_point(data=ent[ent$pos==1,], aes(x=jitter(position,factor=5), y=Order), size = 1,color="white",alpha=0.5)
+
+
+
 ## Primer & SW density plot
-gg.primers <- ggplot(data=ent[ent$pos==1,], aes(x = as.numeric(position))) + 
-  geom_density(aes(x=position,fill=1),alpha=0.5, show.legend = FALSE) +
-  geom_rug(aes(x=jitter(position,factor=5)))+ #,colour=Order
+gg.primers <- ggplot(data=ent[ent$pos==1,], aes(x = as.numeric(position))) +
   geom_segment(data = primers %>% filter(Dir=="Forward"),
                aes(x = Start, xend = Stop,
                    y = Fprimerpos, yend = Fprimerpos,
-                   colour=Dir), size = 2, arrow = arrow(length = unit(0.3,"cm")),
+                   colour=Dir), size = 1, arrow = arrow(length = unit(0.3,"cm")),
                show.legend = FALSE) +
   geom_text(data = primers %>% filter(Dir=="Forward"),
             aes(x = Start, y = Fprimerpos,
@@ -395,7 +430,7 @@ gg.primers <- ggplot(data=ent[ent$pos==1,], aes(x = as.numeric(position))) +
   geom_segment(data = primers %>% filter(Dir=="Reverse"),
                aes(x = Stop, xend = Start,
                    y = Rprimerpos, yend = Rprimerpos,
-                   colour=Dir), size = 2,
+                   colour=Dir), size = 1,
                arrow = arrow(length = unit(0.3,"cm")),
                show.legend = FALSE) +
   geom_text(data = primers %>% filter(Dir=="Reverse"),
@@ -409,7 +444,7 @@ gg.primers <- ggplot(data=ent[ent$pos==1,], aes(x = as.numeric(position))) +
         axis.ticks = element_blank(),
         axis.title = element_blank())
 
-Fig1 <- gg.primers / gg.ridge 
+Fig1 <- gg.primers / gg.line / gg.box + plot_layout(heights=c(2,4, 1))
 ```
 
 
