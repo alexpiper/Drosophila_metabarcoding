@@ -214,7 +214,6 @@ gg.pass <- pass %>%
 ```
 
 
-
 ## Output pest families
 
 ```{r Subset to pests}
@@ -278,6 +277,133 @@ gg.pass <- pass %>%
 
 ```
 
+## Sliding window analysis
+
+
+Could we do sliding window with a clustered database? use kmer package to cluster? - then select the longest sequence
+
+Or is it worth doing a coarse entropy
+
+```{bash slurmjobscript }
+echo "Create individual R files for each fasta, and Sbatch job files"
+loc=$(pwd)
+TMPDIR=\$TMPDIR
+host=\hostname
+mkdir $loc/output/
+  
+  ls pestfamilies | sed -e '1p' -e '/.fa.gz/!d' | sort > test_ls_2
+declare -i files
+let files=$(grep -c ".fa.gz" test_ls_2)
+echo "#qsub file to run all slurm files" > queue_all_jobs
+###Make the header for the qsub files
+echo "#!/bin/bash
+#SBATCH --job-name r_slidingwin
+#SBATCH --nodes=1
+#SBATCH --ntasks=4
+#SBATCH --mem=120GB 
+#SBATCH --time=96:00:00
+echo '$host'
+echo $TMPDIR
+cd $TMPDIR
+mkdir job_dir
+cd job_dir" > script_header
+###Set variables & start while loop
+declare -i x
+x=1
+##Start while loop
+while [ $x -le $files ] 
+do
+##Make individual R script files	
+read_file=$(sed -n "${x}p" test_ls_2)
+sample=$(echo $read_file | awk -F . '{print $1}' )
+echo "file = '$read_file'" > R_header
+cat R_header base_sw.R > sw$sample.R
+##Create Job submission files
+echo "cp $loc/pests/$read_file .
+	cp $loc/sw$sample.R .
+#Load modules and run R scripts
+module load R
+Rscript sw$sample.R
+ 
+cp *.rds $loc/output/. " > temp_slurm_file
+###assembling components into queue all jobs file
+cat script_header temp_slurm_file > QA_swscript_$sample.slurm
+echo "sbatch QA_swscript_$sample.slurm" >> queue_all_jobs
+echo "rm QA_swscript_$sample.slurm" >> queue_all_jobs
+let x=x+1
+done
+#Cleanup
+rm script_header
+rm temp_slurm_file
+rm test_ls_2
+rm R_header
+echo "Queue files made. Please run queue_all_jobs script"
+```
+
+###  R Sliding window 
+```{r}
+library("spider")
+library("ape")
+library("DECIPHER")
+library("Biostrings")
+library("tidyverse")
+library("insect")
+#files <- list.files(path="reference/pests/",pattern=".fa.gz",full.names = TRUE)
+#file <- files[3]
+name <- basename(file) %>%
+  str_replace(".fa.gz","")
+message(name)
+seqs <- readFASTA(file)
+seqs <- as.matrix(seqs)
+# Genus and species names
+aa <- Biostrings::strsplit(dimnames(seqs)[[1]], split = ";")
+Genus <- sapply(aa, function(x) paste(x[7], sep = "_"))
+Spp <- sapply(aa, function(x) paste(x[8], sep = "_")) %>%
+  str_replace(pattern="\\ ", replacement="_")
+slidelist <- list()
+# summary statistics
+sum <- as.data.frame(as.matrix(dataStat(Spp, Genus)))
+rows <- rownames(sum)
+sum <- rbind(sum, nrow(seqs))
+rownames(sum) <- c(rows, "seqs")
+colnames(sum) <- name
+slidelist[[1]] <- sum
+####################### Sliding window analyses to identify a mini-barcode region #######################
+slidelist[[2]] <- slideAnalyses(seqs, Spp, width = 220, interval = 1, distMeasures = TRUE, treeMeasures = TRUE)
+slidelist[[3]] <- slideAnalyses(seqs, Spp, width = 420, interval = 1, distMeasures = TRUE, treeMeasures = TRUE)
+## Find conserved primer sites Using windows of 20, 25 and 30bp in length
+slidelist[[5]] <- slideAnalyses(seqs, Spp, width = 21, interval = 1, distMeasures = TRUE, treeMeasures = TRUE)
+saveRDS(slidelist, file = paste0(name, "_windowlist.rds"))
+```
+
+### Sliding window analysis
+
+```{r Figure 1}
+path <- "primer_evaluation/sliding_window/" # CHANGE ME to the directory containing all downloaded bold CSV files
+vec <- sort(list.files(path, pattern = ".rds", full.names = TRUE)) # Read fasta filenames
+length(vec)
+rank220 <- vector("list",length=length(vec))
+l <- 1
+for (l in 1:length(vec)) {
+  dat <- readRDS(vec[l])
+  rank220[[l]] <- rankSlidWin(dat[[2]], criteria = "mean_distance", num = 100) %>%
+    mutate(Family = basename(vec[l]) %>%
+    str_replace("_windowlist.rds","")
+           ) %>%
+    remove_rownames() %>%
+    #rownames_to_column("rank") %>%
+    mutate(rank= nrow(.):1)
+}
+
+sw220 <- bind_rows(rank220) %>%
+  mutate(winend = position + 220) %>%
+  subset(select=c("Family","position","winend", "rank")) %>%
+  rename(pos = position)
+
+```
+
+
+
 Is there anyway to do an entropy measurement, or consensus alignment or something across the entire family list to remove the problem of having different length sequences
 
 ## Get sequence entropy for orders
@@ -328,6 +454,11 @@ pestlist <- read_csv("primer_evaluation/pestlist.csv") %>%
 ma <- function(x,n=3){stats::filter(x,rep(1/n,n), sides=2)}
 
 
+# need to adjust for aligment start length!
+# MAke consensus sequence for each pest family and align to a reference coi (used for model)
+# get ranges on left of model, put in a data frame
+# left_join to ent, group by family, and add the buffer, then ungroup
+
 ent <- bind_rows(dat) %>%
   dplyr::select(Family, entropy, pos) %>%
   mutate(pos = as.numeric(pos)) %>%
@@ -353,7 +484,7 @@ ent <- bind_rows(dat) %>%
     str_detect(annot, "Loop") ~ "Loop",
   )) %>%
   left_join(pestlist, by="Family") %>%
- # right_join(sw_220, by="Family") %>%
+  left_join(sw220, by=c("Family", "pos")) %>%
   arrange(Family) 
 ```
 
@@ -390,22 +521,12 @@ primers <- bind_rows(Fprimers,Rprimers)
 Fprimerpos <- seq(1,nrow(primers %>% filter(Dir=="Forward")),1)/1000
 Rprimerpos <- seq(1,nrow(primers %>% filter(Dir=="Reverse")),1)/1000
 
-## GG Line
-gg.line <- ggplot(ent, aes(x = pos, y=ma*2)) + 
-  geom_line()+
-  facet_wrap(~Order, ncol = 1, strip.position="right") +
-  theme_void() +    
-  theme(legend.position = "none") +
-          ylab("Orders of Pest insects") +
-  xlab("Position within COI folmer region") +
-  #scale_fill_viridis(option="C", direction = 1, begin=0, end=1) +
-  scale_x_continuous(limits = c(min(primers$Start), max(primers$Stop)),breaks=seq(0,600,50),expand=c(0,0))  #+
- #geom_point(data=ent[ent$pos==1,], aes(x=jitter(position,factor=5), y=Order), size = 1,color="white",alpha=0.5)
-
 # Test boxplot
-
-gg.box <- ggplot(ent, aes(x = pos, y=ma, group=pos, colour=structure)) + 
-  geom_boxplot(outlier.shape = NA)+
+library(ggthemes)
+gg.box <- ggplot(ent %>% group_by(pos) %>% mutate(median = median(ma)), aes(x = pos, y=ma, group=pos, colour=structure)) + 
+  geom_boxplot(outlier.shape = NA, alpha=0.8)+
+  geom_line(aes(x = pos, y=median), colour="black",size=1, inherit.aes = FALSE) +
+  #?geom_tufteboxplot(median.type = "point", whisker.type = "line", hoffset = 0) +
   theme_classic() +    
   theme(legend.position = "bottom") +
   ylab("Entropy") +
@@ -414,10 +535,8 @@ gg.box <- ggplot(ent, aes(x = pos, y=ma, group=pos, colour=structure)) +
   scale_x_continuous(limits = c(min(primers$Start), max(primers$Stop)),breaks=seq(0,600,50),expand=c(0,0))  #+
  #geom_point(data=ent[ent$pos==1,], aes(x=jitter(position,factor=5), y=Order), size = 1,color="white",alpha=0.5)
 
-
-
 ## Primer & SW density plot
-gg.primers <- ggplot(data=ent[ent$pos==1,], aes(x = as.numeric(position))) +
+gg.primers <- ggplot(data=ent[ent$pos==1,], aes(x = as.numeric(pos))) +
   geom_segment(data = primers %>% filter(Dir=="Forward"),
                aes(x = Start, xend = Stop,
                    y = Fprimerpos, yend = Fprimerpos,
@@ -437,14 +556,55 @@ gg.primers <- ggplot(data=ent[ent$pos==1,], aes(x = as.numeric(position))) +
             aes(x = Stop, y = Rprimerpos,
                 label = Name, colour=Dir),
             hjust = 0, show.legend = FALSE) +
+  geom_density(data=ent %>% filter(rank %in% c(1:10)),
+               aes(x=jitter(pos, factor=1, amount=1), fill=1), adjust = 1/2,  alpha=0.5, show.legend = FALSE)  + 
+  geom_rug(data=ent %>% filter(rank %in% c(1:10)), aes(alpha=as.numeric(rank) / 10)) +
+  geom_rug(data=primers %>% filter(Dir=="Forward"), aes(x= Stop, colour=Dir),size = 1) +
+  geom_rug(data=primers %>% filter(Dir=="Reverse"), aes(x= Start, colour=Dir),size = 1) +
   scale_x_continuous(limits = c(min(primers$Start), max(primers$Stop)),breaks=seq(0,600,50),expand=c(0,0))  +
-  theme_void() +
+  #scale_y_continuous(trans = "reverse") +
+  theme_classic()  +
   theme(legend.position = "none",
         axis.text = element_blank(),
         axis.ticks = element_blank(),
         axis.title = element_blank())
 
-Fig1 <- gg.primers / gg.line / gg.box + plot_layout(heights=c(2,4, 1))
+## GGDensity
+
+
+gg.density <-  ent %>%
+ mutate(rank= case_when(
+   rank > 0 ~ as.numeric(rank),
+   is.na(rank) ~ 0,
+   )) %>%
+  group_by(pos, Order) %>%
+  summarise(rank =  sum(rank)) %>%
+  left_join(
+    ent %>%
+    mutate(rank= as.numeric(rank)) %>%
+    filter(!is.na(rank)) %>%
+    group_by(Order) %>%
+    summarise(total =  n())
+  ) %>%
+  mutate(rank = rank / total ) %>%
+  mutate(Order = case_when(
+    Order %in% c("Coleoptera", "Diptera", "Hemiptera", "Hymenoptera", "Lepidoptera") ~ Order,
+    !Order %in% c("Coleoptera", "Diptera", "Hemiptera", "Hymenoptera", "Lepidoptera") ~ "Other"
+    )) %>%
+  ggplot(aes(x =pos, y=1)) +
+    geom_tile(aes(fill=rank*100))+ 
+    scale_fill_viridis_c(option="plasma") + 
+  facet_wrap(~Order, ncol=1, strip.position ="right")+
+  scale_x_continuous(limits = c(min(primers$Start), max(primers$Stop)),breaks=seq(0,600,50),expand=c(0,0))  +
+  theme_void() +
+  theme(legend.position = "bottom",
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank())
+  
+
+
+Fig1 <- gg.box / gg.density / gg.primers #+ plot_layout(heights=c(2,4, 1))
 ```
 
 
@@ -460,7 +620,7 @@ Either add the N's, or generate a consensus, do an alignment to the consensus, g
 library(PrimerMiner)
 
 primers <- read_csv("primer_evaluation/primer_candidates.csv")
-Alignments <- sort(list.files("reference/pestfamilies/", pattern = ".fa.gz", full.names = TRUE)) # Read fasta filenames
+Alignments <- sort(list.files("primer_evaluation/pestfamilies/", pattern = ".fa.gz", full.names = TRUE)) # Read fasta filenames
 
 names <- Alignments %>%
   str_replace(".fa.gz","") %>%
@@ -477,11 +637,11 @@ dat.passed <- primers %>%
   mutate(R.seq = str_replace_all(R.seq, "I","N"))
 
 
-dir.create("PrimerMiner")
+dir.create("primer_evaluation/PrimerMiner")
 
 for (i in 1:nrow(dat.passed)) {
-    dir.create(paste0("PrimerMiner/", dat.passed$F.Name[i]))
-    dir.create(paste0("PrimerMiner/", dat.passed$R.Name[i]))
+    dir.create(paste0("primer_evaluation/PrimerMiner/", dat.passed$F.Name[i]))
+    dir.create(paste0("primer_evaluation/PrimerMiner/", dat.passed$R.Name[i]))
     
     for (j in 1:length(Alignments)) {
         seqs <- readDNAStringSet(Alignments[j])
@@ -505,7 +665,7 @@ for (i in 1:nrow(dat.passed)) {
           as.character(dat.passed$F.seq[i]), Fstart, Fstop,
           forward = T, gap_NA = T,
           mm_position = "Position_v1", mm_type = "Type_v1", adjacent = 2,
-          save = paste0("PrimerMiner/", dat.passed$F.Name[i], "/", names[j], ".csv")
+          save = paste0("primer_evaluation/PrimerMiner/", dat.passed$F.Name[i], "/", names[j], ".csv")
         )
         }
         
@@ -516,7 +676,7 @@ for (i in 1:nrow(dat.passed)) {
           as.character(dat.passed$R.seq[i]), Rstart, Rstop,
           forward = F, gap_NA = T,
           mm_position = "Position_v1", mm_type = "Type_v1", adjacent = 2,
-          save = paste0("PrimerMiner/", dat.passed$R.Name[i], "/", names[j], ".csv")
+          save = paste0("primer_evaluation/PrimerMiner/", dat.passed$R.Name[i], "/", names[j], ".csv")
         )
         }
         
