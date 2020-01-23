@@ -502,7 +502,6 @@ Fprimers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
   rename(Stop = F.Stop) %>%
   rename(Name = F.Name)
 
-
 Rprimers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
   filter(!str_detect(Name,"AgPest")) %>% 
   select(R.Start, R.Stop, R.Name) %>%
@@ -513,10 +512,6 @@ Rprimers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
   rename(Name = R.Name)
 
 primers <- bind_rows(Fprimers,Rprimers)
-
-  #filter(F.Start > 0)%>% 
-  #filter(R.Start <662) #%>%
-  #filter(Final == TRUE)
 
 Fprimerpos <- seq(1,nrow(primers %>% filter(Dir=="Forward")),1)/1000
 Rprimerpos <- seq(1,nrow(primers %>% filter(Dir=="Reverse")),1)/1000
@@ -556,11 +551,6 @@ gg.primers <- ggplot(data=ent[ent$pos==1,], aes(x = as.numeric(pos))) +
             aes(x = Stop, y = Rprimerpos,
                 label = Name, colour=Dir),
             hjust = 0, show.legend = FALSE) +
-  geom_density(data=ent %>% filter(rank %in% c(1:10)),
-               aes(x=jitter(pos, factor=1, amount=1), fill=1), adjust = 1/2,  alpha=0.5, show.legend = FALSE)  + 
-  geom_rug(data=ent %>% filter(rank %in% c(1:10)), aes(alpha=as.numeric(rank) / 10)) +
-  geom_rug(data=primers %>% filter(Dir=="Forward"), aes(x= Stop, colour=Dir),size = 1) +
-  geom_rug(data=primers %>% filter(Dir=="Reverse"), aes(x= Start, colour=Dir),size = 1) +
   scale_x_continuous(limits = c(min(primers$Start), max(primers$Stop)),breaks=seq(0,600,50),expand=c(0,0))  +
   #scale_y_continuous(trans = "reverse") +
   theme_classic()  +
@@ -602,8 +592,6 @@ gg.density <-  ent %>%
         axis.ticks.y = element_blank(),
         axis.title.y = element_blank())
   
-
-
 Fig1 <- gg.box / gg.density / gg.primers #+ plot_layout(heights=c(2,4, 1))
 ```
 
