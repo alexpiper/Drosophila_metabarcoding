@@ -12,7 +12,7 @@ sapply(c("rentrez", "bold", "taxize","taxizedb", "usethis", "tidyverse", "spider
 
 
 # install.packages("devtools")
-#devtools::install_github("alexpiper/taxreturn")
+devtools::install_github("alexpiper/taxreturn")
 library(taxreturn)
 
 ## Get an NCBI api key for taxize queries
@@ -78,84 +78,45 @@ writeXStringSet(seqs, filepath = "reference/mergedseqs.fa.gz", compress=TRUE)
 uniqSeqs <- seqs[unique(names(seqs)),] # Remove those sequnce names that are identical across both databases
 writeXStringSet(uniqSeqs, "reference/uniqSeqs.fa.gz", width=5000, compress=TRUE)
 
-#build PHMM from midori longest - sequences need to be same length
-midori <-  Biostrings::readDNAStringSet("MIDORI_LONGEST_20180221_COI.fasta")
-insecta_midori <- as.DNAbin(midori[str_detect(names(midori),pattern=";Insecta;"),])
-folmer <- insect::virtualPCR(insecta_midori, up = "TITCIACIAAYCAYAARGAYATTGG",down= "TAIACYTCIGGRTGICCRAARAAYCA",cores=2, rcdown = TRUE, trimprimers = TRUE)
-filt <- folmer[lengths(folmer)==658]
+## Map to Open tree of life taxonomy, resolving synonyms and filtering bad flags:
+# "incertae_sedis,|incertae_sedis$|major_rank_conflict|unplaced|environmental|inconsistent|extinct|hidden|hybrid|not_otu|viral|barren"
+download_ott_taxonomy()
+resolved <- map_to_ott(uniqSeqs, dir="ott3.2", resolve_synonyms=TRUE, filter_bads = TRUE, remove_na = TRUE, quiet=FALSE)
+insect::writeFASTA(resolved, file="reference/resolved.fa.gz", compress=TRUE)
 
-#Filtered was then aligned in MAFFT - mafft folmer_insecta_fullength.fa > folmer_insecta_fullength_aligned.fa
-#alignment was then manually curated in geneious primer
+#build PHMM from midori longest - sequences need to be same length
+midori <-  Biostrings::readDNAStringSet("reference/MIDORI_LONGEST_20180221_COI.fasta")
+insecta_midori <- as.DNAbin(midori[str_detect(names(midori),pattern=";Insecta;"),])
+folmer <- insect::virtualPCR(insecta_midori, up = "TITCIACIAAYCAYAARGAYATTGG", down= "TAIACYTCIGGRTGICCRAARAAYCA",cores=2, rcdown = TRUE, trimprimers = FALSE)
+#filt <- folmer[lengths(folmer)==658]
+
+#Filtered was then aligned in MAFFT - mafft folmer_insecta_full_withprimers.fa > folmer_insecta_fullength_withprimers_aligned.fa
+#alignment was then manually curated in geneious prime
 folmer_curated <-  ape::read.dna("reference/folmer_insecta_fullength_aligned_curated.fa",format="fasta")
 model <- aphid::derivePHMM(folmer_curated)
 
 filtered <- clean_seqs(uniqSeqs, model, minscore = 400, cores=2, shave=TRUE, maxNs = 0)
 insect::writeFASTA(filtered, file="reference/filtered.fa.gz",compress=TRUE)
 
-# Remove non-binomial species names
-db <- insect::taxonomy(db = "NCBI", synonyms = TRUE) %>%
-  filter(!rank %in% c("varietas","subspecies","species subgroup")) %>%
-  dplyr::filter(!str_detect(name, fixed("sp."))) %>%
-  dplyr::filter(!str_detect(name, fixed("spp."))) %>%
-  dplyr::filter(!str_detect(name, fixed("aff."))) %>%
-  dplyr::filter(!str_detect(name, fixed("nr."))) %>%
-  dplyr::filter(!str_detect(name, fixed("bv."))) %>%
-  dplyr::filter(!str_detect(name, fixed("cf."))) %>%
-  dplyr::filter(!str_detect(name, fixed("nom."))) %>%
-  dplyr::filter(!str_detect(name, fixed("nud."))) %>%
-  dplyr::filter(!str_detect(name, fixed("environment"))) %>%
-  dplyr::filter(!str_detect(name, fixed("undescribed"))) %>%
-  dplyr::filter(!str_detect(name, fixed("unverified"))) %>%
-  dplyr::filter(!str_detect(name, fixed("unclassified"))) %>%
-  dplyr::filter(!str_detect(name, fixed("uncultured"))) %>%
-  dplyr::filter(!str_detect(name, fixed("unidentif"))) %>%
-  dplyr::filter(!str_detect(name, fixed("NA"))) %>%
-  dplyr::filter(!str_detect(name, fixed("error"))) %>% 
-  dplyr::filter(!str_detect(name,"[0-9]"))%>% 
-  dplyr::filter(!str_detect(name,"[:punct:]"))
-
-remove <- names(filtered)  %>% 
-  str_split_fixed(";", n = 2) %>% 
-  as_tibble() %>%
-  filter(V2 %in% db$name) %>%
-  unite(names,c("V1","V2"),sep=";")
-
-subset <- filtered[names(filtered) %in% remove$names]
-insect::writeFASTA(subset, file="reference/subset.fa.gz",compress=TRUE)
-
-# resolve synonyms
-resolved <- resolve_taxonomy(subset, subspecies=FALSE, quiet=FALSE, missing="ignore", higherrank=FALSE, fuzzy=TRUE)
-
-#Check differences in names & Write out
-length(names(resolved)[which(!names(resolved) %in% names(subset))])
-insect::writeFASTA(resolved, file="reference/resolved.fa.gz", compress=TRUE)
-
-# Filter misannotated taxonomy
-
-#Save old names into attributes
-attributes(resolved)$oldnames <- names(resolved)
-#Get names in format for insect::purge
-names(resolved) <- names(resolved) %>%
-  str_split_fixed(";",n=2) %>%
-  as_tibble() %>%
-  pull("V1") 
-
-#filter using insect::purge - Could wrap this in a function for ease of use?
-db <- insect::taxonomy(db = "NCBI", synonyms = TRUE)
-
-#get unique names only
-resolved <- insect::subset.DNAbin(resolved, subset = !duplicated(names(resolved)))
-purged  <- insect::purge(resolved, db = db, level = "Genus", confidence = 0.8, threshold = 0.97, method = "farthest")
-
-#Restore old names
-names(purged) <- attributes(purged)$oldnames
-insect::writeFASTA(purged,file="reference/purged.fa.gz",compress=TRUE)
-
 # Filter for stop codons
 codon_filt <- taxreturn::codon_filter(purged)
 
+# flag clusters with mixed taxonomy
+#resolved <- insect::subset.DNAbin(resolved, subset = !duplicated(names(resolved)))
+mixed_clusters <- taxreturn::get_mixed_clusters(x = resolved, rank = "species", threshold = 0.99, confidence=0.8, quiet = FALSE)
+
+# Remove flagged sequences
+mixed_clusters <- read_csv("reference/optimisation/resolved_mixedclusters.csv")
+
+rem <- mixed_clusters %>% 
+  filter(rank=="species", threshold ==0.99, confidence > 0.6) %>%
+  pull(Acc)
+
+purged  <- subset.DNAbin(resolved, subset = !str_replace(names(resolved), "(?:.(?!;))+$", "") %in% rem)
+insect::writeFASTA(purged,file="reference/purged.fa.gz", compress=TRUE)
+
 # Prune large group sizes down to 5
-pruned <- prune_groups(as.DNAbin(codon_filt), maxGroupSize = 5, discardby="length",dedup=TRUE, quiet = FALSE)
+pruned <- prune_groups(as.DNAbin(codon_filt), maxGroupSize = 5, discardby="length", dedup=TRUE, quiet = FALSE)
 
 # Reformat to complete taxonomic heirarchy
 pruned <- reformat_heirarchy(pruned, ranks = c("kingdom","phylum", "class", "order", "family", "genus", "species"), quiet=FALSE)
@@ -235,7 +196,8 @@ gg.cleaning <- ggplot(tracker, aes(x=label, y=value, group=origin, fill=origin))
 ```
 
 # Reformat and Merge in inhouse sequences
-```{r}
+
+```{r reformat seqs}
 # read in sequences
 seqs <- readDNAStringSet(list.files("reference/inhouse/", pattern = ".fa", full.names = TRUE))
 
@@ -251,7 +213,7 @@ names(seqs) <- names(seqs) %>%
     tax_name %in% (anti_join(., db, by="tax_name") %>% pull(tax_name)) ~ tax_name %>% str_replace(pattern="(\\ )(.*?)(?=$)", replacement=""),
     !tax_name %in% (anti_join(., db, by="tax_name") %>% pull(tax_name)) ~ tax_name
   )) %>%
-  left_join(db, by="tax_name") %>% # DUPLICATES HAPPENING HERE!
+  left_join(db, by="tax_name") %>% 
   filter(!duplicated(V1)) %>%
   mutate(genus = case_when(
     is.na(genus) ~ tax_name,
@@ -261,7 +223,6 @@ names(seqs) <- names(seqs) %>%
   unite(col=tax, c("kingdom","phylum", "class", "order", "family", "genus","V2"), sep=";" ) %>%
   unite(col=acc, c("V1", "tax_id"), sep="|") %>%
   unite(col = names, c("acc", "tax"), sep=";") %>%
-  mutate(names = str_replace(names, pattern="_", replacement=" ")) %>%
   pull(names)
 
 #filt using phmm
@@ -286,7 +247,7 @@ insect::writeFASTA(mergedseqs, file="reference/merged_final.fa.gz")
 ```{r Create taxonomic classifier database}
 mergedSeqs <- insect::readFASTA("reference/merged_final.fa.gz")
 #Trim to primer region using virtualPCR from insect package - using BF1 and BR1 primers
-amplicon <- virtualPCR(mergedseqs, up = "ACWGGWTGRACWGTNTAYCC",down= "ARYATDGTRATDGCHCCDGC", cores=3, rcdown = TRUE, trimprimers = TRUE)
+amplicon <- virtualPCR(mergedseqs, up = "ACWGGWTGRACWGTNTAYCC",down= "ARYATDGTRATDGCHCCDGC", cores=2, rcdown = TRUE, trimprimers = TRUE)
 writeFASTA(amplicon,"reference/merged_final_bftrimmed.fa.gz")
 ```
 
@@ -294,7 +255,7 @@ writeFASTA(amplicon,"reference/merged_final_bftrimmed.fa.gz")
 
 
 ```{r train and output}
-amplicon <- insect::readFASTA("reference/merged_final_bftrimmed.fa.gz")
+amplicon <- insect::readFASTA("reference/old/merged_final_bftrimmed.fa.gz")
 
 #Format for RDP classifier
 rdp_genus <- reformat_dada2_gen(amplicon, quiet=FALSE)
@@ -307,7 +268,6 @@ insect::writeFASTA(rdp_species, "reference/rdp_species.fa.gz", compress=TRUE)
 trainingSet <- taxreturn::train_idtaxa(amplicon)
 #Write out training set
 saveRDS(trainingSet, file="reference/idtaxa.rds")
-
 #Summarise database tree
 summary <- taxreturn::tax2tree(amplicon, output="treedf")
 write_tsv(summary, "reference/database_summary.txt")
