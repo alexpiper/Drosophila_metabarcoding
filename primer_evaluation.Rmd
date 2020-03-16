@@ -45,64 +45,54 @@ library(taxreturn)
 ```{r Curate pest lists}
 dat <- list.files("primer_evaluation/pestlist/", pattern = ".csv", full.names = TRUE) %>%
   purrr::set_names() %>%
-  map_dfr(read_csv, .id = "Source") %>%
-  mutate(source = source %>%
-           str_split_fixed(pattern="export_", n=2) %>%
-           as.data.frame() %>%
-           pull(V2) %>%
-           str_replace(pattern=".csv", replacement = "")) %>%
-  mutate(Species = Species %>%  #Resolve weird characters
-           str_replace_all("ÿ", "") %>%
+  map_dfr(read_csv, .id = "Source", col_types = cols("Species" = col_character())) %>%
+  mutate(Source = str_remove(basename(Source), pattern="\\.csv")) %>%
+  mutate(Species = Species %>%  
+           str_remove_all("ÿ") %>% #Resolve weird characters
            iconv(from = 'UTF-8', to = 'ASCII//TRANSLIT')%>% 
-           str_replace_all("\\?", ""))
+           str_remove_all("\\?") %>%
+           str_remove_all("\\((.*?)\\)") %>% # remove things between brackets ie: Hygromia (Hygromia) cinctella
+           str_squish() # remove excess whitespace
+         ) %>%
+  filter(str_count(Species, " ") > 0 ) %>% #Remove non-binomial 
+  separate(Species, into=c("Genus", "Species"), sep=" ", extra="merge") %>% # Fix duplicated genus names
+  mutate(Species = str_remove(Species, pattern=Genus) %>% str_squish()) %>%
+  unite(col=Species, Genus, Species, sep = " ") %>%
+  unique()
 
-#Resolve taxonomic names 
+# Map to OTT taxonomy ids
+taxreturn::download_ott_taxonomy()
+dat_resolved <- dat %>% mutate(Species = map_to_ott(Species, dir="ott3.2", from="ncbi", resolve_synonyms=TRUE, filter_bads=TRUE, remove_na = TRUE, quiet=FALSE)) %>%
+  filter(!is.na(Species))
 
-library(taxreturn)
-dat_resolved <- dat %>% 
-  mutate(Species = resolve_taxonomy(dat$Species, subspecies=FALSE, quiet=FALSE, missing="ignore", higherrank=FALSE, fuzzy=TRUE)) %>%
-  mutate(Species = trimws(Species, which="both")) %>%
-  filter(str_detect(Species, " ")) # remove genus level only
-
-backup <- dat_resolved
-
-# Get higher taxonomic levels
-
-#Query NCBI taxonomy database locally using taxizedb 
-ncbi_search <- taxizedb::classification(unique(dat_resolved$Species), db='ncbi')
-
-#Query GBIF using online search for those not in NCBI taxonomy
-ncbi_failed <- names(ncbi_search)[which(is.na(ncbi_search))]
-length(ncbi_failed)
-gbif_search <- taxize::classification(ncbi_failed, db="gbif", ask=FALSE, verbose = FALSE)
-
-#Merge all taxonomies and remove NA's
-taxranks <- c(ncbi_search, gbif_search)
-taxranks <- taxranks[which(!is.na(taxranks))]
-
-
-lineage <- map(taxranks, mutate_all, as.character) %>%
-  bind_rows( .id="Species") %>%
-  filter(rank %in% c("class","order","family","genus")) %>%
-  select(-id) %>%
-  group_by(Species) %>%
-  pivot_wider(names_from = rank, values_from=name) %>%
-  rename_all(funs(str_to_sentence(.))) %>% 
-  ungroup() %>%
-  right_join(dat, by="Species") %>%
+lineage <- get_ott_lineage(dat_resolved$Species, dir="ott3.2")  %>%
+  bind_cols(dat_resolved) %>% 
+  select(-Species)%>%
+  rename_all(funs(str_to_sentence(.))) %>%
   filter(Class=="Insecta") %>%
   drop_na()
 
 #Write out final list of pests 
 write_csv(lineage, "primer_evaluation/pestlist.csv")
-
 ```
 
 ## Figure 1 - Summary of pestlist
 
 ```{r Figure 1}
-
-lineage <- read_csv("primer_evaluation/pestlist.csv") 
+lineage <- read_csv(
+  "primer_evaluation/pestlist.csv",
+  col_types  = cols(
+  Acc = col_character(),
+  Kingdom = col_character(),
+  Phylum = col_character(),
+  Class = col_character(),
+  Order = col_character(),
+  Family = col_character(),
+  Genus = col_character(),
+  Species = col_character(),
+  Source = col_character()
+)) %>%
+  unique()
 
 # Fig 1a - Upset plot of species share between the different databases
 
@@ -146,6 +136,34 @@ Fig1b <- group_by(lineage, Order, Source) %>%
             aes(x=Order, y=value + 20, label=Order),
             color="black", fontface="bold", alpha=0.6, inherit.aes = FALSE)
 
+# Summaries for article text
+
+# Unique taxa
+lineage %>% 
+  #select(-Source, Acc) %>%
+  summarise(Species = n_distinct(Species),
+            Genus = n_distinct(Genus),
+            Family = n_distinct(Family),
+            Order = n_distinct(Order),
+            )
+
+# Sum of reference DB's
+lineage %>% 
+  group_by(Source) %>%
+  summarise(Species = n_distinct(Species)) %>%
+  arrange(Species)
+
+# Proportion of sequences unique
+lineage %>%
+  add_count(Source, name = "DB_total") %>%
+  group_by(Species) %>%
+  add_tally(name = "n_occurances") %>%
+  ungroup() %>%
+  filter(n_occurances==1) %>%
+  group_by(Source, DB_total)%>%
+  summarise(n = n_distinct(Species)) %>%
+  mutate(freq = n / DB_total)%>%
+  arrange(freq)
 ```
 
 ## Figure 2a - COI Entropy

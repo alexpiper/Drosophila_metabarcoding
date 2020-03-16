@@ -69,7 +69,8 @@ seqs <- c(readDNAStringSet(list.files("reference/insecta/genbank", pattern = ".f
           readDNAStringSet(list.files("reference/insecta/bold", pattern = ".fa", full.names = TRUE)),
           readDNAStringSet(list.files("reference/arachnida/genbank", pattern = ".fa", full.names = TRUE)),
           readDNAStringSet(list.files("reference/arachnida/bold", pattern = ".fa", full.names = TRUE)),
-          readDNAStringSet(list.files("reference/outgroups", pattern = ".fa", full.names = TRUE)))
+          readDNAStringSet(list.files("reference/outgroups", pattern = ".fa", full.names = TRUE))
+          )
 
 # write out merged seqs
 writeXStringSet(seqs, filepath = "reference/mergedseqs.fa.gz", compress=TRUE)
@@ -84,42 +85,78 @@ download_ott_taxonomy()
 resolved <- map_to_ott(uniqSeqs, dir="ott3.2", resolve_synonyms=TRUE, filter_bads = TRUE, remove_na = TRUE, quiet=FALSE)
 insect::writeFASTA(resolved, file="reference/resolved.fa.gz", compress=TRUE)
 
+# Filter any further sequences with problem names
+names <- names(readFASTA("reference/codon_filt.fa.gz")) %>%
+  str_split_fixed(";", n=2) %>%
+  as_tibble() %>%
+  set_colnames(c("acc", "name"))
+rem <- names %>%
+  dplyr::filter(str_detect(name,                        "sp\\.|spp\\.|aff\\.|nr\\.|bv\\.|cf\\.|nom\\.|nud\\.|environment|undescribed|unverified|unclassified|uncultured|unidentif|[0-9]|[:punct:]")) %>%
+  pull(acc)
+resolved  <- subset.DNAbin(resolved, subset = !str_replace(names(resolved), "(?:.(?!;))+$", "") %in% rem)
+
 #build PHMM from midori longest - sequences need to be same length
 midori <-  Biostrings::readDNAStringSet("reference/MIDORI_LONGEST_20180221_COI.fasta")
 insecta_midori <- as.DNAbin(midori[str_detect(names(midori),pattern=";Insecta;"),])
 folmer <- insect::virtualPCR(insecta_midori, up = "TITCIACIAAYCAYAARGAYATTGG", down= "TAIACYTCIGGRTGICCRAARAAYCA",cores=2, rcdown = TRUE, trimprimers = FALSE)
-#filt <- folmer[lengths(folmer)==658]
 
-#Filtered was then aligned in MAFFT - mafft folmer_insecta_full_withprimers.fa > folmer_insecta_fullength_withprimers_aligned.fa
-#alignment was then manually curated in geneious prime
+#Filtered was then aligned in MAFFT and manually curated in geneious prime
 folmer_curated <-  ape::read.dna("reference/folmer_insecta_fullength_aligned_curated.fa",format="fasta")
 model <- aphid::derivePHMM(folmer_curated)
 
-filtered <- clean_seqs(uniqSeqs, model, minscore = 400, cores=2, shave=TRUE, maxNs = 0)
+filtered <- clean_seqs(resolved, model, minscore = 400, cores=2, shave=TRUE, maxNs = 0)
 insect::writeFASTA(filtered, file="reference/filtered.fa.gz",compress=TRUE)
 
 # Filter for stop codons
 codon_filt <- taxreturn::codon_filter(purged)
 
-# flag clusters with mixed taxonomy
-#resolved <- insect::subset.DNAbin(resolved, subset = !duplicated(names(resolved)))
-mixed_clusters <- taxreturn::get_mixed_clusters(x = resolved, rank = "species", threshold = 0.99, confidence=0.8, quiet = FALSE)
+# flag clusters with mixed taxonomy at different cluster thresholds and taxonomic ranks
+seqs <- insect::subset.DNAbin(codon_filt, subset = !duplicated(names(codon_filt)))
 
-# Remove flagged sequences
-mixed_clusters <- read_csv("reference/optimisation/resolved_mixedclusters.csv")
+thresholds <- rev(seq(0.9, 1, 0.01))
+threshlist <- vector("list", length=length(thresholds))
 
+for (i in 1:length(thresholds)){
+  threshlist[[i]] <- taxreturn::get_mixed_clusters(
+    x = seqs, source="ott3.2", db=NULL,
+    rank = c("species","genus","family"),
+    threshold = thresholds[i],
+    confidence=0.6, quiet = FALSE) 
+}
+names(threshlist) <- thresholds 
+mixed_clusters <- dplyr::bind_rows(threshlist)
+
+mixed_clusters <- vroom::vroom("reference/mixedclusters.csv")
+
+gg.mixed <- mixed_clusters %>%
+  group_by(threshold, rank) %>%
+  summarise(n=n()) %>%
+  ggplot(aes(x=as.factor(threshold), y=n, fill=rank, group=rank)) + 
+  geom_bar(stat="identity", position="dodge", colour="black") +
+  xlab("Clustering threshold") +
+  ylab("Problem Sequences") +
+  ggtitle("Mixed clusters") +
+  theme_classic() +
+  scale_fill_brewer(name = "Taxonomic Rank", palette="Greens") 
+
+# Purge all with mixed genus at 97, with confidence > 0.6  - >0.8 is probably better - Could i justify this with a probability of lowest common anestor?
 rem <- mixed_clusters %>% 
-  filter(rank=="species", threshold ==0.99, confidence > 0.6) %>%
+  filter(rank=="genus", threshold ==0.97, confidence > 0.8) %>%
   pull(Acc)
 
-purged  <- subset.DNAbin(resolved, subset = !str_replace(names(resolved), "(?:.(?!;))+$", "") %in% rem)
-insect::writeFASTA(purged,file="reference/purged.fa.gz", compress=TRUE)
+
+purged  <- subset.DNAbin(codon_filt, subset = !str_replace(names(codon_filt), "(?:.(?!;))+$", "") %in% rem)
+insect::writeFASTA(purged, file="reference/purged.fa.gz", compress=TRUE)
 
 # Prune large group sizes down to 5
-pruned <- prune_groups(as.DNAbin(codon_filt), maxGroupSize = 5, discardby="length", dedup=TRUE, quiet = FALSE)
+pruned <- prune_groups(purged, maxGroupSize = 5, discardby="length", dedup=TRUE, quiet = FALSE)
 
 # Reformat to complete taxonomic heirarchy
-pruned <- reformat_heirarchy(pruned, ranks = c("kingdom","phylum", "class", "order", "family", "genus", "species"), quiet=FALSE)
+pruned <- readFASTA("reference/pruned.fa.gz")
+
+db <- get_ott_taxonomy(dir="ott3.2")
+
+pruned <- reformat_hierarchy(pruned, db=db, ranks = c("kingdom","phylum", "class", "order", "family", "genus", "species"), quiet=FALSE)
 insect::writeFASTA(pruned, file="reference/pruned.fa.gz", compress=TRUE)
 ```
 
@@ -173,13 +210,12 @@ tracker <- bind_rows(
                   taxreturn::summarise_fasta("reference/mergedseqs.fa.gz", label="merged", origin=origin),
                   taxreturn::summarise_fasta("reference/uniqSeqs.fa.gz", label="unique", origin=origin),
                   taxreturn::summarise_fasta("reference/filtered.fa.gz", label="phmm_filtered", origin=origin),
-                  taxreturn::summarise_fasta("reference/subset.fa.gz", label="subset", origin=origin),
                   taxreturn::summarise_fasta("reference/resolved.fa.gz", label="resolved", origin=origin),
                   taxreturn::summarise_fasta("reference/purged.fa.gz", label="purged", origin=origin),
                   taxreturn::summarise_fasta("reference/codon_filt.fa.gz", label="codon_filt", origin=origin),
                   taxreturn::summarise_fasta("reference/pruned.fa.gz", label="pruned", origin=origin)
 ) %>%
-  mutate(label = factor(label, levels=c("merged", "unique", "phmm_filtered", "subset", "resolved", "purged", "codon_filt", "pruned" ))) %>%
+  mutate(label = factor(label, levels=c("merged", "unique", "phmm_filtered", "resolved", "purged", "codon_filt", "pruned" ))) %>%
   pivot_longer(cols=starts_with("n"),
                names_to = "Type",
                values_to = "value"
@@ -198,15 +234,15 @@ gg.cleaning <- ggplot(tracker, aes(x=label, y=value, group=origin, fill=origin))
 # Reformat and Merge in inhouse sequences
 
 ```{r reformat seqs}
-# read in sequences
+# read in  inhouse sequences
 seqs <- readDNAStringSet(list.files("reference/inhouse/", pattern = ".fa", full.names = TRUE))
 
-# Get ncbi taxid
-db <- get_ranked_lineage(synonyms = TRUE, force=FALSE)
+#USe NCBI to get lineage
+db <- get_ncbi_lineage()
 
-# Get heirarchy
+#
 names(seqs) <- names(seqs) %>%
-  str_split_fixed(pattern="_", n=2) %>%
+   str_split_fixed(pattern="_", n=2) %>%
   as_tibble() %>%
   mutate(tax_name = str_replace(V2, "_", " ")) %>%
   mutate(tax_name = case_when(
@@ -229,7 +265,7 @@ names(seqs) <- names(seqs) %>%
 folmer_curated <-  ape::read.dna("reference/folmer_insecta_fullength_aligned_curated.fa", format="fasta")
 model <- aphid::derivePHMM(folmer_curated)
 
-filtered <- clean_seqs(seqs, model, minscore = 200, cores=2, shave=TRUE, maxNs = 0)
+filtered <- clean_seqs(seqs, model, minscore = 400, cores=2, shave=TRUE, maxNs = 0)
 
 # Filter for stop codons
 codon_filt <- taxreturn::codon_filter(filtered %>% as.character %>% lapply(.,paste0,collapse="") %>% unlist %>% DNAStringSet)
