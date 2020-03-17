@@ -64,6 +64,8 @@ fetchSeqs(outgroups, database="genbank", out.dir="reference/outgroups", quiet=FA
 
 ## Merge and clean sequences
 
+# Warning - need to run again from start to deal with duplicated accessions now fixed
+
 ```{r merge and clean}
 seqs <- c(readDNAStringSet(list.files("reference/insecta/genbank", pattern = ".fa", full.names = TRUE)),
           readDNAStringSet(list.files("reference/insecta/bold", pattern = ".fa", full.names = TRUE)),
@@ -75,8 +77,8 @@ seqs <- c(readDNAStringSet(list.files("reference/insecta/genbank", pattern = ".f
 # write out merged seqs
 writeXStringSet(seqs, filepath = "reference/mergedseqs.fa.gz", compress=TRUE)
 
-# Dereplicate
-uniqSeqs <- seqs[unique(names(seqs)),] # Remove those sequnce names that are identical across both databases
+# Dereplicate duplicated accessions
+uniqSeqs <- seqs[!duplicated(str_remove(names(seqs), "\\|.*$")),]
 writeXStringSet(uniqSeqs, "reference/uniqSeqs.fa.gz", width=5000, compress=TRUE)
 
 ## Map to Open tree of life taxonomy, resolving synonyms and filtering bad flags:
@@ -153,9 +155,15 @@ pruned <- prune_groups(purged, maxGroupSize = 5, discardby="length", dedup=TRUE,
 
 # Reformat to complete taxonomic heirarchy
 pruned <- readFASTA("reference/pruned.fa.gz")
-
 db <- get_ott_taxonomy(dir="ott3.2")
 
+# Remove accesions that are identical across both 
+pruned <- readDNAStringSet("reference/pruned.fa.gz")
+pruned <- pruned[!duplicated(str_remove(names(pruned), "\\|.*$")),] 
+db <- get_ott_taxonomy(dir="ott3.2")
+
+
+## STILL HAVING ISSUES WITH THIS!
 pruned <- reformat_hierarchy(pruned, db=db, ranks = c("kingdom","phylum", "class", "order", "family", "genus", "species"), quiet=FALSE)
 insect::writeFASTA(pruned, file="reference/pruned.fa.gz", compress=TRUE)
 ```
@@ -285,6 +293,39 @@ mergedSeqs <- insect::readFASTA("reference/merged_final.fa.gz")
 #Trim to primer region using virtualPCR from insect package - using BF1 and BR1 primers
 amplicon <- virtualPCR(mergedseqs, up = "ACWGGWTGRACWGTNTAYCC",down= "ARYATDGTRATDGCHCCDGC", cores=2, rcdown = TRUE, trimprimers = TRUE)
 writeFASTA(amplicon,"reference/merged_final_bftrimmed.fa.gz")
+```
+
+# evaluate coverage
+
+
+# Evaluate LCA stats
+
+```{r evaluate LCA}
+
+seqs <- readFASTA("reference/pruned.fa.gz")
+
+out <- taxreturn::lca_probs(x, sim=0.95)
+
+pestlist <- read_csv("primer_evaluation/pestlist.csv") %>%
+  pull(Family) %>%
+  unique()
+seqs <- readFASTA("reference/merged_final.fa.gz")
+
+out <- taxreturn::lca_probs(seqs, sim=seq(0.8,1,0.01))
+
+out <- out %>% filter(sim > 50)
+gg.lca  <-  ggplot(out, aes(x=sim, y=prob, group=rank, fill=rank, colour=rank)) + 
+  geom_line(size=1) +
+  geom_vline(xintercept=97, linetype="dotted") +
+  scale_x_reverse() +
+  scale_color_brewer(palette = "Spectral")  +
+  theme_classic()  +
+  theme(legend.position = "bottom") +
+  xlab("% Sequence Identity") +
+  ylab("P(LCR)") + 
+  ggtitle("Probability of sequence sharing LCR with reference")
+
+
 ```
 
 # Output trained classifiers

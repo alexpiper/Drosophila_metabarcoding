@@ -977,13 +977,13 @@ p + gg.sum
 
 ```
 
-# LCA Stats
-
-
 # Evaluate LCA stats
 
 ```{r evaluate LCA}
-taxreturn::lca_probs(x, sim=seq(0.5,1,0.1))
+
+seqs <- readFASTA("reference/pruned.fa.gz")
+
+out <- taxreturn::lca_probs(x, sim=0.95)
 
 pestlist <- read_csv("primer_evaluation/pestlist.csv") %>%
   pull(Family) %>%
@@ -991,25 +991,18 @@ pestlist <- read_csv("primer_evaluation/pestlist.csv") %>%
 seqs <- readFASTA("reference/merged_final.fa.gz")
 
 out <- taxreturn::lca_probs(seqs, sim=seq(0.8,1,0.01))
-write_csv(out, path="primer_evaluation/LCA_probabilities.csv")
-out <- read_csv("primer_evaluation/LCA_probabilities.csv") %>% 
-  pivot_longer(
-    cols = kingdom:species,
-    names_to="rank",
-    values_to = "prob")
 
-
+out <- out %>% filter(sim > 50)
 gg.lca  <-  ggplot(out, aes(x=sim, y=prob, group=rank, fill=rank, colour=rank)) + 
   geom_line(size=1) +
-  geom_vline(xintercept=0.97, linetype="dotted") +
-  scale_x_reverse(breaks=seq(.8,1,0.01)) + 
+  geom_vline(xintercept=97, linetype="dotted") +
+  scale_x_reverse() +
   scale_color_brewer(palette = "Spectral")  +
   theme_classic()  +
   theme(legend.position = "bottom") +
   xlab("% Sequence Identity") +
   ylab("P(LCR)") + 
   ggtitle("Probability of sequence sharing LCR with reference")
-
 
 
 ## Split by family?
