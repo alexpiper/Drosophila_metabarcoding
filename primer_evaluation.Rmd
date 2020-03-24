@@ -12,20 +12,40 @@ editor_options:
 
 ## Load packages
 ```{r setup}
-## Load Necessary packages
-sapply(c("rentrez", "bold", "taxize","usethis", "tidyverse", "spider", "insect", "ape", "DECIPHER", "ggpubr", "RColorBrewer", "plotly", "ggforce", "seqinr", "shortread", "patchwork", "viridis","ggridges","UpSetR"), require, character.only = TRUE)
+#Set required packages
+.cran_packages <- c("usethis",
+                    "tidyverse",
+                    "spider", 
+                    "insect",
+                    "ape",
+                    "RColorBrewer",
+                    "seqinr",
+                    "patchwork",
+                    "phangorn",
+                    "filesstrings",
+                    "ShortRead")
 
+.bioc_packages <- c("DECIPHER",
+                    "ggtree",
+                    "Biostrings")
 
-# install.packages("devtools")
-#devtools::install_github("alexpiper/taxreturn")
+.inst <- .cran_packages %in% installed.packages()
+if(any(!.inst)) {
+   install.packages(.cran_packages[!.inst])
+}
+.inst <- .bioc_packages %in% installed.packages()
+if(any(!.inst)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+  BiocManager::install(.bioc_packages[!.inst], ask = F)
+}
+
+#Load all packages
+sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
+
+# Github packages
+devtools::install_github("alexpiper/taxreturn")
 library(taxreturn)
-
-## Get an NCBI api key for taxize queries
-# use_entrez()
-
-# After generating your key set it as ENTREZ_KEY in .Renviron.
-# ENTREZ_KEY='1c0a0c4afa28448650a1450662a22c68f208'
-#usethis::edit_r_environ()
 ```
 
 # Assemble pest list
@@ -166,9 +186,181 @@ lineage %>%
   arrange(freq)
 ```
 
+
+## Get primer binding sites
+
+```{r get primer binding sites}
+#alignment was then manually curated in geneious primer
+folmer_curated <-  ape::read.dna("reference/Folmer_insecta_fullength_withprime_curated.fa",format="fasta")
+model <- aphid::derivePHMM(folmer_curated)
+
+
+# Be worth validating how the score is calculated?
+primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
+  select(name, strand, seq, citation, issues) %>%
+  left_join(.$seq %>% purrr::map(get_binding_position, model, tryrc = TRUE, minscore=8) %>%
+  bind_rows() %>%
+  rename(seq = primer), by="seq") %>%
+  unique()
+
+write_csv(primers, "primer_evaluation/primer_candidates.csv")
+
+```
+
+# Primer constraints
+
+GC clamp
+GC ratio
+Tm Deviation
+Tm Range
+Repeats
+Runs
+Length
+
+```{R }
+#GC Ratio
+test <- DNAString(primers$seq[1] %>% str_replace("I", "N"))
+as.data.frame(alphabetFrequency(test, baseOnly=F, as.prob=T))
+
+
+check_gc <- function(primer, ambiguous = TRUE){
+  if(ambiguous){
+    query <- unlist(DECIPHER::Disambiguate(DNAStringSet(primer)))
+  } else {
+    query <- DNAString(primer)
+  }
+   df <- as.data.frame(
+     prop.table(
+       colSums(
+         letterFrequency(query,letters="ACGT", OR=0
+                         )))) %>%
+    rownames_to_column("Base") %>%
+     set_colnames(c("Base", "Proportion"))
+   df$primer <- primer
+  return(df)
+}
+
+check_gc(primers$seq[1])
+
+
+
+#TMCalc using nearest neighbour methods of Santalucia N E W J . Nearest-neighbor thermodynamics of deoxyinosine pairs in DNA duplexes[J].Nucleic Acids Research, 2005, 33(19):6258-67
+library(TmCalculator)
+primer <- primers$seq[1]
+TmCalculator::Tm_NN(primer, ambiguous = TRUE)
+
+# Can correct for salt content etc
+
+#homopolymers
+
+## Homopolymers check
+test <- as.character(unlist(DECIPHER::Disambiguate(DNAStringSet(primer))))
+
+check_homopolymers <- function(primer, ambiguous = TRUE){
+  
+  if(ambiguous){
+    query <- as.character(unlist(DECIPHER::Disambiguate(DNAStringSet(primer))))
+  } else {
+    query <- primer
+  }
+  df <- data.frame(
+      primer = primer,
+    `A` = query %>% purrr::map_chr(longestConsecutive, "A") %>% max(),
+    `T` = query %>% purrr::map_chr(longestConsecutive, "T") %>% max(),
+    `G` = query %>% purrr::map_chr(longestConsecutive, "G") %>% max(),
+    `C` = query %>% purrr::map_chr(longestConsecutive, "C") %>% max(),
+    stringsAsFactors = FALSE
+  )
+  return(df)
+}
+ 
+
+```
+
+
+# Check presence of primers in sequences
+
+vcountpattern with maxmismatch changing?
+
+with indels turns it to lehvenstein
+```{r check pres}
+primerHits <- function(primer, fn, max.mismatch=0, with.indels=FALSE) {
+      if(stringr::str_detect(primer, "I")) {
+        message(paste0("Warning: Inosine (I) bases detected in primer ", primer," these will be converted to N!"))
+        primer <- primer %>% str_replace_all("I", "N")
+        }
+    # Counts number of sequences in which the primer is found
+    nhits <- vcountPattern(primer, sread(readFasta(fn)), max.mismatch=max.mismatch, fixed = FALSE, with.indels = with.indels)
+    return(sum(nhits > 0))
+}
+
+primers <- read_csv("primer_evaluation/primer_candidates.csv") 
+
+fn="reference/merged_final.fa.gz"
+
+out <- vector("list", length=nrow(primers))
+for (i in 1:nrow(primers)){
+  
+  if(primers$strand[i] == "F"){
+    query <- primers$seq[i]
+    
+  } else  if(primers$strand[i] == "R"){
+    query <- rc(primers$seq[i])
+  }
+  print(i)
+  df <- tibble(
+    name = primers$name[i],
+    primer = query,
+    strand = primers$strand[i],
+    #Hamming distance (no indels in COI)
+    h0 = primerHits(query, fn, max.mismatch=0, with.indels=FALSE),
+    h1 = primerHits(query, fn, max.mismatch=1, with.indels=FALSE),
+    h2 = primerHits(query, fn, max.mismatch=2, with.indels=FALSE),
+  )
+  out[[i]] <- df
+}
+
+names(out) <- primers$seq
+out <- bind_rows(out)
+write_csv(out, "primer_evaluation/primer_presence.csv")
+
+# Plotting
+out <- read_csv("primer_evaluation/primer_presence.csv")
+
+gg.primerpresF <- out %>% 
+  pivot_longer(cols=starts_with(c("h", "l")),
+               names_to = "measure",
+               values_to = "seqs"
+               ) %>%
+  left_join(primers) %>%
+  filter(strand=="F", measure=="h2") %>%
+  mutate(name = fct_reorder(name, start, .desc = TRUE)) %>%
+  ggplot(aes(x=name, y=seqs)) + 
+  geom_bar(stat="identity", position="dodge") +
+  coord_flip() + 
+  xlab("Forward Primers")
+
+gg.primerpresR <- out %>% 
+  pivot_longer(cols=starts_with(c("h", "l")),
+               names_to = "measure",
+               values_to = "seqs"
+               ) %>%
+  left_join(primers) %>%
+  filter(strand=="R", measure=="h2") %>%
+  mutate(name = fct_reorder(name, start, .desc = TRUE)) %>%
+  ggplot(aes(x=name, y=seqs)) + 
+  geom_bar(stat="identity", position="dodge") +
+  coord_flip() + 
+  xlab("Reverse Primers")
+
+
+
+gg.primerpresF / gg.primerpresR
+```
+
 ## Figure 2a - COI Entropy
 
-### Output pest families
+### Output pest families aligned
 
 Add Ns to alignment so they all match total length
 
@@ -182,6 +374,71 @@ dir.create("primer_evaluation/pestfamilies/")
 
 pass <- data.frame(name=pestlist, pre=0, post=0, size=0)
 
+# get reference alignment for padding
+folmer_curated <-  ape::read.dna("reference/Folmer_insecta_fullength_withprime_curated.fa", format="fasta")
+print(folmer_curated)
+model <- aphid::derivePHMM(folmer_curated, cores=1)
+
+for (i in 1:length(pestlist)){
+print(i)
+  query <- pestlist[i]
+ print(query)
+  names <- names(seqs)  %>% 
+    str_split_fixed(";", n = 8) %>% 
+    as_tibble() %>% 
+    filter(V6 == query) %>%
+    unite(names,paste0("V",1:8),sep=";")
+          
+  subset <- seqs[names(seqs) %in% names$names]
+	print(length(subset))
+  if (length(subset) > 0){
+    
+	
+	cl <- parallel::makeCluster(23)
+	lengthfilt <- aphid::align(subset, model, cores=cl )
+	parallel::stopCluster(cl)
+	
+	sppnames <- labels(lengthfilt) %>% 
+   	   str_split_fixed(";", n = Inf) %>% 
+    	  as_tibble() %>%
+      	pull(paste0("V",(ncol(.) -1)))
+	print(sppnames)
+    	if (length(sppnames) > 10){ 
+    	dist <- DistanceMatrix(lengthfilt %>% as.list %>% as.character %>% lapply(.,paste0,collapse="") %>% unlist %>% DNAStringSet, verbose=FALSE)
+    	#Define outliers as 1.5* the dist from the 3rd quartile
+    	rem <- colnames(dist)[which(dist[,1] > (summary(dist[,1])[["3rd Qu."]] * 1.5))]
+    
+    	lengthfilt <- lengthfilt[!names(lengthfilt) %in% rem]
+    	}
+    print(lengthfilt)
+    if (length(lengthfilt) > 0){
+      insect::writeFASTA(lengthfilt,file=paste0("primer_evaluation/pestfamilies/", pestlist[i],".fa.gz"), compress=TRUE)
+      }
+  }
+}
+```
+
+
+## Output pests subset to max and padded
+
+
+```{r Subset to pests}
+pestlist <- read_csv("primer_evaluation/pestlist.csv") %>%
+  pull(Family) %>%
+  unique()
+seqs <- readFASTA("reference/merged_final.fa.gz")
+
+dir.create("primer_evaluation/padded_pestfam/")
+
+# get reference alignment for padding
+#folmer_curated <-  ape::read.dna("reference/Folmer_insecta_fullength_withprime_curated.fa", format="fasta")
+#print(folmer_curated)
+#model <- aphid::derivePHMM(folmer_curated, cores=23)
+
+model <- readRDS("reference/folmer_fullength_model.rds")
+print(model)
+
+pass <- data.frame(name=pestlist, pre=0, post=0, size=0)
 for (i in 1:length(pestlist)){
   query <- pestlist[i]
   names <- names(seqs)  %>% 
@@ -194,9 +451,9 @@ for (i in 1:length(pestlist)){
   if (length(subset) > 0){
     #Get highest occuring length
     size <- as.data.frame(table(lengths(subset))) %>%
-    arrange(desc(Freq))%>%
-    slice(1) %>%
-    pull(Var1) %>%
+    dplyr::arrange(desc(Freq))%>%
+    dplyr::slice(1) %>%
+    dplyr::pull(Var1) %>%
     as.character()
   
     lengthfilt <- subset[lengths(subset)==size]
@@ -205,10 +462,14 @@ for (i in 1:length(pestlist)){
     pass$size[i] <- size
     print(paste0(length(lengthfilt), " sequences of ",size ," bp kept from ", length(subset), " total for ", pestlist[i]))
     
+    #Pad alignment
+    cl <- parallel::makeCluster(2)
+  	lengthfilt <- pad_alignment(lengthfilt, model, cores=cl, omit.endgaps = TRUE)
+  	parallel::stopCluster(cl)
+    
     ##Remove high-distance outliers - only for those where there are at least 10 species
     sppnames <- names(lengthfilt) %>% str_split_fixed(";", n = Inf) %>% as_tibble() %>%
       pull(paste0("V",(ncol(.) -1)))
-
     if (length(sppnames) > 10){ 
     dist <- DistanceMatrix(lengthfilt %>% as.character %>% lapply(.,paste0,collapse="") %>% unlist %>% DNAStringSet, verbose=FALSE)
     #Define outliers as 1.5* the dist from the 3rd quartile
@@ -216,13 +477,11 @@ for (i in 1:length(pestlist)){
     
     lengthfilt <- lengthfilt[!names(lengthfilt) %in% rem]
     }
-    if (length(lengthfilt) > 0){insect::writeFASTA(lengthfilt,file=paste0("primer_evaluation/pestfamilies/", pestlist[i],".fa.gz"), compress=TRUE)}
+    if (length(lengthfilt) > 0){insect::writeFASTA(lengthfilt,file=paste0("primer_evaluation/padded_pestfam/", pestlist[i],".fa.gz"), compress=TRUE)}
   }
 }
-
 ## Might need to remove those with too low sequences to run the sliding window script. Need to also check the amount of pass vs fails, maybe do a plot?
 ##Plot pass vs fails
-
 gg.pass <- pass %>%
   gather(type,value, -name, -size) %>%
   #arrange(desc(value)) %>%
@@ -230,8 +489,9 @@ gg.pass <- pass %>%
   ggplot(aes(x=name,y=value,fill=type))+
   geom_bar(stat="identity", position="dodge") +
   theme(axis.text.x = element_text(angle=90))
-
 ```
+
+
 
 ## Sliding window analysis
 
@@ -297,15 +557,15 @@ echo "Queue files made. Please run queue_all_jobs script"
 ```
 
 ###  R Sliding window 
-```{r}
+```{r sliding window}
 library("spider")
 library("ape")
 library("DECIPHER")
 library("Biostrings")
 library("tidyverse")
 library("insect")
-#files <- list.files(path="reference/pests/",pattern=".fa.gz",full.names = TRUE)
-#file <- files[3]
+files <- list.files(path="primer_evaluation/pestfamilies/",pattern=".fa.gz",full.names = TRUE)
+file <- files[3]
 name <- basename(file) %>%
   str_replace(".fa.gz","")
 message(name)
@@ -333,6 +593,9 @@ saveRDS(slidelist, file = paste0(name, "_windowlist.rds"))
 ```
 
 ### Sliding window analysis
+
+
+If spider requries no gaps, is there a better way to calculate sliding window stats? isnt htis basically just the sequence entropy?
 
 ```{r Figure 1}
 path <- "primer_evaluation/sliding_window/" # CHANGE ME to the directory containing all downloaded bold CSV files
@@ -366,6 +629,24 @@ Is there anyway to do an entropy measurement, or consensus alignment or somethin
 
 Here, information content is defined by the relative entropy of a column in the alignment (Yu et al., 2015), which is higher for conserved columns. The relative entropy is based on the background distribution of letter-frequencies in the alignment.
 
+
+# Big COI alignment
+Could calculate the entropy on this
+
+```{r}
+model <- readRDS("reference/folmer_fullength_model.rds")
+print(model)
+
+seqs <- insect::readFASTA("reference/merged_final.fa.gz")
+cl <- parallel::makeCluster(23)
+lengthfilt <- aphid::align(seqs, model, cores=cl )
+parallel::stopCluster(cl)
+
+insect::writeFASTA(lengthfilt, "primer_evaluation/merged_final_aligned.fa.gz")
+
+```
+
+
 ```{r entropy}
 path <- "primer_evaluation/pestfamilies/"
 vec <- sort(list.files(path, pattern = ".fa.gz", full.names = TRUE)) # Read fasta filenames
@@ -389,9 +670,9 @@ for (i in 1:length(vec)) {
   
   #if(max(width(seqs)) == 658){
   values <- as_tibble(cbind(names[i], MaskAlignment(seqs, type="values",windowSize=1))) %>%
-    rename(Family = `names[i]`) %>%
-    mutate(Family = as.character(Family)) %>%
-    mutate(pos = rownames(.))
+    dplyr::rename(Family = `names[i]`) %>%
+    dplyr::mutate(Family = as.character(Family)) %>%
+    dplyr::mutate(pos = rownames(.))
   dat[[i]] <- values
  # }
 }
@@ -439,25 +720,6 @@ ent <- bind_rows(dat) %>%
   arrange(Family) 
 ```
 
-## Get primer binding sites
-
-```{r get primer binding sites}
-#alignment was then manually curated in geneious primer
-folmer_curated <-  ape::read.dna("reference/Folmer_insecta_fullength_withprime_curated.fa",format="fasta")
-model <- aphid::derivePHMM(folmer_curated)
-
-
-# Be worth validating how the score is calculated?
-primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
-  select(name, strand, seq, citation, issues) %>%
-  left_join(.$seq %>% purrr::map(get_binding_position, model, tryrc = TRUE, minscore=8) %>%
-  bind_rows() %>%
-  rename(seq = primer), by="seq") %>%
-  unique()
-
-write_csv(primers, "primer_evaluation/primer_candidates.csv")
-
-```
 
 
 ## Plotting Figure 2b
@@ -980,17 +1242,17 @@ p + gg.sum
 # Evaluate LCA stats
 
 ```{r evaluate LCA}
-
 seqs <- readFASTA("reference/pruned.fa.gz")
 
-out <- taxreturn::lca_probs(x, sim=0.95)
+out <- taxreturn::lca_probs(seqs)
+
+out <- read_csv("lca_probs.csv")
 
 pestlist <- read_csv("primer_evaluation/pestlist.csv") %>%
   pull(Family) %>%
   unique()
 seqs <- readFASTA("reference/merged_final.fa.gz")
 
-out <- taxreturn::lca_probs(seqs, sim=seq(0.8,1,0.01))
 
 out <- out %>% filter(sim > 50)
 gg.lca  <-  ggplot(out, aes(x=sim, y=prob, group=rank, fill=rank, colour=rank)) + 
@@ -1050,11 +1312,32 @@ To reduce the number of primer pairs for further analyses perform an initial scr
 Note: Detailed information about installing and running PrimerTree can be found at https://github.com/jimhester/primerTree
 
 ```{r }
-primers <- read_csv("primer_candidates.csv")
+primers <- read_csv("primer_evaluation/primer_candidates.csv")
 library(primerTree)
-# 3.1. - Query each primer pair against the NCBI database and construct a primertree object.
-#dat.I <- primers[which(primers$Final=="TRUE"), ]
-dat.I <- dat.passed
+
+forward <- "GGDRCWGGWTGAACWGTWTAYCCNCC"
+rev <- "TATDGTRATDGCHCCNGC"
+
+test3 <- search_primer_pair(
+  forward,
+  rev
+)
+ranks = c("kingdom", "phylum", "class", 
+    "order", "family", "genus", "species")
+
+lineage <- test[["taxonomy"]] %>%
+  select(all_of(ranks))%>% 
+  tidyr::unite(col = pathString, 
+  !!ranks, sep = "/") %>%
+  dplyr::mutate(pathString = paste0("Root/", pathString)) %>%
+  data.tree::as.Node(.)
+
+tree <- ape::read.tree(textConnection(data.tree::ToNewick(lineage, heightAttribute = NULL)))
+
+library(ggtree)
+
+ggtree(tree)
+
 
 dir.create("PrimerTree")
 #for (i in 1:nrow(dat.I)) {
@@ -1189,59 +1472,6 @@ print(result_list[[i]])
 }
 
 out <- clean_seqs(seqs, model,minscore = 600, cores=1, shave=TRUE,maxNs = 0)
-
-```
-
-## Try fill in gaps in Ridgeplot
-```{r}
-
-i=1
-dat <- vector("list",length=length(vec))
-con_list <- vector("list",length=length(vec))
-if(file.exists("Sequences/consensus.fa.gz"))(file.remove("Sequences/consensus.fa.gz"))
-for (i in 1:length(vec)) {
-  file <- vec[i]
-  seqs <- readDNAStringSet(file)
-  
-  values <- as_tibble(cbind(names[i], MaskAlignment(seqs, type="values",windowSize=1))) %>%
-    rename(Family = `names[i]`) %>%
-    mutate(Family = as.character(Family)) %>%
-    mutate(pos = rownames(.))
-  dat[[i]] <- values
-  
-  #Get consensus only for those with >100 sequences
-  
-  if(length(seqs) > 2){
-  names(con) <- names[i]
-  writeXStringSet(con, filepath="Sequences/consensus.fa.gz",append=TRUE, compress=TRUE, )
-  }
-}
-
-
-
-  
-
-#Try align to model
-folmer_curated <-  ape::read.dna("folmer_insecta_fullength_aligned_curated.fa",format="fasta")
-model <- aphid::derivePHMM(folmer_curated)
-con_seqs <- readFASTA("Sequences/consensus.fa.gz")
-
-aligned <- aphid::align(con_seqs, model=model)
-
-test <- aligned %>% as.list %>% as.character %>% lapply(.,paste0,collapse="") %>% unlist %>% DNAStringSet()
-
-test2 <- as.matrix(test)
-
-det <- str_detect(as.character(test2[1,]), pattern="-")
-dimnames(test2)[which %in% det]
-match("-", as.character(test2[1,]))
-
-ranges <- MaskAlignment(seqs, type="ranges", threshold=0, maxFractionGaps = 0.2, showPlot = TRUE) # Mask columns with majority gaps - caused 
-seqs <- replaceAt(seqs, ranges) # remove the masked columns
-
-
-browse <-  aligned %>% as.list %>% as.character %>% lapply(.,paste0,collapse="") %>% unlist %>% DNAStringSet()
-BrowseSeqs(browse)
 
 ```
 

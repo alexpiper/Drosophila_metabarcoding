@@ -1,6 +1,8 @@
 ---
 title: "Statistics"
 output: html_notebook
+editor_options: 
+  chunk_output_type: console
 ---
 
 ## Load packages
@@ -30,14 +32,19 @@ We then make a plot to evaluate the effectiveness of taxonomic assignment to eac
 ```{r create PS, eval = FALSE}
 seqtab.nochim <- readRDS("output/rds/seqtab_final.rds")
 
-#Fix seqtab names -removing read name, sample number etc
-rownames(seqtab.nochim) <- rownames(seqtab.nochim) %>% 
-  str_split_fixed("_",n=Inf) %>%
-    as_tibble() %>% 
-  separate(V7, into="rep", sep = "\\.", extra = "drop") %>%
-  unite(col=SampleID, c("V2","rep"),sep="-") %>%
-  pull(SampleID) %>%
-  str_replace(pattern="Rep", replacement="rep")
+# Where is rep4-6 coming from?
+
+## Just subset to the last run
+seqtab.nochim <- readRDS("output/rds/seqtab_final.rds")
+seqtab.nochim <- seqtab.nochim[str_detect(rownames(seqtab.nochim), "HLVKYDMXX"),]
+seqtab.nochim <- seqtab.nochim[,colSums(seqtab.nochim) > 0]
+
+rownames(seqtab.nochim)  <- rownames(seqtab.nochim) %>%
+  str_remove("^HLVKYDMXX_") %>%
+  str_remove("\\..*$")%>%
+  str_replace("\\_.*\\_...", replacement="_") %>%
+  str_replace("_$", "_1") 
+
 
 tax_plus <- readRDS("output/rds/tax_IdTaxaExact.rds") 
 
@@ -62,13 +69,36 @@ rownames(seqtab.nochim)  <- rownames(seqtab.nochim) %>%
 
 #Load sample information
 ## ---- samdat ----
-samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE) 
+samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE) %>% 
+  mutate(Sample_ID = paste0(Sample_Name, "_", replicate) %>%
+  str_remove("^HLVKYDMXX_")) %>%
+  filter(FCID=="HLVKYDMXX") %>%
+  #mutate(Sample_ID = paste0(FCID, "-", Sample_ID)) %>%
+  filter(!(index=="ATCGATCG" & index2=="ATCACACG"), #CT11-ex1 duplicated
+         !(index=="TCGCTGTT" & index2=="ACTCCATC") # CT12-ex1 duplicated
+         ) %>%
+  mutate(type = case_when(
+    str_detect(Sample_ID, "^D")  ~ "Mock",
+    str_detect(Sample_ID, "SPD")  ~ "SPD",
+    str_detect(Sample_ID, "ACV")  ~ "ACV",
+    str_detect(Sample_ID, "DC")  ~ "DC",
+    str_detect(Sample_ID, "FF")  ~ "FF",
+    str_detect(Sample_ID, "NTC")  ~ "NTC",
+    str_detect(Sample_ID, "POS")  ~ "POS",
+    str_detect(Sample_ID, "CT")  ~ "CarpTrap",
+    str_detect(Sample_ID, "CM")  ~ "CarpMock"
+  )) %>%
+  set_rownames(.$Sample_ID)
 #Display samDF
 head(samdf)
 
+phy <- readRDS("output/rds/phytree.rds")$tree
+
+# Will probably need to rename the seqtabs and append the flowcell number onto the samples before they are merged
+
 ## ---- phyloseq ----
 ps <- phyloseq(tax_table(tax_plus), sample_data(samdf),
-               otu_table(seqtab.nochim, taxa_are_rows = FALSE))
+               otu_table(seqtab.nochim, taxa_are_rows = FALSE), phy_tree(phy))
 
 if(nrow(seqtab.nochim) > nrow(sample_data(ps))){warning("Warning: All samples not included in phyloseq object, check sample names match the sample metadata")}
 
@@ -80,7 +110,8 @@ saveRDS(ps, "output/rds/ps_idtaxaExact.rds")
 tax_table(ps)[,2][which(str_detect(tax_table(ps)[,7], "Synthetic"))] <- "Arthropoda"
 
 ps <- ps %>%
-  subset_samples(material %in% c("Drosophila Adults", "Drosophila Larvae", "Mixed Adults", "Mixed Larvae", "Synthetic", "Blank")) %>%
+  subset_samples(!str_detect(Sample_ID, "^CT|^CM") # remove carpophilus
+  ) %>%
   subset_taxa(Phylum == "Arthropoda") %>%
   filter_taxa( function(x) mean(x) > 0, TRUE) 
 
@@ -94,19 +125,19 @@ write.csv(export, file = "output/csv/rawdata.csv")
 
 #Summary export
 library(data.table)
-summarise_taxa(ps, "Species", "sample_id") %>%
-  filter(str_detect(sample_id, "NTC")) %>%
+seqateurs::summarise_taxa(ps, "Species", "Sample_ID") %>%
+  filter(str_detect(Sample_ID, "NTC")) %>%
   #filter(str_detect(Species, "Drosophila|Scaptodrosophila")) %>%
-  spread(key="sample_id", value="totalRA") %>%
+  spread(key="Sample_ID", value="totalRA") %>%
   write.csv(file = "output/csv/unfiltered/spp_sum.csv")
 
-summarise_taxa(ps, "Genus", "sample_id") %>%
-  spread(key="sample_id", value="totalRA") %>%
+seqateurs::summarise_taxa(ps, "Genus", "Sample_ID") %>%
+  spread(key="Sample_ID", value="totalRA") %>%
   write.csv(file = "output/csv/unfiltered/gen_sum.csv")
 
 ##Output fasta of all ASV's - Name each one by abundance + Taxonomic assignment
 
-ps_to_fasta(ps, "output/all_taxa.fasta", rank="Species")
+seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta", rank="Species")
 ```
 
 
@@ -174,7 +205,7 @@ We will use 3 different methods to estimate the cross contamination rate:
 Identification of taxa that are poorly represented in an unsupervised manner can identify taxa that will have little to no effect on downstream analysis. Sufficient removal of these "low prevalance" features can enhance many analysis by focusing statistical testing on taxa common throughout the data. However, for our dataset the problem with prevalence filtering for our dataset is that we dont have many replicates of each psyllid species, and therefore there are some high abundance but low prevalence ASV's we dont want to lose.
 
 
-```{r}
+```{r syns}
 #Process positive controls
 Syn_taxa <- c("Synthetic_Acrididae", "Synthetic_Aphididae", "Synthetic_Apidae", "Synthetic_Cerambycidae", "Synthetic_Crambidae", "Synthetic_Culicidae","Synthetic_Drosophilidae","Synthetic_Nitidulidae","Synthetic_Siricidae","Synthetic_Tephritidae", "Synthetic_Thripidae", "Synthetic_Tortricidae", "Synthetic_Triozidae")
 #
@@ -512,9 +543,10 @@ column 4,5,6 etc other covariates. Sequencing depth, community size, species ric
 ps_qual <- ps %>%
   speedyseq::tax_glom(taxrank="Species") %>%
   transform_sample_counts(function (x) (x > 0) * 1) %>%
-  merge_samples(group = "ExtractID") %>%
+  merge_samples(group = "Sample_Name") %>%
   speedyseq::psmelt() %>%
   dplyr::select(Sample, Abundance, Species) %>%
+  mutate(Sample = str_remove(Sample, "^.*_")) %>%
   separate(Sample, into=c("Sample", "exrep"), sep="-ex") %>%
   pivot_wider(names_from=exrep, values_from = Abundance, values_fill=list(Abundance = 0)) %>%
   dplyr::select(Sample, Species, `1`, `2`,)
@@ -589,10 +621,10 @@ det_suzukii <- ps_qual %>%
   mutate(Actual = replace_na(Actual, 0))  %>%
   filter(!is.na(commsize)) %>%
   mutate(commsize = scale(commsize, center = TRUE, scale = TRUE))  %>%
-  mutate(random = scale(rbinom(nrow(.), 100, 0.7), center = TRUE, scale=TRUE)) %>%
-  mutate(random2 = scale(rbinom(nrow(.), 100, 0.4), center = TRUE, scale=TRUE)) %>%
+  #mutate(random = scale(rbinom(nrow(.), 100, 0.7), center = TRUE, scale=TRUE)) %>%
+  #mutate(random2 = scale(rbinom(nrow(.), 100, 0.4), center = TRUE, scale=TRUE)) %>%
   mutate(richness = scale(richness, center = TRUE, scale = TRUE))  %>%
-  filter(!str_detect(Sample, "DLarv")) %>%
+  filter(!str_detect(Sample, "DLarv"))# %>%
   #set_rownames(.$Sample) #%>%
   dplyr::select(-Sample)
   
@@ -703,34 +735,10 @@ rm_samples <- c("Undetermined")
 ps1 <- subset_samples(ps, sample_names(ps) !=rm_samples) # Drop Undetermined reads
 ps1 <- prune_samples(sample_sums(ps1)>=20, ps1) # Drop empty samples
 
-#Plot read differences between replicates
-gg.reps <- plot_bar(ps1, x="Sample", y="Abundance", fill="Genus") +
-  facet_grid(~sample_id, drop=TRUE, scales="free_x") +
-  geom_hline(yintercept=1000)
-
-#Calculate for each primer
-#ps1 <- subset_samples(ps1,target_subfragment=="fwhF2-fwhR2n")
-#ps1 <- subset_samples(ps1,target_subfragment=="fwhF2-HexCOIR4")
-
-#Calculate kulczynski distance - A presence absense measure of detection 
-
-  kdi <- phyloseq::distance(ps1, method="kulczynski")
-  
-  kdimap <- as.data.frame(as.matrix(kdi)) %>%
-    rownames_to_column() %>%
-    gather(key="colname",value="Distance",-rowname)
-  
-  #Make heatmap plot
-  gg.kdimap <- ggplot(data = kdimap, aes(x=rowname, y=colname, fill=-Distance)) + 
-    geom_tile() + scale_fill_viridis() + 
-    ggtitle(paste0("kulczynski distance")) + 
-    theme(axis.text.x=element_text(angle=90,hjust=1),
-          axis.title = element_blank(),
-          legend.position = "none")
 
 # Merge replicates
   ps.merged <- ps1 %>%
-    merge_samples(group = "ExtractID")
+    merge_samples(group = "Sample_Name")
 
 ## keeping only those ASVs that occur in 2 replicates
 ## Create a matrix of 0s and 1s indicating whether the taxon count should be
@@ -750,36 +758,28 @@ gg.reps <- plot_bar(ps1, x="Sample", y="Abundance", fill="Genus") +
 #
 
 #This loses the sample metadata - Need to add it agian
-samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE)  %>%
-  #filter(FCID== "CK3HD2") %>% # change for other runs
-  filter(!duplicated(ExtractID))  %>%
-  magrittr::set_rownames(.$ExtractID) %>%
-  dplyr::select(c("sample_id", "ExtractID",
-                  "geo_loc_name", "material", 
-                  "target_subfragment", "F_primer", "R_primer",
-                  "FCID", "seq_platform_ID"))
-
-sample_data(ps.merged) <- samdf
+sample_data(ps.merged) <- read.csv("sample_data/Sample_info.csv", header=TRUE) %>% 
+  filter(FCID=="HLVKYDMXX") %>% 
+  select(-Sample_ID, -replicate) %>%
+  filter(!duplicated(Sample_Name))%>%
+  #mutate(Sample_ID = paste0(FCID, "-", Sample_ID)) %>%
+  filter(!(index=="ATCGATCG" & index2=="ATCACACG"), #CT11-ex1 duplicated
+         !(index=="TCGCTGTT" & index2=="ACTCCATC") # CT12-ex1 duplicated
+         ) %>%
+  #mutate(Sample_Name = str_remove(Sample_Name, "^HLVKYDMXX_")) %>%
+  mutate(type = case_when(
+    str_detect(Sample_Name, "_D")  ~ "Mock",
+    str_detect(Sample_Name, "SPD")  ~ "SPD",
+    str_detect(Sample_Name, "ACV")  ~ "ACV",
+    str_detect(Sample_Name, "DC")  ~ "DC",
+    str_detect(Sample_Name, "FF")  ~ "FF",
+    str_detect(Sample_Name, "NTC")  ~ "NTC",
+    str_detect(Sample_Name, "POS")  ~ "POS",
+    str_detect(Sample_Name, "CT")  ~ "CarpTrap",
+    str_detect(Sample_Name, "CM")  ~ "CarpMock"
+  )) %>%
+  set_rownames(.$Sample_Name)
 ps.merged <- filter_taxa(ps.merged, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
-
-
-# After merging kulczynski distance 
-
-  kdi2 <- phyloseq::distance(ps.merged, method="kulczynski")
-  
-  kdimap2 <- as.data.frame(as.matrix(kdi2)) %>%
-    rownames_to_column() %>%
-    gather(key="colname",value="Distance",-rowname)
-  
-  #Make heatmap plot
-  gg.kdimap2 <- ggplot(data = kdimap2, aes(x=rowname, y=colname, fill=-Distance)) + 
-    geom_tile() + scale_fill_viridis() + 
-    ggtitle(paste0("kulczynski distance post replicate merge")) + 
-    theme(axis.text.x=element_text(angle=90,hjust=1)) + 
-    theme(axis.text.x=element_text(angle=90,hjust=1),
-          axis.title = element_blank(),
-          legend.position = "none")
-  
 
 ```
 
@@ -893,9 +893,38 @@ ps.merged %>%
 # Detection of targets
 
 
-# Other taxa
+# Phylogeny Other taxa
+
+Comparison of attractants
+
+```{r}
+#ps2 <- speedyseq::tax_glom(ps.merged, taxrank="Species")
+ps2 <- subset_samples(ps.merged, !str_detect(sample_names(ps.merged), "POS"))#Remove mocks
+ps2 <- subset_samples(ps2, !str_detect(sample_names(ps2), "_D"))#Remove mocks
+ps2 <- subset_samples(ps2, !str_detect(sample_names(ps2), "NTC"))#Remove mocks
+
+# Filter
+ps3 <- ps2 %>%
+    transform_sample_counts(function (x) x/sum(x)) %>%  # Convert to proportions
+    transform_sample_counts(function (x) (x > 0.0001) * 1) %>%
+    filter_taxa( function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
+#ps2.carson <- prune_samples(sample_sums(ps2.carson)>0, ps2.carson) # Drop empty samples
+
+
+taxa_names(ps3) <- paste0("SV", seq(ntaxa(ps3)),"-",tax_table(ps3)[,4])
+plot_tree(ps3, label.tips = "taxa_names", ladderize="left", color="type") +coord_polar(theta="y") + scale_colour_brewer(palette="RdBu")
+
+#colour = trap type?
+
+
+```
+
+
+
+
 
 ## Alpha diversity
+
 
 Phylogenetic diversity (Faiths PD)
 Species diversity
