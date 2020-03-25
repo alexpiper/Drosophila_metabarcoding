@@ -46,6 +46,10 @@ sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
 # Github packages
 devtools::install_github("alexpiper/taxreturn")
 library(taxreturn)
+
+# SOurce internal functions
+source("R/helper_functions.R")
+
 ```
 
 # Assemble pest list
@@ -358,9 +362,9 @@ gg.primerpresR <- out %>%
 gg.primerpresF / gg.primerpresR
 ```
 
-## Figure 2a - COI Entropy
+# Figure 2a - COI Entropy
 
-### Output pest families aligned
+## Output pest families aligned
 
 Add Ns to alignment so they all match total length
 
@@ -495,6 +499,7 @@ gg.pass <- pass %>%
 
 ## Sliding window analysis
 
+Could i replace this by just selecting the windows with the maximum entropy in R?
 
 Could we do sliding window with a clustered database? use kmer package to cluster? - then select the longest sequence
 
@@ -630,8 +635,15 @@ Is there anyway to do an entropy measurement, or consensus alignment or somethin
 Here, information content is defined by the relative entropy of a column in the alignment (Yu et al., 2015), which is higher for conserved columns. The relative entropy is based on the background distribution of letter-frequencies in the alignment.
 
 
-# Big COI alignment
-Could calculate the entropy on this
+# Alterntative  - operate on whole alignment 
+1- Align all sequences to PHMM
+2- Calcualte entropy on full alignment (top part of fig)
+3- Subset alignment to orders and calculate number of diagnostic nucleotides (bottom part of fig)
+4- In-silico PCR full alignment
+  - SUbset in-silicos to pest families? or
+
+
+
 
 ```{r}
 model <- readRDS("reference/folmer_fullength_model.rds")
@@ -677,6 +689,14 @@ for (i in 1:length(vec)) {
  # }
 }
 
+# Alternatively - bio2scor entropy - this seems to make more sense
+library(Bios2cor)
+seqs <- import.fasta("reference/fwh_insecta_aligned_curated.fasta")
+
+values <- as.data.frame(entropy(seqs), stringsAsFactors=FALSE) %>%
+  rownames_to_column("pos") %>%
+  magrittr::set_colnames(c("pos", "value"))
+
 #Reorder by taxonomic order - collapse rare orders
 pestlist <- read_csv("primer_evaluation/pestlist.csv") %>%
   select(Order, Family) %>%
@@ -684,12 +704,6 @@ pestlist <- read_csv("primer_evaluation/pestlist.csv") %>%
 
 #Set moving average function - Adjust smoothing (n=5?)
 ma <- function(x,n=3){stats::filter(x,rep(1/n,n), sides=2)}
-
-
-# need to adjust for aligment start length!
-# MAke consensus sequence for each pest family and align to a reference coi (used for model)
-# get ranges on left of model, put in a data frame
-# left_join to ent, group by family, and add the buffer, then ungroup
 
 ent <- bind_rows(dat) %>%
   dplyr::select(Family, entropy, pos) %>%
@@ -718,11 +732,33 @@ ent <- bind_rows(dat) %>%
   left_join(pestlist, by="Family") %>%
   left_join(sw220, by=c("Family", "pos")) %>%
   arrange(Family) 
+
+# Sliding windows - Could do do this at same time as outputting pest families and pest genera 
+# WOuldnt really need to output them if i have the full ref db aligned to model, could just subset in a loop
+## Read in aligned
+seqs <- insect::readFASTA("primer_evaluation/pestfamilies/Aphididae.fa.gz")
+
+seqs <- as.matrix(seqs) # Should be able to fix things here right?
+# Genus and species names
+aa <- Biostrings::strsplit(dimnames(seqs)[[1]], split = ";")
+Genus <- sapply(aa, function(x) paste(x[7], sep = "_"))
+Spp <- sapply(aa, function(x) paste(x[8], sep = "_")) %>%
+  str_replace(pattern="\\ ", replacement="_")
+
+# Parallel slidenucdiag
+library(doParallel)
+library(foreach)
+
+nd <- slideNucDiag_para(seqs, Spp, 200, 3, cores=3)
+out <- data.frame(pos=seq(1, dim(seqs)[2] - 200, by = 3),
+                  nd=colSums(nd))
+
+plot(out$pos, out$nd)
 ```
 
 
 
-## Plotting Figure 2b
+## Plotting Figure 2a
 
 ```{r Figure 2}
 # Get primers
@@ -829,7 +865,7 @@ Fig2 <- gg.box / gg.density / gg.primers #+ plot_layout(heights=c(2,4, 1))
 ```
 
 
-# Figure 2b - identificaiton sucess
+# Figure 3 - identificaiton sucess
 
 In order to evaluate the taxonomic resolution of different barcode regions, alignments were trimmed to primer regions using the in silico PCR function from the insect package and  the identificaiton sucess functions from the SPIDER r package were used
 
@@ -845,19 +881,29 @@ BestCloseMatch and ThreshID functions use a genetic distance threshold to accoun
 
 
 ```{r identification sucess}
-primers <- read_csv("primer_evaluation/primer_candidates.csv")
+primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
+  mutate(seq = str_replace_all(seq, "I","N")) %>% 
+  select(-score, -issues)
+
+# Get all possible primer combinations
+combos <- expand_grid(primers %>% filter(strand=="F") %>% pull(seq),
+                      primers %>% filter(strand=="R") %>% pull(seq)
+                      ) %>%
+  mutate_if(is.factor, as.character)%>%
+  unique() %>%
+  magrittr::set_colnames(c("Fseq", "Rseq")) %>%
+  left_join(primers %>% filter(strand=="F") %>% rename_all(. %>% paste0("F",.)), by="Fseq") %>%
+  left_join(primers %>% filter(strand=="R") %>% rename_all(. %>% paste0("R",.)), by="Rseq") %>%
+  mutate(amplicon = Rstart - Fend) %>%
+  filter( amplicon > 100)
+
 Alignments <- sort(list.files("primer_evaluation/pestfamilies/", pattern = ".fa.gz", full.names = TRUE)) # Read fasta filenames
 
 names <- basename(Alignments) %>%
   str_replace(".fa.gz","")
 
 # Filter to only those within alignment size & HiSeq sized
-dat.passed <- primers %>%
-  filter(F.Start > 0 & R.Stop < 661) %>%
-  filter(amplicon < 240) %>% 
-  mutate(F.seq = str_replace_all(F.seq, "I","N"))%>% #Replace Inosines with N
-  mutate(R.seq = str_replace_all(R.seq, "I","N"))
-
+primers <- primers 
 p <- 1
 i <- 1
 dat <- vector("list", length=nrow(dat.passed))
@@ -889,6 +935,7 @@ for (i in 1:length(Alignments)) {
       Genus <- sapply(aa, function(x) paste(x[7], sep = "_"))
       Spp <- sapply(aa, function(x) paste(x[8], sep = "_"))
       
+      # Could i speed this up using KMER?
       Dist <- dist.dna(amplicon, pairwise.deletion = TRUE)
       
       if (any(Dist > 0)){
@@ -939,6 +986,8 @@ for (i in 1:length(Alignments)) {
   dat[[i]] <- out
 }
 # Some sequences are lost with the in silico PCR, will need to put another column for unsucessfully amplified
+
+# Would be good to display this as amplification sucess by length as well
 ```
 
 ## Plotting figure 2b
@@ -1080,7 +1129,7 @@ length(unique(all_fail$Spp))
 ```
 
 
-# Figure 3 - Primer mismatch
+# Figure 4 - Primer mismatch
 PROBLEM - lost the folmer F and R binding regions when cleaning, so am restricting to primers within the binding region. It would be nice to have them all so i will need to do download and cleaning again. Need to write automated script for this, or see code from below study
 
 Code modified from: Bylemans J, Gleeson DM, Hardy CM, Furlan E. Toward an ecoregion scale evaluation of eDNA metabarcoding primers: A case study for the freshwater fish biodiversity of the Murray-Darling Basin (Australia). Ecol Evol. 2018;8697–712. 
