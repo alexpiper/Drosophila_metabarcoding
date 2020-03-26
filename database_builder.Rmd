@@ -280,19 +280,6 @@ mergedseqs <- c((insect::readFASTA(file="reference/pruned.fa.gz")), as.DNAbin(co
 insect::writeFASTA(mergedseqs, file="reference/merged_final.fa.gz", compress = TRUE)
 ```
 
-# Create fully aligned version
-```{r}
-model <- readRDS("reference/folmer_fullength_model.rds")
-
-seqs <- insect::readFASTA("reference/merged_final.fa.gz")
-
-lengthfilt <- taxreturn::map_to_model(seqs[1:100], model, minscore = 400, shave= TRUE, pad=TRUE, check_indels=TRUE, maxNs=Inf, cores=2, quiet=FALSE)
-
-insect::writeFASTA(lengthfilt, "reference/merged_final_aligned.fa.gz", compress=TRUE)
-```
-
-
-
 # Create reference set for fwhf2-fwhR2n region of COI
 
 ## Trim to primer regions
