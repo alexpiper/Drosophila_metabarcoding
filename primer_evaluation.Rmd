@@ -674,8 +674,38 @@ for (p in 1:nrow(combos)) {
   
 }
 
-### ID SUCCESS
-amplicon <- readFASTA("primer_evaluation/amplicons/AgPestF1_AgPestR1a.fa.gz")
+#Metric 1 - 
+### Number of shared mixed clusters for each primer
+amplicon <- readFASTA("primer_evaluation/amplicons/fwhF2_fwhR2n.fa.gz")
+
+
+db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
+
+seqs <- amplicon[1:1000]
+
+thresholds <- rev(seq(0.9, 1, 0.01))
+threshlist <- vector("list", length=length(thresholds))
+
+for (i in 1:length(thresholds)){
+  threshlist[[i]] <- taxreturn::get_mixed_clusters(
+    x = seqs, db=db,
+    rank = c("species","genus","family"),
+    threshold = thresholds[i],
+    confidence=0, quiet = FALSE) 
+}
+names(threshlist) <- thresholds 
+mixed_clusters <- dplyr::bind_rows(threshlist)
+
+# SUmmarise number of mixed clusters that contain pests at %
+
+#Subset above results
+
+#Metric 2 - ID SUCCESS WITH SPIDER
+# Could also do mixed clusters at different distance levels, using get_mixed_clusters equvialent
+
+#Metric 3 - Leave one out
+
+#Metric 4- P(LCR) for each? 
 
 ## Should be able to evaluate these with the RDP clasifier and blast
 

@@ -7,13 +7,43 @@ editor_options:
 
 ## Load packages
 ```{r setup}
-## Load Necessary packages
-sapply(c("rentrez", "bold", "taxize","taxizedb", "usethis", "tidyverse", "spider", "insect", "ape", "DECIPHER", "ggpubr", "RColorBrewer", "plotly", "ggforce", "seqinr", "shortread", "patchwork", "viridis","ggridges","UpSetR"), require, character.only = TRUE)
+#Set required packages
+.cran_packages <- c("usethis",
+                    "tidyverse",
+                    "rentrez", 
+                    "bold",
+                    "insect",
+                    "ape",
+                    "RColorBrewer",
+                    "seqinr",
+                    "patchwork",
+                    "ShortRead",
+                    "patchwork")
 
+.bioc_packages <- c("DECIPHER",
+                    "ggtree",
+                    "Biostrings")
 
-# install.packages("devtools")
+.inst <- .cran_packages %in% installed.packages()
+if(any(!.inst)) {
+   install.packages(.cran_packages[!.inst])
+}
+.inst <- .bioc_packages %in% installed.packages()
+if(any(!.inst)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+  BiocManager::install(.bioc_packages[!.inst], ask = F)
+}
+
+#Load all packages
+sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
+
+# Github packages
 devtools::install_github("alexpiper/taxreturn")
 library(taxreturn)
+
+# SOurce internal functions
+source("R/helper_functions.R")
 
 ## Get an NCBI api key for taxize queries
 # use_entrez()
@@ -279,19 +309,6 @@ mergedseqs <- c((insect::readFASTA(file="reference/pruned.fa.gz")), as.DNAbin(co
 
 insect::writeFASTA(mergedseqs, file="reference/merged_final.fa.gz", compress = TRUE)
 ```
-
-# Create fully aligned version
-```{r}
-model <- readRDS("reference/folmer_fullength_model.rds")
-
-seqs <- insect::readFASTA("reference/merged_final.fa.gz")
-
-lengthfilt <- taxreturn::map_to_model(seqs[1:100], model, minscore = 400, shave= TRUE, pad=TRUE, check_indels=TRUE, maxNs=Inf, cores=2, quiet=FALSE)
-
-insect::writeFASTA(lengthfilt, "reference/merged_final_aligned.fa.gz", compress=TRUE)
-```
-
-
 
 # Create reference set for fwhf2-fwhR2n region of COI
 
