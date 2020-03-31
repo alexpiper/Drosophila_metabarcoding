@@ -626,19 +626,24 @@ Fig2 <- gg.box / gg.density / gg.primers
 
 ```
 
-# Identificaiton sucess
+# Identification sucess
 
 In order to evaluate the taxonomic resolution of different barcode regions, alignments were trimmed to primer regions using the in silico PCR function from the insect package and  the identificaiton sucess functions from the SPIDER r package were used
 
-
-Pairwise genetic distance was calculated for each pair of sequences using the “raw” model. We conducted bioinformatic analyses using the nearNeighbour, BestCloseMatch, and ThreshID functions to identify the taxa most likely to be misidentified or ambiguously identified using our primers
-
-The nearNeighbour function determines, for each sequence in the reference database, whether the most closely related sequence originates from a conspecific, with 2 outcomes possible: “true” or “false.” This has problems with singletons however, as the nearest neighbour will always be another species,
-
-BestCloseMatch and ThreshID functions use a genetic distance threshold to account for intra-specific variation. We estimated the most appropriate genetic thresholds to use for the “UNIQUE” and “FULL” databases to be 3.5% and 1%, respectively, based on the thresholds with the lowest cumulative error. The BestCloseMatch analysis identified the most closely related sequence, within the specified genetic distance threshold, and its species of origin for each query sequence. The ThreshID analysis extended this to consider species of origin for all sequences within the genetic distance threshold. These analyses had 4 possible outcomes: “correct,” “incorrect,” “ambiguous,” and “no identification” [47]. The “FULL” database was also analysed, with a 3.5% genetic threshold to allow for comparison with the results of the “UNIQUE” database
-
-
+Metrics to evaluate primers on:
+ *  OTU clustering of each primer at different ranks, see drop off
+ *  OTU clustering, subset to pests only (ie fraction of pests in their own cluster)
+ *  Datasets subset to pest genera (or families), evaluated with spider nearNeighbour, BestCloseMatch, ThreshID, Monophyly
+ * Leave one out BLAST/RDP?
+ * P(LCR) for each primer?
+ 
+## Virtual PCR & Clustering ID sucess
+ 
 ```{r identification sucess}
+# Load seqs
+seqs <- insect::readFASTA("reference/merged_final.fa.gz")
+
+# Load primers
 primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
   mutate(seq = str_replace_all(seq, "I","N")) %>% 
   select(-score, -issues)
@@ -655,57 +660,74 @@ combos <- expand_grid(primers %>% filter(strand=="F") %>% pull(seq),
   mutate(amplicon = Rstart - Fend) %>%
   filter( amplicon > 100)
 
-## Load seqs - Cant operate with gaps
-seqs <- insect::readFASTA("reference/merged_final.fa.gz")
-
-seqs <- seqs[1:1000]
-#seqs <- as.matrix(seqs)
-#seqs <- aphid::unalign(seqs) # Cant operate on matrix
 dir.create("primer_evaluation/amplicons")
 
+#TESTING!
+seqs <- seqs[1:1000]
+combos <- combos %>% dplyr::slice(1:10)
+
+#Get db
+db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
+#make lists
+ampedlist <- vector("list", length=nrow(combos))
+lengthlist <- vector("list", length=nrow(combos)) 
+clusterlist <- vector("list", length=nrow(combos)) 
+
 for (p in 1:nrow(combos)) {
+  #get primer names
+  primernames <- paste0(combos$Fname[p], "_",  combos$Rname[p])
   
+  #Conduct virtualPCR
   amplicon <- virtualPCR(seqs, up = combos$Fseq[p],
                            combos$Rseq[p], rcdown = TRUE,
-                             trimprimers = TRUE, quiet = FALSE, partialbind =FALSE, cores=2)
+                             trimprimers = TRUE, partialbind =FALSE, 
+                         minamplen = (combos$amplicon[p] - 9), maxamplen = (combos$amplicon[p] + 9), 
+                         quiet = FALSE, cores=2)
   
-  primernames <- paste0(combos$Fname[p], "_",  combos$Rname[p])
-    insect::writeFASTA(amplicon, file=paste0("primer_evaluation/amplicons/", primernames,".fa.gz"), compress=TRUE)  
+  # write out sequences
+  insect::writeFASTA(amplicon, file=paste0("primer_evaluation/amplicons/", primernames,".fa.gz"), compress=TRUE)  
   
-}
+  #write out sequence lengths
+  lengthlist[[p]] <- as.data.frame(table(lengths(amplicon)), stringsAsFactors=FALSE) %>%
+    magrittr::set_colnames(c("length", "freq"))
 
-#Metric 1 - 
-### Number of shared mixed clusters for each primer
-amplicon <- readFASTA("primer_evaluation/amplicons/fwhF2_fwhR2n.fa.gz")
-
-
-db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
-
-seqs <- amplicon[1:1000]
-
-thresholds <- rev(seq(0.9, 1, 0.01))
-threshlist <- vector("list", length=length(thresholds))
-
-for (i in 1:length(thresholds)){
-  threshlist[[i]] <- taxreturn::get_mixed_clusters(
-    x = seqs, db=db,
-    rank = c("species","genus","family"),
+  # Get distance clustering statistic
+  thresholds <- rev(seq(0.99, 1, 0.01)) #Chagne to 90
+  threshlist <- vector("list", length=length(thresholds))
+  
+  for (i in 1:length(thresholds)){
+  threshlist[[i]] <- taxreturn::get_mixed_clusters( 
+    x = amplicon, db=db,
+    rank = "species",
     threshold = thresholds[i],
+    return_all_taxa = TRUE,
     confidence=0, quiet = FALSE) 
+  }
+  names(threshlist) <- thresholds 
+  clusterlist[[p]] <- dplyr::bind_rows(threshlist)
 }
-names(threshlist) <- thresholds 
-mixed_clusters <- dplyr::bind_rows(threshlist)
+
+names(clusterlist) <- names(lengthlist) <- paste0(combos$Fname, "_",  combos$Rname)
+
+bind_rows(clusterlist, .id="names") %>%
+  unnest_wider(taxa_in_cluster) %>%
+  write_csv("primer_evaluation/amplicons/clusterlist.csv")
+
+lengthlist %>%
+bind_rows(lengthlist,.id="names") %>%
+  write_csv("primer_evaluation/amplicons/lengthlist.csv")
+
+#summarise overall numbers at each value
+mixed_clusters %>% group_by(threshold) %>% summarise(n=n())
 
 # SUmmarise number of mixed clusters that contain pests at %
+ pestlist <- read_csv("primer_evaluation/pestlist.csv") 
 
-#Subset above results
+mixed_clusters %>% filter(listed %in% pestlist$Species) %>% group_by(threshold) %>% summarise(n=n())
+```
 
-#Metric 2 - ID SUCCESS WITH SPIDER
-# Could also do mixed clusters at different distance levels, using get_mixed_clusters equvialent
-
-#Metric 3 - Leave one out
-
-#Metric 4- P(LCR) for each? 
+## Spider ID Sucess
+```{r}
 
 ## Should be able to evaluate these with the RDP clasifier and blast
 

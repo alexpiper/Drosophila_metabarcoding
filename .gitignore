@@ -2,3 +2,7 @@
 .Rhistory
 .RData
 .Ruserdata
+output/logs
+.fastq
+.fastq.gz
+.zip
