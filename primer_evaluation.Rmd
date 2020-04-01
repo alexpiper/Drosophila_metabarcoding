@@ -46,6 +46,7 @@ sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
 # Github packages
 devtools::install_github("alexpiper/taxreturn")
 library(taxreturn)
+library(PrimerMiner)
 
 # SOurce internal functions
 source("R/helper_functions.R")
@@ -391,6 +392,7 @@ values <- as.data.frame(ent, stringsAsFactors=FALSE) %>%
 write_csv(values, "primer_evaluation/whole_alignment_entropy.csv")
 ```
 
+
 ## Entropy & SW by order
 
 ```{r subsetting}
@@ -626,6 +628,126 @@ Fig2 <- gg.box / gg.density / gg.primers
 
 ```
 
+## Predicted mismatch
+Need to load the aligned Database so the N's are there
+
+Code modified from: Bylemans J, Gleeson DM, Hardy CM, Furlan E. Toward an ecoregion scale evaluation of eDNA metabarcoding primers: A case study for the freshwater fish biodiversity of the Murray-Darling Basin (Australia). Ecol Evol. 2018;8697–712. 
+
+```{r Primerminer, message=FALSE}
+library(PrimerMiner)
+## Target sequences to test against
+target <- "reference/merged_final_aligned.fa.gz"
+
+# Load primers
+primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
+  mutate(seq = str_replace_all(seq, "I","N")) %>% 
+  select(-score, -issues)
+
+dir.create("primer_evaluation/PrimerMiner")
+
+for (i in 1:nrow(primers)) {
+  if(primers$strand[i]=="F"){
+  evaluate_primer(target,
+   as.character(primers$seq[i]), primers$start[i], primers$end[i],
+   forward = TRUE, gap_NA = TRUE, N_NA=TRUE,
+   mm_position = "Position_v1", mm_type = "Type_v1", adjacent = 2,
+   save = paste0("primer_evaluation/PrimerMiner/", primers$name[i],".csv")
+  )
+  } else if(primers$strand[i]=="R"){
+  evaluate_primer(target,
+   as.character(primers$seq[i]), primers$start[i], primers$end[i],
+   forward = FALSE, gap_NA = TRUE, N_NA=TRUE,
+   mm_position = "Position_v1", mm_type = "Type_v1", adjacent = 2,
+   save = paste0("primer_evaluation/PrimerMiner/", primers$name[i],".csv")
+  )
+ }
+}
+
+```
+
+## Figure 3
+
+```{r figure 4}
+#Read in all files
+files <- sort(list.files(list.dirs("primer_evaluation/PrimerMiner/"), pattern = ".csv", full.names = TRUE))
+
+dat <- files %>% 
+  purrr::set_names() %>%
+  map_dfr(read_csv, col_types= cols_only(Template=col_character(),
+                                       sequ=col_character(),
+                                       sum=col_double()),.id = "source", progress=TRUE) %>%
+  separate(col=Template, into=c("Acc","Kingdom","Phylum","Class","Order","Family","Genus","Species"), sep=";") %>%
+  rename(Sequence = sequ) %>%
+  mutate(Primer = source %>%
+           str_replace("primer_evaluation/PrimerMiner//","") %>%
+           str_replace("\\/(.*?)$", ""))
+
+summaries <- dat %>% 
+  filter(Species %in% str_replace_all(read_csv("primer_evaluation/pestlist.csv")$Species, " ", "_")) %>%
+  group_by(Kingdom, Phylum, Class, Order, Family, Genus, Species, Primer) %>%
+  summarise(sum = mean(sum)) %>% # Summarise mean of species with multiple sequences
+  ungroup()  %>%
+  mutate(dir = case_when(
+    Primer %in% unique(dat.passed$F.Name) ~ "Forward",
+    Primer %in% unique(dat.passed$R.Name) ~ "Reverse"
+    ))  %>%
+  mutate(Primer = paste0(substr(dir,1,1)," ",Primer))
+
+#Get taxonomic lineage and convert to tree
+  lineage <- summaries %>%
+     group_by(Kingdom, Phylum, Class, Order, Family, Genus, Primer) %>%
+  summarise(sum = mean(sum)) %>% # Summarise mean of species with multiple sequences
+    tidyr::unite(col=pathString, Kingdom, Phylum, Class, Order, Family, Genus, sep="/") %>%
+    dplyr::mutate(pathString = paste0("Root/", pathString)) %>%
+    data.tree::as.Node(.)
+
+
+tree <- ape::read.tree(textConnection(data.tree::ToNewick(lineage, heightAttribute = NULL)))
+
+library(ggtree)
+
+test <- as_tibble(tree) %>%
+  full_join(summaries %>%
+  group_by(Kingdom, Phylum, Class, Order, Family, Genus) %>%
+  summarise(mismatch = mean(sum)) %>%
+    rename(label = Genus)) 
+
+p <- ggtree(tidytree::as.treedata(test), aes(color=mismatch)) +
+  geom_nodelab(geom='label') + # + geom_tiplab(align=TRUE) 
+  theme_tree2()+
+  scale_colour_gradient(low = "darkgreen", high = "red", limits = c(0, 200), oob = scales::squish) + 
+  theme(legend.position = "none") +
+      scale_y_continuous(expand=c(0,0))
+
+gg.sum <- summaries %>%
+  group_by(Kingdom, Phylum, Class, Order, Family, Genus, Primer, dir) %>%
+  summarise(sum = mean(sum) ) %>% # Summarise mean of species with multiple sequences
+  ungroup() %>%
+  left_join(p$data %>%
+  filter(isTip) %>%
+    select(c(label, y)) %>%
+    rename(Genus = label)) %>%
+  filter(!is.na(y)) %>%
+  ggplot(aes(x = Primer , y = factor(.$Genus, levels=unique(.$Genus[order(.$y)])) , fill = sum)) +
+  geom_tile() +
+  #scale_fill_viridis_c(option="magma",limits = c(0, 200))+
+  scale_fill_gradient(low = "darkgreen", high = "red", na.value = "grey", limits = c(0, 200), oob = scales::squish) +
+  facet_grid(~dir, scales="free", space="free", drop=TRUE) +
+  theme_classic() + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    strip.text.y = element_text(angle = 0)
+  ) 
+
+p + gg.sum
+
+```
+
+
+
 # Identification sucess
 
 In order to evaluate the taxonomic resolution of different barcode regions, alignments were trimmed to primer regions using the in silico PCR function from the insect package and  the identificaiton sucess functions from the SPIDER r package were used
@@ -637,9 +759,10 @@ Metrics to evaluate primers on:
  * Leave one out BLAST/RDP?
  * P(LCR) for each primer?
  
-## Virtual PCR & Clustering ID sucess
  
-```{r identification sucess}
+## Virtual PCR
+ 
+```{r Virtual PCR}
 # Load seqs
 seqs <- insect::readFASTA("reference/merged_final.fa.gz")
 
@@ -661,17 +784,11 @@ combos <- expand_grid(primers %>% filter(strand=="F") %>% pull(seq),
   filter( amplicon > 100)
 
 dir.create("primer_evaluation/amplicons")
+lengthlist <- vector("list", length=nrow(combos)) 
 
 #TESTING!
 seqs <- seqs[1:1000]
-combos <- combos %>% dplyr::slice(1:10)
-
-#Get db
-db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
-#make lists
-ampedlist <- vector("list", length=nrow(combos))
-lengthlist <- vector("list", length=nrow(combos)) 
-clusterlist <- vector("list", length=nrow(combos)) 
+combos <- combos %>% dplyr::slice(1:3)
 
 for (p in 1:nrow(combos)) {
   #get primer names
@@ -691,31 +808,317 @@ for (p in 1:nrow(combos)) {
   lengthlist[[p]] <- as.data.frame(table(lengths(amplicon)), stringsAsFactors=FALSE) %>%
     magrittr::set_colnames(c("length", "freq"))
 
-  # Get distance clustering statistic
-  thresholds <- rev(seq(0.99, 1, 0.01)) #Chagne to 90
-  threshlist <- vector("list", length=length(thresholds))
-  
-  for (i in 1:length(thresholds)){
-  threshlist[[i]] <- taxreturn::get_mixed_clusters( 
-    x = amplicon, db=db,
-    rank = "species",
-    threshold = thresholds[i],
-    return_all_taxa = TRUE,
-    confidence=0, quiet = FALSE) 
-  }
-  names(threshlist) <- thresholds 
-  clusterlist[[p]] <- dplyr::bind_rows(threshlist)
 }
-
-names(clusterlist) <- names(lengthlist) <- paste0(combos$Fname, "_",  combos$Rname)
-
-bind_rows(clusterlist, .id="names") %>%
-  unnest_wider(taxa_in_cluster) %>%
-  write_csv("primer_evaluation/amplicons/clusterlist.csv")
-
+names(lengthlist) <- paste0(combos$Fname, "_",  combos$Rname)
 lengthlist %>%
 bind_rows(lengthlist,.id="names") %>%
   write_csv("primer_evaluation/amplicons/lengthlist.csv")
+```
+ 
+## Clustering ID Success
+```{r clustering.R}
+# install and load packages ---------------------------------------------------
+.cran_packages <- c("tidyverse", "spider", "insect", "ape",
+                    "seqinr", "ShortRead", "foreach", "doParallel")
+
+.bioc_packages <- c("DECIPHER", "Biostrings")
+
+.inst <- .cran_packages %in% installed.packages()
+if(any(!.inst)) {
+   install.packages(.cran_packages[!.inst])
+}
+.inst <- .bioc_packages %in% installed.packages()
+if(any(!.inst)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+  BiocManager::install(.bioc_packages[!.inst], ask = F)
+}
+
+#Load all packages
+sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
+
+# Github packages
+devtools::install_github("alexpiper/taxreturn")
+library(taxreturn)
+
+
+# get job name ---------------------------------------------------
+args = commandArgs(trailingOnly=TRUE)
+
+if (length(args)==0) {
+  stop("At least one argument must be supplied (input file).n", call.=FALSE)
+}
+print(args)
+file <- args[1]
+job_name <- basename(file) %>% str_remove("\\..*$")
+message("file = ", file)
+message("job_name = ", job_name)
+
+# Run code ---------------------------------------------------
+
+#Get db
+db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
+
+## TESTING
+amplicon <- insect::readFASTA(file)
+print(amplicon)
+amplicon <- amplicon[1:1000]
+
+## Get distance clustering statistic
+thresholds <- rev(seq(0.99, 1, 0.01)) #Chagne to 90
+threshlist <- vector("list", length=length(thresholds))
+
+for (i in 1:length(thresholds)){
+threshlist[[i]] <- taxreturn::get_mixed_clusters( 
+ x = amplicon, db=db,
+ rank = "species",
+ threshold = thresholds[i],
+ return_all_taxa = TRUE,
+ confidence=0, quiet = FALSE) 
+}
+names(threshlist) <- thresholds 
+dplyr::bind_rows(threshlist) %>%
+  unnest_wider(taxa_in_cluster) %>%
+  write_csv(paste0(name,"_clustering.csv"))
+```
+
+## SLURM job submit
+
+Index jobs
+```{bash generate job index}
+#!/bin/bash
+/usr/bin/ls -d $PWD/* | sed -e '1p' -e '/.fa.gz/!d' | sort > sequence_index.txt
+```
+
+Submit array
+```{bash job script}
+#!/bin/bash
+#SBATCH --job-name=id_metrics       
+#SBATCH --ntasks=1 
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=20GB
+#SBATCH --time=100:00:00
+#SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
+#SBATCH --account=pathogens
+#SBATCH --export=none
+
+#Check if job is launched as array
+if [ -z "$SLURM_ARRAY_TASK_COUNT" ]; then 
+  echo SLURM_ARRAY_TASK_COUNT unset; 
+  echo You must launch this job as an array
+  echo see https://slurm.schedmd.com/job_array.html
+  echo for info on how to run arrays
+  exit 1
+fi
+
+Index=sequence_index.txt
+
+# Make sure that sequence index file is there before we do anything
+if [[ ! -f "${Index}" ]]; then
+  echo "Error sequence index file ${Index} does not exist"
+  exit 1
+fi
+
+#Gather info on our samples
+FullSampleName=$(sed -n ${SLURM_ARRAY_TASK_ID}p ${Index})
+SequencePath=$(dirname ${FullSampleName})
+Sample=$(basename ${FullSampleName} .fa.gz)
+
+# Double check that array index is valid
+if [[ ! -f "${FullSampleName}" ]]; then
+  echo "Error array index doesnt match up with index file"
+  echo "Array index is  ${SLURM_ARRAY_TASK_ID}"
+  exit 1
+fi
+
+# Goto tmp to do our working out
+cd $TMPDIR
+
+#Copy data files, database and decompress all
+cp ${SequencePath}/${FullSampleName}* .
+cp ${SequencePath}/clustering.R .
+cp ${SequencePath}/spider.R .
+cp -r ${SequencePath}/ott3.2 .
+cp ${SequencePath}/folmer_fullength_model.rds .
+cp ${SequencePath}/pestlist.csv .
+
+#Decompress all
+pigz -p8 -d ./*.gz
+
+#Load modules
+module purge
+module load R
+
+#Run clustering R script and send sample name to it
+Rscript clustering.R $FullSampleName
+
+#Run spider R script and send sample name to it
+Rscript spider.R $FullSampleName
+
+# Output useful job stats
+/usr/local/bin/showJobStats.scr | gzip > ${Sample}-jobstats.gz
+
+#Make a directory call ${Sample} and cp all gz files into that directory
+mkdir output
+cp ./*_clustering.csv output
+cp ./*_spider.csv output
+cp ./*-jobstats.gz output
+
+# put all output files back where we started
+cp -r output ${SLURM_SUBMIT_DIR}
+```
+ 
+
+## Spider ID Sucess
+```{r Spider}
+# install and load packages ---------------------------------------------------
+.cran_packages <- c("tidyverse", "spider", "insect", "ape",
+                    "seqinr", "ShortRead", "foreach", "doParallel")
+
+.bioc_packages <- c("DECIPHER", "Biostrings")
+
+.inst <- .cran_packages %in% installed.packages()
+if(any(!.inst)) {
+   install.packages(.cran_packages[!.inst])
+}
+.inst <- .bioc_packages %in% installed.packages()
+if(any(!.inst)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+  BiocManager::install(.bioc_packages[!.inst], ask = F)
+}
+
+#Load all packages
+sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
+
+# Github packages
+devtools::install_github("alexpiper/taxreturn")
+library(taxreturn)
+
+
+# get job name ---------------------------------------------------
+args = commandArgs(trailingOnly=TRUE)
+
+if (length(args)==0) {
+  stop("At least one argument must be supplied (input file).n", call.=FALSE)
+}
+print(args)
+file <- args[1]
+job_name <- basename(file) %>% str_remove("\\..*$")
+message("file = ", file)
+message("job_name = ", job_name)
+
+# Run code ---------------------------------------------------
+
+# Load resources
+model <- readRDS("folmer_fullength_model.rds")
+pestlist <- read_csv("primer_evaluation/pestlist.csv")
+
+## Read in seqs
+seqs <- insect::readFASTA(file)
+
+#Filter to pest genera and remove singletons
+names <- names(seqs)  %>% 
+  str_split_fixed(";", n = 8) %>% 
+  as_tibble() %>% 
+  magrittr::set_colnames(c("acc", "kingdom", "phylum",
+                          "class", "order", "family", 
+                          "genus", "species")) %>%
+  filter(genus %in% pestlist$Genus)%>%
+  group_by(species) %>%
+  add_tally %>%
+  filter(n > 1) %>%
+  select(-n) %>%
+ unite(names,everything(),sep=";") #%>%
+  
+subset <- seqs[names(seqs) %in% names$names]
+print(subset)
+
+# Testing
+subset <- subset[1:1000]
+
+# Map to model
+lengthfilt <- taxreturn::map_to_model(subset, model, minscore = 100, shave= TRUE, pad=TRUE, check_indels=TRUE, maxNs=Inf, cores=2, quiet=FALSE)
+
+# All should be same length, if not -warn and subset to most frequent value
+seqLength <- lengths(lengthfilt)
+uniqx <- unique(na.omit(seqLength))
+if(length(uniqx) > 1) {message("Warning, more than one length in lengthfilt")}
+freqlen <- uniqx[which.max(tabulate(match(seqLength, uniqx)))]
+lengthfilt <- as.matrix(lengthfilt[which(seqLength == freqlen)])
+
+# Genus and species names
+aa <- Biostrings::strsplit(dimnames(lengthfilt)[[1]], split = ";")
+Genus <- sapply(aa, function(x) paste(x[7], sep = "_"))
+Spp <- sapply(aa, function(x) paste(x[8], sep = "_"))
+
+# Create distance matrix
+Dist <- dist.dna(lengthfilt, pairwise.deletion = TRUE)
+
+# Nearest neighbour metric
+nn <- tibble(
+  query = labels(lengthfilt),
+  Spp = Spp,
+  result = nearNeighbour(Dist, Spp),
+  nn_spp = enframe(nearNeighbour(Dist, Spp, names = TRUE)) %>% pull(value))
+  
+# Closematch metric
+cm <- tibble(
+  query = labels(lengthfilt),
+  Spp = Spp,
+  result99 = bestCloseMatch(Dist, Spp, threshold = 0.01),
+  result98 = bestCloseMatch(Dist, Spp, threshold = 0.02),
+  result97 = bestCloseMatch(Dist, Spp, threshold = 0.03),
+  result96 = bestCloseMatch(Dist, Spp, threshold = 0.04),
+  result95 = bestCloseMatch(Dist, Spp, threshold = 0.05))
+
+cm_names <- tibble(
+  query = labels(lengthfilt),
+  Spp = Spp,
+  names99 = bestCloseMatch(Dist, Spp, names = TRUE, threshold = 0.01),
+  names98 = bestCloseMatch(Dist, Spp, names = TRUE, threshold = 0.02),
+  names97 = bestCloseMatch(Dist, Spp, names = TRUE, threshold = 0.03),
+  names96 = bestCloseMatch(Dist, Spp, names = TRUE, threshold = 0.04),
+  names95 = bestCloseMatch(Dist, Spp, names = TRUE, threshold = 0.05)) 
+
+cm_names <- cm_names %>%
+  mutate(names99 = map(names99, ~set_names(., paste0("closematch99_",seq_along(.))))) %>%
+  mutate(names98 = map(names98, ~set_names(., paste0("closematch98_",seq_along(.))))) %>%
+  mutate(names97 = map(names97, ~set_names(., paste0("closematch97_",seq_along(.))))) %>%
+  mutate(names96 = map(names96, ~set_names(., paste0("closematch96_",seq_along(.))))) %>%
+  mutate(names95 = map(names95, ~set_names(., paste0("closematch95_",seq_along(.))))) %>%     
+  unnest_wider(names99) %>%     
+  unnest_wider(names98) %>%     
+  unnest_wider(names97) %>%     
+  unnest_wider(names96) %>%     
+  unnest_wider(names95)
+
+closematch <- dplyr::left_join(cm, cm_names, by=c("query", "Spp"))
+
+# Monophyly metric
+Tr <- nj(Dist)
+maxInt <- max(Tr$edge.length[Tr$edge[, 2] > length(Tr$tip.label)])
+nodeRoot <- Tr$edge[which(Tr$edge.length == maxInt), 2]
+TrRoot <- root(Tr, node = nodeRoot, resolve.root = TRUE)
+TrRoot$tip.label <- Spp
+mono <- monophyly(TrRoot, Spp, singletonsMono = TRUE)
+
+out <-  tibble(
+  primer = job_name,
+  Spp = Spp,
+  query = dimnames(lengthfilt)[[1]],
+  mono=mono[match(Spp, unique(Spp))]
+) %>%
+  left_join(nn, by=c("query", "Spp")) %>%
+  left_join(closematch, by=c("query", "Spp")) 
+
+out %>% 
+  write_csv(paste0(job_name,"_spider.csv"))
+```
+
+## Figure 4
+
+```{r figure 3}
 
 #summarise overall numbers at each value
 mixed_clusters %>% group_by(threshold) %>% summarise(n=n())
@@ -724,86 +1127,7 @@ mixed_clusters %>% group_by(threshold) %>% summarise(n=n())
  pestlist <- read_csv("primer_evaluation/pestlist.csv") 
 
 mixed_clusters %>% filter(listed %in% pestlist$Species) %>% group_by(threshold) %>% summarise(n=n())
-```
 
-## Spider ID Sucess
-```{r}
-
-## Should be able to evaluate these with the RDP clasifier and blast
-
-  if (length(amplicon) > 3) {
-    
-    #Filter to median - Probem is the ones with deletions
-    #Could i extract subalignments of the ones of different size then pad them?
-    seqLength <- lengths(amplicon)
-    
-    # Get most frequent value
-    uniqx <- unique(na.omit(seqLength))
-    freqlen <- uniqx[which.max(tabulate(match(seqLength, uniqx)))]
-    amplicon <- as.matrix(amplicon[which(seqLength == freqlen)])
-    
-    # Genus and species names
-    aa <- Biostrings::strsplit(dimnames(amplicon)[[1]], split = ";")
-    Genus <- sapply(aa, function(x) paste(x[7], sep = "_"))
-    Spp <- sapply(aa, function(x) paste(x[8], sep = "_"))
-    
-    # Could i speed this up using kmer::mbed
-    dist <- kmer::kdistance(amplicon)
-    
-    Dist <- dist.dna(amplicon, pairwise.deletion = TRUE)
-    
-    
-    if (any(Dist > 0)){
-      closematch <- tibble(
-        query = labels(amplicon),
-        Spp = Spp,
-        result = bestCloseMatch(Dist, Spp))  %>% 
-        left_join(enframe(bestCloseMatch(Dist, Spp, names = TRUE)) %>%
-                  set_colnames(c("query", "names"))%>% 
-                  mutate(names = map(names, ~set_names(., paste0("closematch_",seq_along(.))))) ,
-                  by="query") %>%
-        unnest_wider(col=names)
-      
-      if (length(unique(Spp)) > 3) {
-        Tr <- nj(Dist)
-        maxInt <- max(Tr$edge.length[Tr$edge[, 2] > length(Tr$tip.label)])
-        nodeRoot <- Tr$edge[which(Tr$edge.length == maxInt), 2]
-        TrRoot <- root(Tr, node = nodeRoot, resolve.root = TRUE)
-        TrRoot$tip.label <- Spp
-        mono <- monophyly(TrRoot, Spp, singletonsMono = TRUE)
-        
-        prime[[p]] <-  tibble(
-          primer = dat.passed$Name[p],
-          Spp = Spp,
-          query = dimnames(amplicon)[[1]],
-          nn = nearNeighbour(Dist, Spp),
-          nn_spp = nearNeighbour(Dist, Spp, names = TRUE),
-          mono=mono[match(Spp, unique(Spp))]
-        ) %>%
-          left_join(closematch, by=c("query", "Spp"))
-        
-      } else if (length(unique(Spp)) <3) {
-         prime[[p]] <- tibble(
-          primer = dat.passed$Name[p],
-          Spp = Spp,
-          query = dimnames(amplicon)[[1]],
-          nn = nearNeighbour(Dist, Spp),
-          nn_spp = nearNeighbour(Dist, Spp, names = TRUE)
-        ) %>%
-          left_join(closematch, by=c("query", "Spp"))
-      } 
-    } 
-}
-
-
-# Some sequences are lost with the in silico PCR, will need to put another column for unsucessfully amplified
-
-# Would be good to display this as amplification sucess by length as well
-```
-
-## Figure 3
-
-```{r figure 3}
 #Read back in data:
 vec <- sort(list.files("primer_evaluation/amplicons/", pattern = ".csv", full.names = TRUE)) # Read fasta filenames
 
@@ -939,162 +1263,6 @@ length(unique(all_fail$Spp))
 
 ```
 
-
-# Primer mismatch
-Need to load the aligned Database so the N's are there
-
-Code modified from: Bylemans J, Gleeson DM, Hardy CM, Furlan E. Toward an ecoregion scale evaluation of eDNA metabarcoding primers: A case study for the freshwater fish biodiversity of the Murray-Darling Basin (Australia). Ecol Evol. 2018;8697–712. 
-
-```{r Primerminer, message=FALSE}
-library(PrimerMiner)
-
-primers <- read_csv("primer_evaluation/primer_candidates.csv")
-Alignments <- sort(list.files("primer_evaluation/pestfamilies/", pattern = ".fa.gz", full.names = TRUE)) # Read fasta filenames
-
-names <- Alignments %>%
-  str_replace(".fa.gz","") %>%
-  str_replace(".fa","") %>%
-  str_split_fixed("/", n = 3) %>%
-  as_tibble() %>%
-  pull(V3)
-
-# Filter to only those within alignment size & HiSeq sized
-dat.passed <- primers %>%
-  filter(F.Start > 0 & R.Stop < 661) %>%
-  filter(amplicon < 240) %>% 
-  mutate(F.seq = str_replace_all(F.seq, "I","N"))%>% #Replace Inosines with N
-  mutate(R.seq = str_replace_all(R.seq, "I","N"))
-
-
-dir.create("primer_evaluation/PrimerMiner")
-
-for (i in 1:nrow(dat.passed)) {
-    dir.create(paste0("primer_evaluation/PrimerMiner/", dat.passed$F.Name[i]))
-    dir.create(paste0("primer_evaluation/PrimerMiner/", dat.passed$R.Name[i]))
-    
-    for (j in 1:length(Alignments)) {
-        seqs <- readDNAStringSet(Alignments[j])
-        if(length(seqs) >1){
-          
-          #Problem, crashing on ionisine
-
-          str_detect(dat.passed$R.seq[i], "I")
-          
-          Fprimer <-  matchPattern(DNAString(dat.passed$F.seq[i]),seqs[[1]],max.mismatch = 3,fixed=FALSE)
-          Rprimer <-  matchPattern(reverseComplement(DNAString(dat.passed$R.seq[i])),seqs[[1]],max.mismatch = 3,fixed=FALSE)
-          
-          Fstart <- Fprimer@ranges@start
-          Fstop <- Fprimer@ranges@start + Fprimer@ranges@width - 1
-          Rstart <- Rprimer@ranges@start
-          Rstop <- Rprimer@ranges@start + Rprimer@ranges@width - 1
-          
-        #Forward
-        if(length(Fprimer@ranges@start) >0 && Fstart > 0){
-        evaluate_primer(Alignments[j],
-          as.character(dat.passed$F.seq[i]), Fstart, Fstop,
-          forward = T, gap_NA = T,
-          mm_position = "Position_v1", mm_type = "Type_v1", adjacent = 2,
-          save = paste0("primer_evaluation/PrimerMiner/", dat.passed$F.Name[i], "/", names[j], ".csv")
-        )
-        }
-        
-        #Reverse
-        #check length of target - does it suit reverse primer?
-        if(length(Rprimer@ranges@start) >0 && Rstop < length(seqs[[1]])){
-        evaluate_primer(Alignments[j],
-          as.character(dat.passed$R.seq[i]), Rstart, Rstop,
-          forward = F, gap_NA = T,
-          mm_position = "Position_v1", mm_type = "Type_v1", adjacent = 2,
-          save = paste0("primer_evaluation/PrimerMiner/", dat.passed$R.Name[i], "/", names[j], ".csv")
-        )
-        }
-        
-        }
-    }    
-}
-
-```
-
-## Figure 4
-
-```{r figure 4}
-#Read in all files
-files <- sort(list.files(list.dirs("primer_evaluation/PrimerMiner/"), pattern = ".csv", full.names = TRUE))
-
-dat <- files %>% 
-  purrr::set_names() %>%
-  map_dfr(read_csv, col_types= cols_only(Template=col_character(),
-                                       sequ=col_character(),
-                                       sum=col_double()),.id = "source", progress=TRUE) %>%
-  separate(col=Template, into=c("Acc","Kingdom","Phylum","Class","Order","Family","Genus","Species"), sep=";") %>%
-  rename(Sequence = sequ) %>%
-  mutate(Primer = source %>%
-           str_replace("primer_evaluation/PrimerMiner//","") %>%
-           str_replace("\\/(.*?)$", ""))
-
-summaries <- dat %>% 
-  filter(Species %in% str_replace_all(read_csv("primer_evaluation/pestlist.csv")$Species, " ", "_")) %>%
-  group_by(Kingdom, Phylum, Class, Order, Family, Genus, Species, Primer) %>%
-  summarise(sum = mean(sum)) %>% # Summarise mean of species with multiple sequences
-  ungroup()  %>%
-  mutate(dir = case_when(
-    Primer %in% unique(dat.passed$F.Name) ~ "Forward",
-    Primer %in% unique(dat.passed$R.Name) ~ "Reverse"
-    ))  %>%
-  mutate(Primer = paste0(substr(dir,1,1)," ",Primer))
-
-#Get taxonomic lineage and convert to tree
-  lineage <- summaries %>%
-     group_by(Kingdom, Phylum, Class, Order, Family, Genus, Primer) %>%
-  summarise(sum = mean(sum)) %>% # Summarise mean of species with multiple sequences
-    tidyr::unite(col=pathString, Kingdom, Phylum, Class, Order, Family, Genus, sep="/") %>%
-    dplyr::mutate(pathString = paste0("Root/", pathString)) %>%
-    data.tree::as.Node(.)
-
-
-tree <- ape::read.tree(textConnection(data.tree::ToNewick(lineage, heightAttribute = NULL)))
-
-library(ggtree)
-
-test <- as_tibble(tree) %>%
-  full_join(summaries %>%
-  group_by(Kingdom, Phylum, Class, Order, Family, Genus) %>%
-  summarise(mismatch = mean(sum)) %>%
-    rename(label = Genus)) 
-
-p <- ggtree(tidytree::as.treedata(test), aes(color=mismatch)) +
-  geom_nodelab(geom='label') + # + geom_tiplab(align=TRUE) 
-  theme_tree2()+
-  scale_colour_gradient(low = "darkgreen", high = "red", limits = c(0, 200), oob = scales::squish) + 
-  theme(legend.position = "none") +
-      scale_y_continuous(expand=c(0,0))
-
-gg.sum <- summaries %>%
-  group_by(Kingdom, Phylum, Class, Order, Family, Genus, Primer, dir) %>%
-  summarise(sum = mean(sum) ) %>% # Summarise mean of species with multiple sequences
-  ungroup() %>%
-  left_join(p$data %>%
-  filter(isTip) %>%
-    select(c(label, y)) %>%
-    rename(Genus = label)) %>%
-  filter(!is.na(y)) %>%
-  ggplot(aes(x = Primer , y = factor(.$Genus, levels=unique(.$Genus[order(.$y)])) , fill = sum)) +
-  geom_tile() +
-  #scale_fill_viridis_c(option="magma",limits = c(0, 200))+
-  scale_fill_gradient(low = "darkgreen", high = "red", na.value = "grey", limits = c(0, 200), oob = scales::squish) +
-  facet_grid(~dir, scales="free", space="free", drop=TRUE) +
-  theme_classic() + 
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.text.y = element_blank(),
-    axis.ticks.y = element_blank(),
-    axis.title.y = element_blank(),
-    strip.text.y = element_text(angle = 0)
-  ) 
-
-p + gg.sum
-
-```
 
 # Off-target amplification
 

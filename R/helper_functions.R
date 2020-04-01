@@ -1,4 +1,6 @@
-## Parralel slidenucdiag
+
+# Parralel slidenucdiag ---------------------------------------------------
+
 slideNucDiag_para <- function (DNAbin, sppVector, width, interval = 1, cores=1) {
   
   # Define parralel nucdiag function
