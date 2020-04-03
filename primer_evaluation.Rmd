@@ -393,15 +393,11 @@ write_csv(values, "primer_evaluation/whole_alignment_entropy.csv")
 ```
 
 
-## Entropy & SW by order
-
+## Entropy by order
 ```{r subsetting}
 ## Read in aligned & Subset to only fullength
 seqs <- insect::readFASTA("reference/merged_final_aligned.fa.gz")
 seqs <- seqs[lengths(seqs)==712]
-
-## TESTING
-seqs <- seqs[1:1000]
 
 # querylevel
 queryrank <- "order"
@@ -415,18 +411,11 @@ queries <- names(seqs)  %>%
                            "genus", "species")) %>%
   filter(class=="Insecta") %>%
   pull(queryrank) %>%
-  unique
+  unique()
 
 #Make lists to store everything
 entlist <- vector("list", length=length(queries))
 names(entlist) <- queries
-sw220 <- vector("list", length=length(queries))
-names(sw220) <- queries
-sw420 <- vector("list", length=length(queries))
-names(sw420) <- queries
-
-#Make folder to output files
-dir.create(paste0("primer_evaluation/", queryrank))
 
 for (i in 1:length(queries)){
   print(i)
@@ -443,71 +432,33 @@ for (i in 1:length(queries)){
   
   subset <- seqs[names(seqs) %in% names$names]
   if (length(subset) > 0){
-    #Transform to matrix
-    subset <- as.matrix(subset)   
-    nseqs <- nrow(subset)
+    nseqs <- length(subset)
     message(nseqs, " sequences for ", query)
-
-    # Get entropies - Need to make this more robust to matrices! - as DNAbin list?
+    
+    # Get entropies
     ent <- taxreturn::alignment_entropy(as.list(subset), maskgaps=1, countgaps=FALSE, 
                                         method="ML", unit="log")
     entlist[[i]] <- as.data.frame(ent, stringsAsFactors=FALSE) %>%
       rownames_to_column("pos") %>%
       magrittr::set_colnames(c("pos", "value")) %>%
       mutate(nseqs = nseqs)
-      
-     # Conduct sliding window analysis
-    aa <- Biostrings::strsplit(dimnames(subset)[[1]], split = ";")
-    Genus <- sapply(aa, function(x) paste(x[7], sep = "_"))
-    Spp <- sapply(aa, function(x) paste(x[8], sep = "_")) %>%
-      str_replace(pattern="\\ ", replacement="_")
-    
-    #220 bp sw (Novaseq)
-    nd <- slideNucDiag_para(subset, Spp, width = 220, interval = 3, cores=3)
-    sw220[[i]] <- data.frame(pos=seq(1, dim(subset)[2] - 220, by = 3), nd=colSums(nd)) %>%
-      mutate(nseqs = nseqs) %>%
-      mutate(nspp = length(unique(Spp)))
-    
-    #420 bp sw (Miseq)
-    nd <- slideNucDiag_para(subset, Spp, width = 420, interval = 3, cores=3)
-    sw420[[i]] <- data.frame(pos=seq(1, dim(subset)[2] - 420, by = 3), nd=colSums(nd)) %>%
-      mutate(nseqs = nseqs) %>%
-      mutate(nspp = length(unique(Spp)))
-    
-    insect::writeFASTA(subset, file=paste0("primer_evaluation/", queryrank,"/", queries[i],".fa.gz"), compress=TRUE)
       }
 }
 
 ent_out <- bind_rows(entlist, .id="names")
-write_csv(ent_out,paste0("primer_evaluation/",queryrank,"_ent_out.csv"))
-
-sw220_out <- bind_rows(sw220, .id="names")
-write_csv(sw220_out, paste0("primer_evaluation/",queryrank,"_sw220_out.csv"))
-
-sw420_out <- bind_rows(sw420, .id="names")
-write_csv(sw420_out, paste0("primer_evaluation/",queryrank,"_sw420_out.csv"))
+write_csv(ent_out,paste0("primer_evaluation/", queryrank,"_ent_out.csv"))
 
 ```
 
 
 ## Figure 2
-```{r entropy and sliding window}
-# filter to just insecta (forgot to do this for first run)
-orders <- get_ncbi_lineage() %>% 
-  filter(class=="Insecta") %>% 
-  pull(order) %>%
-  unique()
-
-# need to record number of seqs
-orders <- orders[!orders %in% c("Grylloblattodea","Mantophasmatodea", "Zoraptera" )]
-orders <- orders[!is.na(orders)] #Where are the NA's coming from?
-
-values <- read_csv("primer_evaluation/order_ent_out.csv") %>%
-  filter(names %in% orders)
-
+```{r entropy}
+# Read in results
+values <- read_csv("primer_evaluation/order_ent_out.csv") %>% 
+  filter(nseqs > 20) # Filter to only those above 20 seqs
 
 #Set moving average function - Adjust smoothing (n=5?)
-ma <- function(x,n=3){stats::filter(x,rep(1/n,n), sides=2)}
+ma <- function(x, n=3){stats::filter(x, rep(1/n, n), sides=2)}
 
 ent <- values %>%
   mutate(value = value %>% 
@@ -533,7 +484,7 @@ ent <- values %>%
     str_detect(annot, "Loop") ~ "Loop",
   ))  
 
-## plot line by order to check (remove this)
+## plot entropy by order
 gg.line <- ent %>%
   group_by(pos) %>%
   mutate(median = median(ma)) %>%
@@ -541,8 +492,7 @@ gg.line <- ent %>%
   geom_line(aes(x = pos, y=ma),size=1, inherit.aes = FALSE) +
   facet_wrap(~names)
 
-
-# Plot entropy of COI
+# Plot entropy of COI Gene
 gg.box <- ent %>%
   group_by(pos) %>%
   mutate(median = median(ma)) %>%
@@ -557,32 +507,37 @@ gg.box <- ent %>%
   scale_color_manual(values=c("#ca0020", "#0571b0")) +
   scale_x_continuous(limits = c(0, 712), breaks=seq(0,700,50), expand=c(0,0)) 
 
-# Sliding window plots - Can i double facet by window size and order
-sw220 <- read_csv("primer_evaluation/order_sw220_out.csv") %>%
-  filter(names %in% orders) %>%
-  mutate(windowsize = 220)
+# Sliding window of entropy
+sw <- function(x, width, interval = 1){
+  win <- seq(1,  length(x) - width, by = interval) #Get all possible windows
+  out <- vector("numeric", length=length(x))
+  for(i in 1:length(win)){
+  out[[i]] <- sum(x[win[i]:(win[i] + width)])
+  }
+  out[out==0] <- NA
+  return(out)
+}
 
-sw420 <- read_csv("primer_evaluation/order_sw420_out.csv") %>%
-  filter(names %in% orders) %>%
-  mutate(windowsize = 420)
+ent_sw <- values %>%
+  group_by(names) %>%
+  mutate(sw220 = sw(value, width=220, interval = 1)/220) %>%
+  mutate(sw420 = sw(value, width=420, interval = 1)/420) %>%
+  mutate(sw20 = sw(value, width=20, interval = 1)/20) %>% #For primers
+  ungroup()%>%
+  pivot_longer(starts_with("sw"),
+               names_to = "windowsize",
+               values_to = "sw") 
 
-sw <- bind_rows(sw220, sw420)
-
-gg.sw <- sw %>%
-  ggplot(aes(x = pos, y=nd, colour=names)) + 
-  geom_line() +
-  facet_grid(windowsize~names)
-
-gg.density <-  sw220 %>%
+gg.density <-  ent_sw %>%
   dplyr::rename(Order = names) %>%
   mutate(Order = case_when(
      Order %in% c("Coleoptera", "Diptera", "Hemiptera", "Hymenoptera", "Lepidoptera") ~ Order,
     !Order %in% c("Coleoptera", "Diptera", "Hemiptera", "Hymenoptera", "Lepidoptera") ~ "Other"
     )) %>%
-  ggplot(aes(x =pos, y=1)) +
-    geom_tile(aes(fill=nd))+
+  ggplot(aes(x = pos, y=1)) +
+    geom_tile(aes(fill=sw))+
     scale_fill_viridis_c(option="plasma") + 
-  facet_wrap(~Order, ncol=1, strip.position ="right") +
+  facet_wrap(windowsize~Order, ncol=1, strip.position ="right") +
   scale_x_continuous(limits = c(0, 712), breaks=seq(0,700,50), expand=c(0,0))  +
   theme_void() +
   theme(legend.position = "bottom",
@@ -625,7 +580,6 @@ gg.primers <- ggplot(data=values[values$pos==1,], aes(x = as.numeric(pos))) +
         axis.title = element_blank())
 
 Fig2 <- gg.box / gg.density / gg.primers 
-
 ```
 
 ## Predicted mismatch
@@ -817,28 +771,16 @@ bind_rows(lengthlist,.id="names") %>%
  
 ## Clustering ID Success
 ```{r clustering.R}
-# install and load packages ---------------------------------------------------
+# load packages ---------------------------------------------------
 .cran_packages <- c("tidyverse", "spider", "insect", "ape",
                     "seqinr", "ShortRead", "foreach", "doParallel")
 
 .bioc_packages <- c("DECIPHER", "Biostrings")
 
-.inst <- .cran_packages %in% installed.packages()
-if(any(!.inst)) {
-   install.packages(.cran_packages[!.inst])
-}
-.inst <- .bioc_packages %in% installed.packages()
-if(any(!.inst)) {
-  if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-  BiocManager::install(.bioc_packages[!.inst], ask = F)
-}
-
 #Load all packages
 sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
 
 # Github packages
-devtools::install_github("alexpiper/taxreturn")
 library(taxreturn)
 
 
@@ -882,92 +824,6 @@ dplyr::bind_rows(threshlist) %>%
   write_csv(paste0(name,"_clustering.csv"))
 ```
 
-## SLURM job submit
-
-Index jobs
-```{bash generate job index}
-#!/bin/bash
-/usr/bin/ls -d $PWD/* | sed -e '1p' -e '/.fa.gz/!d' | sort > sequence_index.txt
-```
-
-Submit array
-```{bash job script}
-#!/bin/bash
-#SBATCH --job-name=id_metrics       
-#SBATCH --ntasks=1 
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=20GB
-#SBATCH --time=100:00:00
-#SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
-#SBATCH --account=pathogens
-#SBATCH --export=none
-
-#Check if job is launched as array
-if [ -z "$SLURM_ARRAY_TASK_COUNT" ]; then 
-  echo SLURM_ARRAY_TASK_COUNT unset; 
-  echo You must launch this job as an array
-  echo see https://slurm.schedmd.com/job_array.html
-  echo for info on how to run arrays
-  exit 1
-fi
-
-Index=sequence_index.txt
-
-# Make sure that sequence index file is there before we do anything
-if [[ ! -f "${Index}" ]]; then
-  echo "Error sequence index file ${Index} does not exist"
-  exit 1
-fi
-
-#Gather info on our samples
-FullSampleName=$(sed -n ${SLURM_ARRAY_TASK_ID}p ${Index})
-SequencePath=$(dirname ${FullSampleName})
-Sample=$(basename ${FullSampleName} .fa.gz)
-
-# Double check that array index is valid
-if [[ ! -f "${FullSampleName}" ]]; then
-  echo "Error array index doesnt match up with index file"
-  echo "Array index is  ${SLURM_ARRAY_TASK_ID}"
-  exit 1
-fi
-
-# Goto tmp to do our working out
-cd $TMPDIR
-
-#Copy data files, database and decompress all
-cp ${SequencePath}/${FullSampleName}* .
-cp ${SequencePath}/clustering.R .
-cp ${SequencePath}/spider.R .
-cp -r ${SequencePath}/ott3.2 .
-cp ${SequencePath}/folmer_fullength_model.rds .
-cp ${SequencePath}/pestlist.csv .
-
-#Decompress all
-pigz -p8 -d ./*.gz
-
-#Load modules
-module purge
-module load R
-
-#Run clustering R script and send sample name to it
-Rscript clustering.R $FullSampleName
-
-#Run spider R script and send sample name to it
-Rscript spider.R $FullSampleName
-
-# Output useful job stats
-/usr/local/bin/showJobStats.scr | gzip > ${Sample}-jobstats.gz
-
-#Make a directory call ${Sample} and cp all gz files into that directory
-mkdir output
-cp ./*_clustering.csv output
-cp ./*_spider.csv output
-cp ./*-jobstats.gz output
-
-# put all output files back where we started
-cp -r output ${SLURM_SUBMIT_DIR}
-```
- 
 
 ## Spider ID Sucess
 ```{r Spider}
@@ -1115,6 +971,98 @@ out <-  tibble(
 out %>% 
   write_csv(paste0(job_name,"_spider.csv"))
 ```
+
+## SLURM job submit
+
+Index jobs
+```{bash generate job index}
+#!/bin/bash
+/usr/bin/ls -d $PWD/* | sed -e '1p' -e '/.fa.gz/!d' | sort > sequence_index.txt
+```
+
+Submit array
+
+njobs=$(cat sequence_index.txt | wc -l)
+sbatch --array=1-808 submit_clustering.slurm
+
+
+```{bash job script}
+#!/bin/bash
+#SBATCH --job-name=id_metrics       
+#SBATCH --ntasks=1 
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=20GB
+#SBATCH --time=100:00:00
+#SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
+#SBATCH --account=pathogens
+#SBATCH --export=none
+
+#Check if job is launched as array
+if [ -z "$SLURM_ARRAY_TASK_COUNT" ]; then 
+  echo SLURM_ARRAY_TASK_COUNT unset; 
+  echo You must launch this job as an array
+  echo see https://slurm.schedmd.com/job_array.html
+  echo for info on how to run arrays
+  exit 1
+fi
+
+Index=sequence_index.txt
+
+# Make sure that sequence index file is there before we do anything
+if [[ ! -f "${Index}" ]]; then
+  echo "Error sequence index file ${Index} does not exist"
+  exit 1
+fi
+
+#Gather info on our samples
+FullSampleName=$(sed -n ${SLURM_ARRAY_TASK_ID}p ${Index})
+SequencePath=$(dirname ${FullSampleName})
+Sample=$(basename ${FullSampleName} .fa.gz)
+
+# Double check that array index is valid
+if [[ ! -f "${FullSampleName}" ]]; then
+  echo "Error array index doesnt match up with index file"
+  echo "Array index is  ${SLURM_ARRAY_TASK_ID}"
+  exit 1
+fi
+
+# Goto tmp to do our working out
+cd $TMPDIR
+
+#Copy data files, database and decompress all
+cp ${SequencePath}/${FullSampleName}* .
+cp ${SequencePath}/clustering.R .
+cp ${SequencePath}/spider.R .
+cp -r ${SequencePath}/ott3.2 .
+cp ${SequencePath}/folmer_fullength_model.rds .
+cp ${SequencePath}/pestlist.csv .
+
+#Decompress all
+pigz -p8 -d ./*.gz
+
+#Load modules
+module purge
+module load R
+
+#Run clustering R script and send sample name to it
+Rscript clustering.R $FullSampleName
+
+#Run spider R script and send sample name to it
+Rscript spider.R $FullSampleName
+
+# Output useful job stats
+/usr/local/bin/showJobStats.scr | gzip > ${Sample}-jobstats.gz
+
+#Make a directory call ${Sample} and cp all gz files into that directory
+mkdir output
+cp ./*_clustering.csv output
+cp ./*_spider.csv output
+cp ./*-jobstats.gz output
+
+# put all output files back where we started
+cp -r output ${SLURM_SUBMIT_DIR}
+```
+ 
 
 ## Figure 4
 
