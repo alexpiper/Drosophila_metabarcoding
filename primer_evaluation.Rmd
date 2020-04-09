@@ -23,7 +23,9 @@ editor_options:
                     "patchwork",
                     "ShortRead",
                     "foreach",
-                    "doParallel")
+                    "doParallel",
+                    "PrimerTree",
+                    "TmCalculator")
 
 .bioc_packages <- c("DECIPHER",
                     "ggtree",
@@ -193,13 +195,10 @@ lineage %>%
 
 # Primer info
 
-## Binding sites
-
-```{r get primer binding sites}
+```{r primer binding and constraints}
 #alignment was then manually curated in geneious primer
 folmer_curated <-  ape::read.dna("reference/Folmer_insecta_fullength_withprime_curated.fa",format="fasta")
 model <- aphid::derivePHMM(folmer_curated)
-
 
 # Be worth validating how the score is calculated?
 primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
@@ -209,86 +208,15 @@ primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
   rename(seq = primer), by="seq") %>%
   unique()
 
+primers <- primers %>%
+  left_join(.$seq %>%
+  purrr::map_df(get_primer_statistics, metrics="all", disambiguate=TRUE))
+
 write_csv(primers, "primer_evaluation/primer_candidates.csv")
-
 ```
 
-## Constraints
+## Primer Presence in seqs
 
-GC clamp
-GC ratio
-Tm Deviation
-Tm Range
-Repeats
-Runs
-Length
-
-```{R }
-#GC Ratio
-test <- DNAString(primers$seq[1] %>% str_replace("I", "N"))
-as.data.frame(alphabetFrequency(test, baseOnly=F, as.prob=T))
-
-
-check_gc <- function(primer, ambiguous = TRUE){
-  if(ambiguous){
-    query <- unlist(DECIPHER::Disambiguate(DNAStringSet(primer)))
-  } else {
-    query <- DNAString(primer)
-  }
-   df <- as.data.frame(
-     prop.table(
-       colSums(
-         letterFrequency(query,letters="ACGT", OR=0
-                         )))) %>%
-    rownames_to_column("Base") %>%
-     set_colnames(c("Base", "Proportion"))
-   df$primer <- primer
-  return(df)
-}
-
-check_gc(primers$seq[1])
-
-
-
-#TMCalc using nearest neighbour methods of Santalucia N E W J . Nearest-neighbor thermodynamics of deoxyinosine pairs in DNA duplexes[J].Nucleic Acids Research, 2005, 33(19):6258-67
-library(TmCalculator)
-primer <- primers$seq[1]
-TmCalculator::Tm_NN(primer, ambiguous = TRUE)
-
-# Can correct for salt content etc
-
-#homopolymers
-
-## Homopolymers check
-test <- as.character(unlist(DECIPHER::Disambiguate(DNAStringSet(primer))))
-
-check_homopolymers <- function(primer, ambiguous = TRUE){
-  
-  if(ambiguous){
-    query <- as.character(unlist(DECIPHER::Disambiguate(DNAStringSet(primer))))
-  } else {
-    query <- primer
-  }
-  df <- data.frame(
-      primer = primer,
-    `A` = query %>% purrr::map_chr(longestConsecutive, "A") %>% max(),
-    `T` = query %>% purrr::map_chr(longestConsecutive, "T") %>% max(),
-    `G` = query %>% purrr::map_chr(longestConsecutive, "G") %>% max(),
-    `C` = query %>% purrr::map_chr(longestConsecutive, "C") %>% max(),
-    stringsAsFactors = FALSE
-  )
-  return(df)
-}
- 
-
-```
-
-
-## Presence in seqs
-
-vcountpattern with maxmismatch changing?
-
-with indels turns it to lehvenstein
 ```{r check pres}
 primerHits <- function(primer, fn, max.mismatch=0, with.indels=FALSE) {
       if(stringr::str_detect(primer, "I")) {
@@ -359,8 +287,6 @@ gg.primerpresR <- out %>%
   coord_flip() + 
   xlab("Reverse Primers")
 
-
-
 gg.primerpresF / gg.primerpresR
 ```
 
@@ -391,7 +317,6 @@ values <- as.data.frame(ent, stringsAsFactors=FALSE) %>%
 
 write_csv(values, "primer_evaluation/whole_alignment_entropy.csv")
 ```
-
 
 ## Entropy by order
 ```{r subsetting}
@@ -449,7 +374,6 @@ ent_out <- bind_rows(entlist, .id="names")
 write_csv(ent_out,paste0("primer_evaluation/", queryrank,"_ent_out.csv"))
 
 ```
-
 
 ## Figure 2
 ```{r entropy}
@@ -1222,16 +1146,21 @@ To reduce the number of primer pairs for further analyses perform an initial scr
 
 Note: Detailed information about installing and running PrimerTree can be found at https://github.com/jimhester/primerTree
 
+Could use a slurm array to submit each seperately with all combinatons. 
+Also worth having a function to count degeneracy for the constraints section
 ```{r off target}
 primers <- read_csv("primer_evaluation/primer_candidates.csv")
 library(primerTree)
+
+
 
 forward <- "GGDRCWGGWTGAACWGTWTAYCCNCC"
 rev <- "TATDGTRATDGCHCCNGC"
 
 test3 <- search_primer_pair(
   forward,
-  rev
+  rev,
+  num_permutations = 2
 )
 ranks = c("kingdom", "phylum", "class", 
     "order", "family", "genus", "species")
