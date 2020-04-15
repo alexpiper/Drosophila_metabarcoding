@@ -142,21 +142,35 @@ insect::writeFASTA(filtered, file="reference/filtered.fa.gz",compress=TRUE)
 # Filter for stop codons
 codon_filt <- taxreturn::codon_filter(purged)
 
+seqs <- codon_filt
+
+# First remove punctuation
+names(seqs) <- paste0(str_remove_all(str_extract(names(seqs), "^.*\\|" ), "[:punct:]"), str_extract(names(seqs), "\\|.*$" )) %>%
+  str_replace("\\|\\|", "\\|")
+
+# Then remove duplicate accession numbers (some with same accession have different taxonomy)
+
+seqs <- insect::subset.DNAbin(seqs, subset = !duplicated(str_extract(names(seqs), "^.*\\|" )))
+
 # flag clusters with mixed taxonomy at different cluster thresholds and taxonomic ranks
-seqs <- insect::subset.DNAbin(codon_filt, subset = !duplicated(names(codon_filt)))
 
 thresholds <- rev(seq(0.9, 1, 0.01))
 threshlist <- vector("list", length=length(thresholds))
 
+#Get db
+db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
+
 for (i in 1:length(thresholds)){
   threshlist[[i]] <- taxreturn::get_mixed_clusters(
-    x = seqs, source="ott3.2", db=NULL,
+    x = seqs, db=db,
     rank = c("species","genus","family"),
     threshold = thresholds[i],
+    return = "all",
     confidence=0.6, quiet = FALSE) 
 }
 names(threshlist) <- thresholds 
-mixed_clusters <- dplyr::bind_rows(threshlist)
+results <- dplyr::bind_rows(threshlist)
+write.csv(results,"mixedclusters.csv")
 
 mixed_clusters <- vroom::vroom("reference/mixedclusters.csv")
 
