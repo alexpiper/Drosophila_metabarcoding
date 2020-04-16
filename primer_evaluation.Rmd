@@ -726,6 +726,7 @@ message("job_name = ", job_name)
 db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
 
 ## TESTING
+ file <- "primer_evaluation/amplicons/fwhF2_fwhR2n.fa.gz"
 amplicon <- insect::readFASTA(file)
 print(amplicon)
 amplicon <- amplicon[1:1000]
@@ -739,13 +740,27 @@ threshlist[[i]] <- taxreturn::get_mixed_clusters(
  x = amplicon, db=db,
  rank = "species",
  threshold = thresholds[i],
- return_all_taxa = TRUE,
+ return = "all",
  confidence=0, quiet = FALSE) 
 }
 names(threshlist) <- thresholds 
 dplyr::bind_rows(threshlist) %>%
-  unnest_wider(taxa_in_cluster) %>%
-  write_csv(paste0(name,"_clustering.csv"))
+  write_csv(paste0(job_name,"_clustering.csv"))
+```
+
+## get the good from clustering
+
+```{r}
+test <- get_mixed_clusters( 
+  x = amplicon, db=db,
+  rank = "species",
+  threshold = 0.95,
+  return = "all",
+  confidence=0, quiet = FALSE) 
+
+#Still would be better to create a table with out, with the columns:
+# Cluster, #Accession, # Taxon
+
 ```
 
 
@@ -908,14 +923,12 @@ Submit array
 
 njobs=$(cat sequence_index.txt | wc -l)
 sbatch --array=1-808 submit_clustering.slurm
-
-
 ```{bash job script}
 #!/bin/bash
 #SBATCH --job-name=id_metrics       
 #SBATCH --ntasks=1 
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=20GB
+#SBATCH --mem=80GB
 #SBATCH --time=100:00:00
 #SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
 #SBATCH --account=pathogens
@@ -977,7 +990,7 @@ Rscript spider.R $FullSampleName
 # Output useful job stats
 /usr/local/bin/showJobStats.scr | gzip > ${Sample}-jobstats.gz
 
-#Make a directory call ${Sample} and cp all gz files into that directory
+#Make an output directory
 mkdir output
 cp ./*_clustering.csv output
 cp ./*_spider.csv output
@@ -1159,19 +1172,166 @@ Get taxonomy for all cross reactign sequences, filter to those that are not inse
 Retrieve all sequences for cross reacting, make new database from those
 Then do in-silico PCR with insect and count how many successfully amplify
 
+```{r off target}
+dir.create("primer_evaluation/off_target")
+# Load primers
+primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
+  mutate(seq = str_replace_all(seq, "I","N")) %>% 
+  mutate(seq =case_when(
+    strand=="F" ~ seq,
+    strand=="R" ~ rc(seq) #Works without RC but RC seems faster
+  )) 
+
+# Disambiguate primers and write out individuals
+seqs <- DECIPHER::Disambiguate(DNAStringSet(primers$seq))
+names(seqs) <- primers$name
+
+for (i in 1:length(seqs)){
+  out <- unlist(seqs[i])
+  names(out) <- make.unique(names(out), sep="_")
+  writeXStringSet(out, paste0("primer_evaluation/off_target/",names(out[1]),".fa"))
+}
+
+
+# Get all possible primer combinations
+combos <- expand_grid(primers %>% filter(strand=="F") %>% pull(seq),
+                      primers %>% filter(strand=="R") %>% pull(seq)
+                      ) %>%
+  mutate_if(is.factor, as.character)%>%
+  unique() %>%
+  magrittr::set_colnames(c("Fseq", "Rseq")) %>%
+  left_join(primers %>% filter(strand=="F") %>% rename_all(. %>% paste0("F",.)), by="Fseq") %>%
+  left_join(primers %>% filter(strand=="R") %>% rename_all(. %>% paste0("R",.)), by="Rseq") %>%
+  mutate(amplicon = Rstart - Fend) %>%
+  filter( amplicon > 100) %>%
+  mutate(synthetic = paste0(Fseq,"-", rc(Rseq) )) 
+
+# Write out all combos - takes a while due to extremely high degeneracy!
+for(i in 1:nrow(combos)){
+  print(i)
+  out <- DECIPHER::Disambiguate(DNAStringSet(combos$synthetic[i]))
+  names(out) <- paste0(combos$Fname[i], "_",  combos$Rname[i])
+  out <- unlist(out)
+  # Pad with 20 N's
+  out <- DNAStringSet(sapply(out, str_replace_all, pattern= "-", replacement="NNNNNNNNNNNNNNNNNNNN"))
+  
+  names(out) <- make.unique(names(out), sep="_")
+  writeXStringSet(out, paste0("primer_evaluation/off_target/", names(out[1]),".fa"))
+}
+
+# For the combos should i just take a random sample of 1000? as this is pretty ridiculous
+
+```
+
 See primerblast paper:
-First generate artificial template sequence by concatenating both primer sequences with a 20 base spacer. This ensures that each primer will be treated separately in the BLAST search and thus achieves the equivalent effect of performing a separate BLAST search for each primer.
-- Can you run a blastN with degenerate nucleotidess?
 
-The specificity checking module by default uses BLAST search parameters that ensure high sensitivity such that it can detect a target that contains up to 35% mismatches to the primer sequence. The default BLAST expect value cutoff is 30,000 for the primer-only case and it is typically adjusted much higher for the template case (see below). This expect value is 3000 times higher than the standard BLAST program default (the higher the expect value cutoff, the more sensitive the search) and is necessary to ensure detection of targets that have a significant number of mismatches to primers yet are potentially amplifiable in PCR. Other highly sensitive default parameters include a word size of seven (standard BLAST uses 11), 50,000 for the maximum number of database sequences (standard BLAST uses 250) and 1 for match reward to mismatch penalty ratio (standard BLAST uses 1.5). The expect value for a given BLAST match between a primer and a target is roughly proportional to the query sequence length given the same search database [6], but the query lengths used in the primer-only case and the template case are often very different. Therefore, there can be a large discrepancy in the expect values between the BLAST matches in the two cases, even though the same primer sequences are being aligned. To resolve this issue, we internally adjust the specified expect value cutoff for the template case using the length of the artificial template from the primer-only case as a guide. This ensures that the BLAST results are equivalent between submitting a template and submitting primers only.
+To evaluate specificity, artificial search sequences were generated by concatenating both primer sequences with a 20 base spacer. This ensures that each primer will be treated separately in the BLAST search and thus achieves the equivalent effect of performing a separate BLAST search for each primer. To create a database of potential non-target sequence ampliciations These artificial sequences as well as just the forward and reverse primers were searched against the local NCBI nr database using BLASTn
 
-Could i instead calculate a kmerdistance to all the sequences in ncbi nt database, perhaps usign BBtools
+From primerserver code : https://github.com/billzt/PrimerServer/blob/master/script/_run_specificity_check.pl
+blastn -task blastn-short -query $query_file -db $db_file -evalue 30000 "
+                    ." -word_size 7 -perc_identity60 -dust no -ungapped -reward 1 -penalty -1 "
+                    ." -max_hsps 500 -outfmt '6 qseqid qstart qend sseqid sstart send sstrand' "
+                    ." -out $query_file.$db_name.out -num_threads $run_cpu";
 
-Using the trimmed datasets, conduct a pirmerblast using primertree, and plot reuslts, highlighting the non-arthropoda nodes that were produced
 
-modified from: Bylemans J, Gleeson DM, Hardy CM, Furlan E. Toward an ecoregion scale evaluation of eDNA metabarcoding primers: A case study for the freshwater fish biodiversity of the Murray-Darling Basin (Australia). Ecol Evol. 2018;8697–712. 
+Index jobs
+```{bash generate job index}
+#!/bin/bash
+/usr/bin/ls -d $PWD/*.fa | sort > sequence_index.txt
+```
 
-To reduce the number of primer pairs for further analyses perform an initial screening of primers using PrimerTree
+Submit array
+
+njobs=$(cat sequence_index.txt | wc -l)
+sbatch --array=1-1 primerblast.slurm
+
+## BLAST
+```{bash blast}
+#!/bin/bash
+#SBATCH --job-name=BLASTn       
+#SBATCH --ntasks=1 
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=50GB
+#SBATCH --time=240:00:00
+#SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
+#SBATCH --account=pathogens
+#SBATCH --export=none
+
+#Check if job is launched as array
+if [ -z "$SLURM_ARRAY_TASK_COUNT" ]; then 
+  echo SLURM_ARRAY_TASK_COUNT unset; 
+  echo You must launch this job as an array
+  echo see https://slurm.schedmd.com/job_array.html
+  echo for info on how to run arrays
+  exit 1
+fi
+Index=sequence_index.txt
+
+# Make sure that sequence index file is there before we do anything
+if [[ ! -f "${Index}" ]]; then
+  echo "Error sequence index file ${Index} does not exist"
+  exit 1
+fi
+
+#Gather info on our samples
+BlastDB=/group/blastdb/nt
+FullSampleName=$(sed -n ${SLURM_ARRAY_TASK_ID}p ${Index})
+SequencePath=$(dirname ${FullSampleName})
+Sample=$(basename ${FullSampleName} .fa)
+
+# Double check that array index is valid
+if [[ ! -f "${FullSampleName}" ]]; then
+  echo "Error array index doesnt match up with index file"
+  echo "Array index is  ${SLURM_ARRAY_TASK_ID}"
+  exit 1
+fi
+
+# Goto tmp to do our working out
+cd $TMPDIR
+
+#Copy data files, database and decompress all
+cp ${SequencePath}/${Sample}.fa .
+#pigz -p8 -d ./*.gz
+
+#Load modules
+module purge
+module load BLAST+
+
+###START###
+
+echo ${BlastDB}
+echo ${Sample}
+date
+
+blastn -task blastn-short \
+-query ${Sample}.fa \
+-db  ${BlastDB} \
+-out ${Sample}.out \
+-evalue 30000 \
+-perc_identity 60 \
+-word_size 7 \
+-dust no \
+-ungapped \
+-reward 1 \
+-penalty -3 \ #Watch this
+-max_hsps 100000 \
+-outfmt '6 qseqid qstart qend sseqid staxid sstart send sstrand' \
+-num_threads 8
+
+# Output useful job stats
+/usr/local/bin/showJobStats.scr | gzip > ${Sample}-jobstats.gz
+
+#Make a directory call ${Sample} and cp all output files into that directory
+mkdir ${Sample}_output
+cp ./*.out ${Sample}_output
+cp ./*-jobstats.gz ${Sample}_output
+
+date
+
+# put all output files back where we started
+cp -r ${Sample}_output ${SLURM_SUBMIT_DIR}
+```
+
 
 Note: Detailed information about installing and running PrimerTree can be found at https://github.com/jimhester/primerTree
 
