@@ -94,8 +94,6 @@ fetchSeqs(outgroups, database="genbank", out.dir="reference/outgroups", quiet=FA
 
 ## Merge and clean sequences
 
-# Warning - need to run again from start to deal with duplicated accessions now fixed
-
 ```{r merge and clean}
 seqs <- c(readDNAStringSet(list.files("reference/insecta/genbank", pattern = ".fa", full.names = TRUE)),
           readDNAStringSet(list.files("reference/insecta/bold", pattern = ".fa", full.names = TRUE)),
@@ -111,14 +109,23 @@ writeXStringSet(seqs, filepath = "reference/mergedseqs.fa.gz", compress=TRUE)
 uniqSeqs <- seqs[!duplicated(str_remove(names(seqs), "\\|.*$")),]
 writeXStringSet(uniqSeqs, "reference/uniqSeqs.fa.gz", width=5000, compress=TRUE)
 
-## Map to Open tree of life taxonomy, resolving synonyms and filtering bad flags:
-# "incertae_sedis,|incertae_sedis$|major_rank_conflict|unplaced|environmental|inconsistent|extinct|hidden|hybrid|not_otu|viral|barren"
-download_ott_taxonomy()
-resolved <- map_to_ott(uniqSeqs, dir="ott3.2", resolve_synonyms=TRUE, filter_bads = TRUE, remove_na = TRUE, quiet=FALSE)
+# Download ott taxonomy and make a database
+taxreturn::download_ott_taxonomy(dest.dir = "ott3.2")
+db <- taxreturn::get_ott_taxonomy(dir="ott3.2", filter_bads = FALSE)
+
+## Map to Open tree of life taxonomy and resolve synonyms - need to fix mapping
+resolved <- map_to_ott(uniqSeqs, db, resolve_synonyms=TRUE, filter_unplaced=TRUE, remove_na = TRUE, quiet=FALSE)
+
+#filter unplaced taxa ie "incertae_sedis,|incertae_sedis$|major_rank_conflict|unplaced|environmental|inconsistent|extinct|hidden|hybrid|not_otu|viral|barren"
+resolved <- filter_unplaced(resolved, db)
+
+#filter infraspecific taxa
+resolved <- filter_infraspecifc(resolved, db)
+
 insect::writeFASTA(resolved, file="reference/resolved.fa.gz", compress=TRUE)
 
 # Filter any further sequences with problem names
-names <- names(readFASTA("reference/codon_filt.fa.gz")) %>%
+names <- names(readFASTA("reference/resolved.fa.gz")) %>%
   str_split_fixed(";", n=2) %>%
   as_tibble() %>%
   set_colnames(c("acc", "name"))
@@ -144,15 +151,24 @@ codon_filt <- taxreturn::codon_filter(purged)
 
 seqs <- codon_filt
 
-# First remove punctuation
-names(seqs) <- paste0(str_remove_all(str_extract(names(seqs), "^.*\\|" ), "[:punct:]"), str_extract(names(seqs), "\\|.*$" )) %>%
-  str_replace("\\|\\|", "\\|")
-
-# Then remove duplicate accession numbers (some with same accession have different taxonomy)
-
-seqs <- insect::subset.DNAbin(seqs, subset = !duplicated(str_extract(names(seqs), "^.*\\|" )))
+seqs <- insect::readFASTA("reference/codon_filt.fa.gz")
 
 # flag clusters with mixed taxonomy at different cluster thresholds and taxonomic ranks
+
+# First remove punctuation characters from accessions
+#names(seqs) <- paste0(str_remove_all(str_extract(names(seqs), "^.*\\|" ), "[:punct:]"), str_extract(names(seqs), "\\|.*$" )) %>%
+#  str_replace("\\|\\|", "\\|")
+
+# Check for | characters
+  groups <- names(seqs) %>%
+    stringr::str_split_fixed(";", n = 2) %>%
+    tibble::as_tibble() %>%
+    tidyr::separate(V1, into = c("acc", "taxid"), sep="\\|") #%>%
+    dplyr::pull(taxid)
+
+
+# Then remove duplicate accession numbers (some with same accession have different taxonomy)
+seqs <- insect::subset.DNAbin(seqs, subset = !duplicated(str_extract(names(seqs), "^.*\\|" )))
 
 thresholds <- rev(seq(0.9, 1, 0.01))
 threshlist <- vector("list", length=length(thresholds))
@@ -165,12 +181,14 @@ for (i in 1:length(thresholds)){
     x = seqs, db=db,
     rank = c("species","genus","family"),
     threshold = thresholds[i],
-    return = "all",
+    return = "consensus",
     confidence=0.6, quiet = FALSE) 
 }
+
 names(threshlist) <- thresholds 
 results <- dplyr::bind_rows(threshlist)
 write.csv(results,"mixedclusters.csv")
+
 
 mixed_clusters <- vroom::vroom("reference/mixedclusters.csv")
 
@@ -190,17 +208,24 @@ rem <- mixed_clusters %>%
   filter(rank=="genus", threshold ==0.97, confidence > 0.8) %>%
   pull(Acc)
 
-
-purged  <- subset.DNAbin(codon_filt, subset = !str_replace(names(codon_filt), "(?:.(?!;))+$", "") %in% rem)
+purged  <- subset.DNAbin(seqs, subset = !str_replace(names(seqs), "(?:.(?!;))+$", "") %in% rem)
 insect::writeFASTA(purged, file="reference/purged.fa.gz", compress=TRUE)
 
+#filter infraspecific taxa
+
+#Get db
+db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
+
+purged <- insect::readFASTA("reference/purged.fa.gz")
+print(length(purged))
+purged <- filter_infraspecifc(purged, db)
+print(length(purged))
 # Prune large group sizes down to 5
 pruned <- prune_groups(purged, maxGroupSize = 5, discardby="length", dedup=TRUE, quiet = FALSE)
+insect::writeFASTA(pruned, file="reference/pruned.fa.gz", compress=TRUE)
 
 # Reformat to complete taxonomic heirarchy
-pruned <- readFASTA("reference/pruned.fa.gz")
-db <- get_ott_taxonomy(dir="ott3.2")
-pruned <- pruned[!duplicated(str_remove(names(pruned), "\\|.*$")),] 
+pruned <- pruned[!duplicated(str_remove(names(pruned), "\\|.*$"))] 
 
 pruned <- reformat_hierarchy(pruned, db=db, ranks = c("kingdom","phylum", "class", "order", "family", "genus", "species"), quiet=FALSE, cores=11)
 insect::writeFASTA(pruned, file="reference/pruned.fa.gz", compress=TRUE)

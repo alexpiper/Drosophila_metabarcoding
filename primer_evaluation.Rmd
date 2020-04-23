@@ -748,21 +748,6 @@ dplyr::bind_rows(threshlist) %>%
   write_csv(paste0(job_name,"_clustering.csv"))
 ```
 
-## get the good from clustering
-
-```{r}
-test <- get_mixed_clusters( 
-  x = amplicon, db=db,
-  rank = "species",
-  threshold = 0.95,
-  return = "all",
-  confidence=0, quiet = FALSE) 
-
-#Still would be better to create a table with out, with the columns:
-# Cluster, #Accession, # Taxon
-
-```
-
 
 ## Spider ID Sucess
 ```{r Spider}
@@ -1015,29 +1000,108 @@ cp -r output ${SLURM_SUBMIT_DIR}
 ## Figure 4
 
 ```{r figure 3}
-mixed_clusters <- vroom::vroom("primer_evaluation/amplicons/output/fwhF2_C_LepFolR_clustering.csv", delim=",")
-
-
-#summarise overall numbers at each value
-mixed_clusters %>% group_by(threshold) %>% summarise(n=n())
-
 # SUmmarise number of mixed clusters that contain pests at %
 pestlist <- read_csv("primer_evaluation/pestlist.csv") 
 
-mixed_clusters %>% filter(listed %in% pestlist$Species) %>% group_by(threshold) %>% summarise(n=n())
+# Load primers
+primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
+  mutate(seq = str_replace_all(seq, "I","N")) 
 
-#Read back in data:
-vec <- sort(list.files("primer_evaluation/amplicons/", pattern = ".csv", full.names = TRUE)) # Read fasta filenames
+# Get all possible primer combinations
+combos <- expand_grid(primers %>% filter(strand=="F") %>% pull(seq),
+                      primers %>% filter(strand=="R") %>% pull(seq)
+                      ) %>%
+  mutate_if(is.factor, as.character)%>%
+  unique() %>%
+  magrittr::set_colnames(c("Fseq", "Rseq")) %>%
+  left_join(primers %>% filter(strand=="F") %>% rename_all(. %>% paste0("F",.)), by="Fseq") %>%
+  left_join(primers %>% filter(strand=="R") %>% rename_all(. %>% paste0("R",.)), by="Rseq") %>%
+  mutate(amplicon = Rstart - Fend) %>%
+  filter( amplicon > 100)
 
+# read in mixed clusters
+mixed_clusters <- fs::dir_ls(path="primer_evaluation/amplicons/output/", glob = "*clustering.csv") %>%
+  purrr::map(function(x){
+    df <-  vroom::vroom(x, delim=",")
+    all <- df %>%
+      dplyr::group_by(threshold) %>% 
+      dplyr::filter(!duplicated(tax_name)) %>% 
+      dplyr::summarise(mixed=n()) %>%
+      dplyr::mutate(type="all")
+    pests <- df %>%
+      dplyr::group_by(threshold) %>% 
+      filter(tax_name %in% pestlist$Species) %>%
+      dplyr::filter(!duplicated(tax_name)) %>% 
+      dplyr::summarise(mixed=n()) %>%
+      dplyr::mutate(type="pest")
+    out <- bind_rows(all, pests)
+    return(out)
+    }) %>%
+  bind_rows(.id="source") %>%
+  mutate(source = str_remove(basename(source), "_clustering.csv")) %>%
+mutate(source = source %>%
+str_replace_all("Ill_C_R", "Ill-C-R") %>% #Can remove this with changed amplicon filenames
+str_replace_all("Ill_B_F", "Ill-B-F")%>%
+str_replace_all("C_LepFolR", "C-LepFolR")%>%
+str_replace_all("ZBJ-ArtR2c_deg", "ZBJ-ArtR2c-deg")%>%
+str_replace_all("ZBJ-ArtF1c_deg", "ZBJ-ArtF1c-deg")%>%
+str_replace_all("230_R", "230-R") )
 
-id_summary <- vec %>%
-  purrr::set_names() %>%
-  purrr::map_dfr(read_csv, .id = "Source")
+amplified <- fs::dir_ls(path="primer_evaluation/amplicons/", glob = "*.fa*") %>%
+   purrr::map_dfr(function(x){
+     df <- fasta.index(x) %>%
+        mutate(species = desc %>% 
+                 str_remove("(?:[^;]*;){7}") %>% #match 7th ;
+                 str_remove(";$")) # match last ;
+     all <- df %>%
+      dplyr::group_by(filepath) %>%
+      dplyr::summarise(seqs_amplified = n(), species_amplified = n_distinct(species)) %>%
+      dplyr::mutate(type="all")
+     pests <- df %>%
+      dplyr::group_by(filepath) %>%
+      dplyr::filter(species %in% pestlist$Species) %>%
+      dplyr::summarise(seqs_amplified = n(), species_amplified = n_distinct(species)) %>%
+      dplyr::mutate(type="pest")
+     out <- bind_rows(all, pests)
+    return(out)
+   })%>%
+  mutate(source = str_remove(basename(filepath), ".fa.gz")) %>%
+mutate(source = source %>%
+str_replace_all("Ill_C_R", "Ill-C-R") %>%
+str_replace_all("Ill_B_F", "Ill-B-F")%>%
+str_replace_all("C_LepFolR", "C-LepFolR")%>%
+str_replace_all("ZBJ-ArtR2c_deg", "ZBJ-ArtR2c-deg")%>%
+str_replace_all("ZBJ-ArtF1c_deg", "ZBJ-ArtF1c-deg")%>%
+str_replace_all("230_R", "230-R") ) %>%
+  dplyr::select(-filepath)
   
-pestlist <- read_csv("primer_evaluation/pestlist.csv") %>%
-  mutate(Species = str_replace_all(Species, " ", "_"))
+joint <- mixed_clusters %>%
+  left_join(amplified) %>%
+  mutate(combos = source) %>% 
+  tidyr::separate(source, into=c("Fname", "Rname"), sep="_", extra="merge") %>%
+  left_join(combos) %>% 
+  mutate(success =  seqs_amplified - mixed)
 
+write_csv(joint, "primer_evaluation/amplicons/mixed_clusters_summary.csv")
+
+# Count reads
+
+# Summarise identification sucess by length on 2d scatte
+
+
+gg.id <- ggplot(joint, aes(x=amplicon, y=success, colour=combos))+
+  geom_point()+
+  #geom_text(aes(label=paste0(Fname, "_", Rname)))+
+  facet_grid(threshold~type, scales="free_y") +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        legend.position = "none")
+
+gg.id
+ggplotly(gg.id)
 #summarise for all taxa 
+
+# COuld model ID success by amplicon length with LCO/HCO as the intercept. Look at those that are significantly above as successfuly 
+
 
 # Could probably left_join to the lineage data, and then summarise by genus/ family etc
 all_sum <- id_summary %>%
@@ -1173,9 +1237,10 @@ Retrieve all sequences for cross reacting, make new database from those
 Then do in-silico PCR with insect and count how many successfully amplify
 
 ```{r off target}
-dir.create("primer_evaluation/off_target")
+dir.create("primer_evaluation/off_target/individual", recursive = TRUE)
 # Load primers
 primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
+  dplyr::filter(!duplicated(name)) %>%
   mutate(seq = str_replace_all(seq, "I","N")) %>% 
   mutate(seq =case_when(
     strand=="F" ~ seq,
@@ -1189,10 +1254,11 @@ names(seqs) <- primers$name
 for (i in 1:length(seqs)){
   out <- unlist(seqs[i])
   names(out) <- make.unique(names(out), sep="_")
-  writeXStringSet(out, paste0("primer_evaluation/off_target/",names(out[1]),".fa"))
+  writeXStringSet(out, paste0("primer_evaluation/off_target/individual/",names(out[1]),".fa"))
 }
 
 
+dir.create("primer_evaluation/off_target/joined", recursive = TRUE)
 # Get all possible primer combinations
 combos <- expand_grid(primers %>% filter(strand=="F") %>% pull(seq),
                       primers %>% filter(strand=="R") %>% pull(seq)
@@ -1216,7 +1282,7 @@ for(i in 1:nrow(combos)){
   out <- DNAStringSet(sapply(out, str_replace_all, pattern= "-", replacement="NNNNNNNNNNNNNNNNNNNN"))
   
   names(out) <- make.unique(names(out), sep="_")
-  writeXStringSet(out, paste0("primer_evaluation/off_target/", names(out[1]),".fa"))
+  writeXStringSet(out, paste0("primer_evaluation/off_target/joined/", names(out[1]),".fa"))
 }
 
 # For the combos should i just take a random sample of 1000? as this is pretty ridiculous
@@ -1243,15 +1309,18 @@ Index jobs
 Submit array
 
 njobs=$(cat sequence_index.txt | wc -l)
-sbatch --array=1-1 primerblast.slurm
+sbatch --array=1-67 primerblast.slurm
+
+sbatch --array=1-29 primerblast.slurm
+
 
 ## BLAST
 ```{bash blast}
 #!/bin/bash
 #SBATCH --job-name=BLASTn       
 #SBATCH --ntasks=1 
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=50GB
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=100GB
 #SBATCH --time=240:00:00
 #SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
 #SBATCH --account=pathogens
@@ -1308,23 +1377,25 @@ blastn -task blastn-short \
 -db  ${BlastDB} \
 -out ${Sample}.out \
 -evalue 30000 \
--perc_identity 60 \
 -word_size 7 \
+-perc_identity 60 \
 -dust no \
 -ungapped \
 -reward 1 \
--penalty -3 \ #Watch this
--max_hsps 100000 \
+-penalty -1 \
+-max_hsps 500 \
+-max_target_seqs 10000 \
 -outfmt '6 qseqid qstart qend sseqid staxid sstart send sstrand' \
 -num_threads 8
+
+pigz ${Sample}.out
 
 # Output useful job stats
 /usr/local/bin/showJobStats.scr | gzip > ${Sample}-jobstats.gz
 
 #Make a directory call ${Sample} and cp all output files into that directory
 mkdir ${Sample}_output
-cp ./*.out ${Sample}_output
-cp ./*-jobstats.gz ${Sample}_output
+cp ./*.gz ${Sample}_output
 
 date
 
