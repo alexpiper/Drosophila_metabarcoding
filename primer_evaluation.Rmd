@@ -24,7 +24,6 @@ editor_options:
                     "ShortRead",
                     "foreach",
                     "doParallel",
-                    "PrimerTree",
                     "TmCalculator")
 
 .bioc_packages <- c("DECIPHER",
@@ -298,6 +297,7 @@ model <- readRDS("reference/folmer_fullength_model.rds")
 
 seqs <- insect::readFASTA("reference/merged_final.fa.gz")
 lengthfilt <- taxreturn::map_to_model(seqs, model, minscore = 400, shave= TRUE, pad=TRUE, check_indels=TRUE, maxNs=Inf, cores=47, quiet=FALSE)
+lengthfilt <- lengthfilt[lengths(lengthfilt)==712]
 
 #write out results
 insect::writeFASTA(lengthfilt, "reference/merged_final_aligned.fa.gz", compress=TRUE)
@@ -506,7 +506,7 @@ gg.primers <- ggplot(data=values[values$pos==1,], aes(x = as.numeric(pos))) +
 Fig2 <- gg.box / gg.density / gg.primers 
 ```
 
-## Predicted mismatch
+# Predicted mismatch
 Need to load the aligned Database so the N's are there
 
 Code modified from: Bylemans J, Gleeson DM, Hardy CM, Furlan E. Toward an ecoregion scale evaluation of eDNA metabarcoding primers: A case study for the freshwater fish biodiversity of the Murray-Darling Basin (Australia). Ecol Evol. 2018;8697–712. 
@@ -514,7 +514,11 @@ Code modified from: Bylemans J, Gleeson DM, Hardy CM, Furlan E. Toward an ecoreg
 ```{r Primerminer, message=FALSE}
 library(PrimerMiner)
 ## Target sequences to test against
-target <- "reference/merged_final_aligned.fa.gz"
+seqs <- insect::readFASTA("reference/merged_final_aligned.fa.gz")
+names(seqs) <- names(seqs) %>% str_replace_all(" ", "_")
+writeFASTA(seqs, "reference/merged_final_aligned_target.fa.gz")
+
+target <- "reference/merged_final_aligned_target.fa.gz"
 
 # Load primers
 primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
@@ -551,25 +555,38 @@ files <- sort(list.files(list.dirs("primer_evaluation/PrimerMiner/"), pattern = 
 
 dat <- files %>% 
   purrr::set_names() %>%
-  map_dfr(read_csv, col_types= cols_only(Template=col_character(),
-                                       sequ=col_character(),
-                                       sum=col_double()),.id = "source", progress=TRUE) %>%
+  map_dfr(vroom::vroom, col_select= list("Template", "sequ", "sum"),
+          .id = "source", progress=FALSE) %>%
+  mutate(Template = str_remove(Template, ";$"))%>%
   separate(col=Template, into=c("Acc","Kingdom","Phylum","Class","Order","Family","Genus","Species"), sep=";") %>%
-  rename(Sequence = sequ) %>%
-  mutate(Primer = source %>%
-           str_replace("primer_evaluation/PrimerMiner//","") %>%
-           str_replace("\\/(.*?)$", ""))
+  dplyr::rename(Sequence = sequ) %>% 
+  dplyr::mutate(primer = str_remove(basename(source), ".csv")) 
 
-summaries <- dat %>% 
-  filter(Species %in% str_replace_all(read_csv("primer_evaluation/pestlist.csv")$Species, " ", "_")) %>%
-  group_by(Kingdom, Phylum, Class, Order, Family, Genus, Species, Primer) %>%
-  summarise(sum = mean(sum)) %>% # Summarise mean of species with multiple sequences
-  ungroup()  %>%
+summaries <- dat %>%
+  group_by(primer, Genus) %>% #Group by higher to minimize plotting
+  summarise(sum = mean(sum)) %>%
+  ungroup()%>%
   mutate(dir = case_when(
-    Primer %in% unique(dat.passed$F.Name) ~ "Forward",
-    Primer %in% unique(dat.passed$R.Name) ~ "Reverse"
-    ))  %>%
-  mutate(Primer = paste0(substr(dir,1,1)," ",Primer))
+    primer %in% unique(primers %>% filter(strand=="F") %>% pull(name)) ~ "Forward",
+    primer %in% unique(primers %>% filter(strand=="R") %>% pull(name)) ~ "Reverse"
+    ))  
+
+gg.mismatch <- ggplot(summaries, aes(x = primer, y = Genus , fill = sum)) +
+  geom_tile() +
+  #scale_fill_viridis_c(option="magma",limits = c(0, 200))+
+  scale_fill_gradient(low = "darkgreen", high = "red", na.value = "grey", limits = c(0, 200), oob = scales::squish) +
+  facet_grid(~dir, scales="free", space="free", drop=TRUE) +
+  theme_classic() + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    strip.text.y = element_text(angle = 0)
+  ) 
+
+
+## Try ROTL get induced subtree to get tree of entire alignment. Query using tax_ids
 
 #Get taxonomic lineage and convert to tree
   lineage <- summaries %>%
@@ -639,10 +656,13 @@ Metrics to evaluate primers on:
  
  
 ## Virtual PCR
+
+problem - when subseqing, remove anythign with less than 100 non-gap characters
  
 ```{r Virtual PCR}
 # Load seqs
-seqs <- insect::readFASTA("reference/merged_final.fa.gz")
+seqs <- readDNAStringSet("reference/merged_final_aligned.fa.gz")
+seqs <- seqs[lengths(seqs)==712]
 
 # Load primers
 primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
@@ -662,35 +682,37 @@ combos <- expand_grid(primers %>% filter(strand=="F") %>% pull(seq),
   filter( amplicon > 100)
 
 dir.create("primer_evaluation/amplicons")
-lengthlist <- vector("list", length=nrow(combos)) 
 
-#TESTING!
-seqs <- seqs[1:1000]
-combos <- combos %>% dplyr::slice(1:3)
 
-for (p in 1:nrow(combos)) {
+# Setup multithreading
+library(foreach)
+library(doParallel)
+cores=2
+cl <- parallel::makeCluster(cores)
+registerDoParallel(cl)
+
+li <- foreach(p=1:nrow(combos)) %dopar% {
   #get primer names
   primernames <- paste0(combos$Fname[p], "_",  combos$Rname[p])
   
-  #Conduct virtualPCR
-  amplicon <- virtualPCR(seqs, up = combos$Fseq[p],
-                           combos$Rseq[p], rcdown = TRUE,
-                             trimprimers = TRUE, partialbind =FALSE, 
-                         minamplen = (combos$amplicon[p] - 9), maxamplen = (combos$amplicon[p] + 9), 
-                         quiet = FALSE, cores=2)
+  # cut down alignments
+  amplicon <- Biostrings::subseq(seqs, start=combos$Fend[p]+1, end = combos$Rstart[p]) #may need to add 1 to start
   
-  # write out sequences
-  insect::writeFASTA(amplicon, file=paste0("primer_evaluation/amplicons/", primernames,".fa.gz"), compress=TRUE)  
+  if (any(!lengths(amplicon)== combos$amplicon[p])){
+    warning(paste0("Amplicons of ",primernames, " are not the same length"))
+  }
   
-  #write out sequence lengths
-  lengthlist[[p]] <- as.data.frame(table(lengths(amplicon)), stringsAsFactors=FALSE) %>%
-    magrittr::set_colnames(c("length", "freq"))
-
+  maxgaps <- 9 # dont allow any more than 9 gaps
+  rem <- names(amplicon)[Biostrings::letterFrequency(amplicon, "-") > maxgaps]
+  amplicon <- amplicon[!names(amplicon) %in% rem]
+  message(paste0(length(rem), " Sequences with more than ", maxgaps, " gaps removed from ", primernames))
+  
+  #write out sequences
+  Biostrings::writeXStringSet(amplicon, file=paste0("primer_evaluation/amplicons/", primernames,".fa.gz"), compress=TRUE)
 }
-names(lengthlist) <- paste0(combos$Fname, "_",  combos$Rname)
-lengthlist %>%
-bind_rows(lengthlist,.id="names") %>%
-  write_csv("primer_evaluation/amplicons/lengthlist.csv")
+#close cluster
+parallel::stopCluster(cl)
+
 ```
  
 ## Clustering ID Success
@@ -726,7 +748,7 @@ message("job_name = ", job_name)
 db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
 
 ## TESTING
- file <- "primer_evaluation/amplicons/fwhF2_fwhR2n.fa.gz"
+file <- "primer_evaluation/amplicons/jgLCO1490_BR3.fa.gz"
 amplicon <- insect::readFASTA(file)
 print(amplicon)
 amplicon <- amplicon[1:1000]
@@ -1000,7 +1022,7 @@ cp -r output ${SLURM_SUBMIT_DIR}
 ## Figure 4
 
 ```{r figure 3}
-# SUmmarise number of mixed clusters that contain pests at %
+# Summarise number of mixed clusters that contain pests at %
 pestlist <- read_csv("primer_evaluation/pestlist.csv") 
 
 # Load primers
@@ -1018,6 +1040,14 @@ combos <- expand_grid(primers %>% filter(strand=="F") %>% pull(seq),
   left_join(primers %>% filter(strand=="R") %>% rename_all(. %>% paste0("R",.)), by="Rseq") %>%
   mutate(amplicon = Rstart - Fend) %>%
   filter( amplicon > 100)
+
+# Check missing
+complete <- fs::dir_ls(path="primer_evaluation/amplicons/output/", glob = "*clustering.csv") %>%
+  basename %>%
+  str_remove("_clustering.csv")
+
+setdiff(paste0(combos$Fname, "_",  combos$Rname), complete)
+
 
 # read in mixed clusters
 mixed_clusters <- fs::dir_ls(path="primer_evaluation/amplicons/output/", glob = "*clustering.csv") %>%
@@ -1082,8 +1112,8 @@ joint <- mixed_clusters %>%
   left_join(combos) %>% 
   mutate(success =  seqs_amplified - mixed)
 
-write_csv(joint, "primer_evaluation/amplicons/mixed_clusters_summary.csv")
-
+vroom::vroom_write(joint, "primer_evaluation/amplicons/mixed_clusters_summary.csv", delim=",")
+#joint <- vroom::vroom("primer_evaluation/amplicons/mixed_clusters_summary.csv", delim=",")
 # Count reads
 
 # Summarise identification sucess by length on 2d scatte
@@ -1092,137 +1122,12 @@ write_csv(joint, "primer_evaluation/amplicons/mixed_clusters_summary.csv")
 gg.id <- ggplot(joint, aes(x=amplicon, y=success, colour=combos))+
   geom_point()+
   #geom_text(aes(label=paste0(Fname, "_", Rname)))+
-  facet_grid(threshold~type, scales="free_y") +
+  facet_wrap(threshold~type, scales="free_y") +
   theme(axis.text.x = element_text(angle=45, hjust=1),
         legend.position = "none")
 
 gg.id
-ggplotly(gg.id)
-#summarise for all taxa 
-
-# COuld model ID success by amplicon length with LCO/HCO as the intercept. Look at those that are significantly above as successfuly 
-
-
-# Could probably left_join to the lineage data, and then summarise by genus/ family etc
-all_sum <- id_summary %>%
-  dplyr::group_by(primer) %>%
-  dplyr::summarise(amplified=n(), 
-                   nn_true = sum(nn==TRUE),
-                   nn_false = sum(nn==FALSE),
-                   cm_ambiguous=sum(result=="ambiguous"),
-                   cm_incorrect=sum(result=="incorrect"),
-                   cm_correct=sum(result=="correct"),      
-                   cm_noid=sum(result=="no id"),
-                   mono_true=sum(mono==TRUE),
-                   mono_false=sum(mono==FALSE))%>% 
-  gather(key="measure", value="value", -primer) %>%
-  mutate(dataset="all")
-
-
-
-pest_sum <- id_summary %>%
-  filter(Spp %in% str_replace_all(read_csv("primer_evaluation/pestlist.csv")$Species, " ", "_")) %>%
-  rename(Species = Spp) %>%
-  left_join(read_csv("primer_evaluation/pestlist.csv") %>%
-              dplyr::select(-Source) %>%
-              mutate(Species = str_replace_all(Species, " ", "_")),
-            by="Species") #%>%
-  group_by(Class, Order, Family, Genus, primer) %>%
-  dplyr::summarise(amplified = n(),
-                   nn = sum(nn==TRUE),
-                   mono = sum(mono==TRUE),
-                   cm = sum(result=="correct") + sum(result=="no id")) %>%
-  dplyr::mutate(
-    nn = nn / amplified,
-    mono = mono / amplified,
-    cm = cm / amplified
-  ) #%>%
-  select(-amplified) %>%
-  ungroup() %>%
-  pivot_longer(cols=nn:cm,
-               names_to="measure",
-               values_to="value")
-  
-  
-#Get taxonomic lineage and convert to tree
-
-library(ggtree)
-
-test <- as_tibble(tree) %>%
-  full_join(pest_sum  %>%
-    rename(label = Genus)) 
-
-p <- ggtree(tidytree::as.treedata(test)) +
-  geom_nodelab(geom='label') + # + geom_tiplab(align=TRUE) 
-  theme_tree2() #+
-  scale_colour_gradient(low = "darkgreen", high = "red",  oob = scales::squish) + 
-  theme(legend.position = "none") +
-      scale_y_continuous(expand=c(0,0))
-  
-
-  
-  
-gg.ident <- pest_sum %>%
-  left_join(p$data %>%
-  filter(isTip) %>%
-    select(c(label, y)) %>%
-    rename(Genus = label)) %>%
-  filter(!is.na(y)) %>%
-  ggplot(aes(x = primer , y = factor(.$Genus, levels=unique(.$Genus[order(.$y)])) , fill = value)) +
-  geom_tile() +
-  #scale_fill_viridis_c(option="magma",limits = c(0, 200))+
-  scale_fill_gradient(low = "red", high = "darkgreen", na.value = "grey", limits = c(0, 1), oob = scales::squish) +
-  facet_grid(~measure) +
-  theme_classic() + 
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.text.y = element_blank(),
-    axis.ticks.y = element_blank(),
-    axis.title.y = element_blank(),
-    strip.text.y = element_text(angle = 0)
-  ) 
-
-p + gg.ident  
-  
-
-#Join datasets
-
-p1 <- ggplot(all_sum[which(all_sum$measure == "cm_ambiguous" | all_sum$measure == "cm_correct" | all_sum$measure == "cm_incorrect" |  all_sum$measure == "cm_noid" ),])+
-  geom_bar(aes(x=primer,y=value,fill=measure),stat="identity", position="stack") +
-  facet_wrap(~dataset,scales="free_y")+ 
-  theme(axis.text.x = element_text(angle=90,hjust=1,vjust=0.5))+
-  theme(axis.text.x = element_blank(),
-        axis.ticks.x = element_blank(),
-        axis.title.x = element_blank())
-
-p2 <- ggplot(all_sum[which(all_sum$measure == "mono_true" | all_sum$measure == "mono_false"),])+
-  geom_bar(aes(x=primer,y=value,fill=measure),stat="identity", position="stack") +
-  facet_wrap(~dataset,scales="free_y") + 
-  theme(axis.text.x = element_text(angle=90,hjust=1,vjust=0.5))+
-  theme(axis.text.x = element_blank(),
-        axis.ticks.x = element_blank(),
-        axis.title.x = element_blank())
-
-p3 <- ggplot(all_sum[which(all_sum$measure == "nn_true" | all_sum$measure == "nn_false"),])+
-  geom_bar(aes(x=primer,y=value,fill=measure),stat="identity", position="stack") +
-  facet_wrap(~dataset,scales="free_y") + 
-  theme(axis.text.x = element_text(angle=90,hjust=1,vjust=0.5))
-
-Fig3a <- p1 / p2 / p3 
-
-
-#failed 
-
-pest_fail <- pests[which(pests$primer =="fwhF2-fwhR2n" & pests$mono.match.Spp..unique.Spp... == "FALSE" | pests$nearNeighbour.Dist..Spp. == "FALSE" | pests$primer =="fwhF2-fwhR2n" & pests$V1 == "incorrect"),]
-length(unique(pest_fail$Spp))
-
-#All taxa which failed 
-all_fail <- id_summary[which(id_summary$primer =="fwhF2-fwhR2n" & id_summary$mono.match.Spp..unique.Spp... == "FALSE" | id_summary$nearNeighbour.Dist..Spp. == "FALSE" | id_summary$primer =="fwhF2-fwhR2n" & id_summary$V1 == "incorrect"),]
-length(unique(all_fail$Spp))
-
-# Failed pest taxa were manually inspected, many of these were incorrectly annotated taxonomy, or synonyms
-#The groups that are unlikely to work with any of these primers include:
-
+#ggplotly(gg.id)
 ```
 
 
@@ -1253,6 +1158,9 @@ names(seqs) <- primers$name
 
 for (i in 1:length(seqs)){
   out <- unlist(seqs[i])
+  #Sample 100 random permutations for degenerate primers
+  out <- sample(out, 100, replace = TRUE) %>%
+    unique()
   names(out) <- make.unique(names(out), sep="_")
   writeXStringSet(out, paste0("primer_evaluation/off_target/individual/",names(out[1]),".fa"))
 }
@@ -1309,9 +1217,8 @@ Index jobs
 Submit array
 
 njobs=$(cat sequence_index.txt | wc -l)
-sbatch --array=1-67 primerblast.slurm
 
-sbatch --array=1-29 primerblast.slurm
+sbatch --array=1-67 primerblast.slurm
 
 
 ## BLAST
@@ -1319,10 +1226,11 @@ sbatch --array=1-29 primerblast.slurm
 #!/bin/bash
 #SBATCH --job-name=BLASTn       
 #SBATCH --ntasks=1 
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=100GB
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=200GB
 #SBATCH --time=240:00:00
 #SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
+#SBATCH --mail-type=ALL
 #SBATCH --account=pathogens
 #SBATCH --export=none
 
@@ -1384,7 +1292,7 @@ blastn -task blastn-short \
 -reward 1 \
 -penalty -1 \
 -max_hsps 500 \
--max_target_seqs 10000 \
+-max_target_seqs 100000 \
 -outfmt '6 qseqid qstart qend sseqid staxid sstart send sstrand' \
 -num_threads 8
 

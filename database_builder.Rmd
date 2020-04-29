@@ -155,19 +155,7 @@ seqs <- insect::readFASTA("reference/codon_filt.fa.gz")
 
 # flag clusters with mixed taxonomy at different cluster thresholds and taxonomic ranks
 
-# First remove punctuation characters from accessions
-#names(seqs) <- paste0(str_remove_all(str_extract(names(seqs), "^.*\\|" ), "[:punct:]"), str_extract(names(seqs), "\\|.*$" )) %>%
-#  str_replace("\\|\\|", "\\|")
-
-# Check for | characters
-  groups <- names(seqs) %>%
-    stringr::str_split_fixed(";", n = 2) %>%
-    tibble::as_tibble() %>%
-    tidyr::separate(V1, into = c("acc", "taxid"), sep="\\|") #%>%
-    dplyr::pull(taxid)
-
-
-# Then remove duplicate accession numbers (some with same accession have different taxonomy)
+# Remove duplicate accession numbers (some with same accession have different taxonomy)
 seqs <- insect::subset.DNAbin(seqs, subset = !duplicated(str_extract(names(seqs), "^.*\\|" )))
 
 thresholds <- rev(seq(0.9, 1, 0.01))
