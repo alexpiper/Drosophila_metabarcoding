@@ -24,7 +24,10 @@ editor_options:
                     "ShortRead",
                     "foreach",
                     "doParallel",
-                    "TmCalculator")
+                    "TmCalculator",
+                    "castor",
+                    "furrr",
+                    "tictoc")
 
 .bioc_packages <- c("DECIPHER",
                     "ggtree",
@@ -258,55 +261,58 @@ out <- bind_rows(out)
 write_csv(out, "primer_evaluation/primer_presence.csv")
 
 # Plotting
-out <- read_csv("primer_evaluation/primer_presence.csv")
-
-gg.primerpresF <- out %>% 
+out <- read_csv("primer_evaluation/primer_presence.csv") %>% 
   pivot_longer(cols=starts_with(c("h", "l")),
                names_to = "measure",
                values_to = "seqs"
                ) %>%
+  filter(measure=="h2") %>%
+  mutate(name = factor(name)) %>%
+  arrange(name)
+
+gg.primerpresF <- out %>%
   left_join(primers) %>%
-  filter(strand=="F", measure=="h2") %>%
-  mutate(name = fct_reorder(name, start, .desc = TRUE)) %>%
-  ggplot(aes(x=name, y=seqs)) + 
+  filter(strand=="F") %>%
+    mutate(name = fct_reorder(name, seqs, .desc = TRUE)) %>%
+  ggplot(aes(x=name, y=seqs, fill=seqs)) + 
   geom_bar(stat="identity", position="dodge") +
   coord_flip() + 
-  xlab("Forward Primers")
+  labs(x="Forward Primers", y=NULL)  +
+  theme_classic()+
+  scale_fill_gradient(low = "firebrick", high = "darkslateblue", 
+                      na.value = "grey", oob = scales::squish) +
+  theme(legend.position = "none",
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
 
-gg.primerpresR <- out %>% 
-  pivot_longer(cols=starts_with(c("h", "l")),
-               names_to = "measure",
-               values_to = "seqs"
-               ) %>%
+gg.primerpresR <- out  %>%
   left_join(primers) %>%
-  filter(strand=="R", measure=="h2") %>%
-  mutate(name = fct_reorder(name, start, .desc = TRUE)) %>%
-  ggplot(aes(x=name, y=seqs)) + 
+  filter(strand=="R") %>%
+    mutate(name = fct_reorder(name, seqs, .desc = TRUE)) %>%
+  ggplot(aes(x=name, y=seqs, fill=seqs)) + 
   geom_bar(stat="identity", position="dodge") +
   coord_flip() + 
-  xlab("Reverse Primers")
+  labs(x="Reverse Primers", y="# Sequences containing primers") +
+  theme_classic()+
+  scale_fill_gradient(low = "firebrick", high = "darkslateblue", 
+                      na.value = "grey", oob = scales::squish) +
+  theme(legend.position = "none",
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
 
-gg.primerpresF / gg.primerpresR
+gg.primerpres <- gg.primerpresF / gg.primerpresR
+
+gg.primerpres
+
+pdf(file="fig/primerpres.pdf", width = 8, height = 11 , paper="a4")
+  plot(gg.primerpres)
+try(dev.off(), silent=TRUE)
 ```
 
 # Primer placement
 
-## Create alignment
+## Whole alignment entropy
 ```{r Align}
-model <- readRDS("reference/folmer_fullength_model.rds")
-
-seqs <- insect::readFASTA("reference/merged_final.fa.gz")
-lengthfilt <- taxreturn::map_to_model(seqs, model, minscore = 400, shave= TRUE, pad=TRUE, check_indels=TRUE, maxNs=Inf, cores=47, quiet=FALSE)
-lengthfilt <- lengthfilt[lengths(lengthfilt)==712]
-
-#write out results
-insect::writeFASTA(lengthfilt, "reference/merged_final_aligned.fa.gz", compress=TRUE)
-
-## NOTE - need to double check why there are different lenght seqs. How is it handling big deletions
-table(lengths(seqs))
-test <- seqs[lengths(seqs)==692]
-writeFASTA(test, "cicadelidae_deletion_seqs.fa")
-
 # Get whole alignment entropy
 lengthfilt <- insect::readFASTA("reference/merged_final_aligned.fa.gz")
 
@@ -507,9 +513,6 @@ Fig2 <- gg.box / gg.density / gg.primers
 ```
 
 # Predicted mismatch
-Need to load the aligned Database so the N's are there
-
-Code modified from: Bylemans J, Gleeson DM, Hardy CM, Furlan E. Toward an ecoregion scale evaluation of eDNA metabarcoding primers: A case study for the freshwater fish biodiversity of the Murray-Darling Basin (Australia). Ecol Evol. 2018;8697–712. 
 
 ```{r Primerminer, message=FALSE}
 library(PrimerMiner)
@@ -550,6 +553,11 @@ for (i in 1:nrow(primers)) {
 ## Figure 3
 
 ```{r figure 4}
+# Load primers
+primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
+  mutate(seq = str_replace_all(seq, "I","N")) %>% 
+  select(-score, -issues)
+
 #Read in all files
 files <- sort(list.files(list.dirs("primer_evaluation/PrimerMiner/"), pattern = ".csv", full.names = TRUE))
 
@@ -562,85 +570,220 @@ dat <- files %>%
   dplyr::rename(Sequence = sequ) %>% 
   dplyr::mutate(primer = str_remove(basename(source), ".csv")) 
 
+# set summary level
+#sumlevel <- "Family"
+
 summaries <- dat %>%
-  group_by(primer, Genus) %>% #Group by higher to minimize plotting
+  tidyr::separate(Acc, into=c("Acc", "tax_id"), sep="\\|") %>%
+  group_by(primer, Genus, tax_id) %>% #Group by higher to minimize plotting
   summarise(sum = mean(sum)) %>%
   ungroup()%>%
+  mutate(dup = paste0(primer, Genus)) %>% 
+  filter(!duplicated(dup)) %>% #remove any duplicates
+  dplyr::select(-dup) %>%
   mutate(dir = case_when(
     primer %in% unique(primers %>% filter(strand=="F") %>% pull(name)) ~ "Forward",
     primer %in% unique(primers %>% filter(strand=="R") %>% pull(name)) ~ "Reverse"
     ))  
 
-gg.mismatch <- ggplot(summaries, aes(x = primer, y = Genus , fill = sum)) +
-  geom_tile() +
-  #scale_fill_viridis_c(option="magma",limits = c(0, 200))+
-  scale_fill_gradient(low = "darkgreen", high = "red", na.value = "grey", limits = c(0, 200), oob = scales::squish) +
-  facet_grid(~dir, scales="free", space="free", drop=TRUE) +
-  theme_classic() + 
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.text.y = element_blank(),
-    axis.ticks.y = element_blank(),
-    axis.title.y = element_blank(),
-    strip.text.y = element_text(angle = 0)
-  ) 
+# Arrange on tree
+tree <- rncl::read_newick_phylo("reference/ultrametric_insecta_tree.nwk")
 
-
-## Try ROTL get induced subtree to get tree of entire alignment. Query using tax_ids
-
-#Get taxonomic lineage and convert to tree
-  lineage <- summaries %>%
-     group_by(Kingdom, Phylum, Class, Order, Family, Genus, Primer) %>%
-  summarise(sum = mean(sum)) %>% # Summarise mean of species with multiple sequences
-    tidyr::unite(col=pathString, Kingdom, Phylum, Class, Order, Family, Genus, sep="/") %>%
-    dplyr::mutate(pathString = paste0("Root/", pathString)) %>%
-    data.tree::as.Node(.)
-
-
-tree <- ape::read.tree(textConnection(data.tree::ToNewick(lineage, heightAttribute = NULL)))
-
-library(ggtree)
-
-test <- as_tibble(tree) %>%
-  full_join(summaries %>%
-  group_by(Kingdom, Phylum, Class, Order, Family, Genus) %>%
-  summarise(mismatch = mean(sum)) %>%
-    rename(label = Genus)) 
-
-p <- ggtree(tidytree::as.treedata(test), aes(color=mismatch)) +
-  geom_nodelab(geom='label') + # + geom_tiplab(align=TRUE) 
-  theme_tree2()+
-  scale_colour_gradient(low = "darkgreen", high = "red", limits = c(0, 200), oob = scales::squish) + 
-  theme(legend.position = "none") +
-      scale_y_continuous(expand=c(0,0))
-
-gg.sum <- summaries %>%
-  group_by(Kingdom, Phylum, Class, Order, Family, Genus, Primer, dir) %>%
-  summarise(sum = mean(sum) ) %>% # Summarise mean of species with multiple sequences
+# Prune tree to genus
+tips_to_keep <- dat %>%
+  dplyr::select(Kingdom, Phylum, Class, Order, Family, Genus, Species) %>%
+  dplyr::filter(!duplicated(Species)) %>%
+  dplyr::filter(Class=="Insecta") %>%
+  filter(Genus %in% (summaries %>% pull(Genus))) %>%
+  group_by(Genus) %>%
+  dplyr::slice(1) %>%
   ungroup() %>%
-  left_join(p$data %>%
-  filter(isTip) %>%
-    select(c(label, y)) %>%
-    rename(Genus = label)) %>%
-  filter(!is.na(y)) %>%
-  ggplot(aes(x = Primer , y = factor(.$Genus, levels=unique(.$Genus[order(.$y)])) , fill = sum)) +
-  geom_tile() +
-  #scale_fill_viridis_c(option="magma",limits = c(0, 200))+
-  scale_fill_gradient(low = "darkgreen", high = "red", na.value = "grey", limits = c(0, 200), oob = scales::squish) +
-  facet_grid(~dir, scales="free", space="free", drop=TRUE) +
-  theme_classic() + 
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.text.y = element_blank(),
-    axis.ticks.y = element_blank(),
-    axis.title.y = element_blank(),
-    strip.text.y = element_text(angle = 0)
-  ) 
+  mutate(name_check = case_when(
+    str_extract(Species, "^.+?(?=_)") == Genus ~ TRUE,
+    !str_extract(Species, "^.+?(?=_)") == Genus ~ FALSE
+  )) %>%
+  filter(name_check) %>%
+  dplyr::select(-name_check)
 
-p + gg.sum
+tree  <- castor::get_subtree_with_tips(tree,
+                                          omit_tips=setdiff(tree$tip.label, tips_to_keep$Species),
+                                          collapse_monofurcations=TRUE,
+                                          force_keep_root=TRUE)$subtree
 
+#Prune names to genus
+tree$tip.label <- tree$tip.label %>% str_extract("^.+?(?=_)")
+
+Ntips 	<- length(tree$tip.label)
+Nnodes 	<- tree$Nnode
+cat(sprintf("Tree has %d nodes, %d tips and %d edges\n",Nnodes,Ntips,nrow(tree$edge)));
+
+# create internal node labels
+tree$node.label <- NA
+if(is.na(tree$node.label)){
+	cat(sprintf("Adding node labels to full tree..\n"))
+	tree$node.label = paste("node.", 1:Nnodes, sep = "") # don't use underscores, because some tree readers (e.g. rncl) interpret them as spaces
+}
+
+# replace zero-length edges
+if(any(tree$edge.length==0)){
+  epsilon = 0.1*min(tree$edge.length[tree$edge.length>0])
+	cat(sprintf("Note: Some edges have length zero, which may break some of the HSP routines. Replacing zero-lengths with a tiny positive length (%g)..\n",epsilon))
+	tree$edge.length[tree$edge.length==0] = epsilon
+}
+
+
+## Get values for higher nodes with castor
+uprimers <- unique(summaries$primer)
+p_weights <- vector("list", length=length(uprimers))
+for (i in 1:length(uprimers)){
+  print(paste0("Processing Primer ",i, " of ", length(uprimers), ": ", uprimers[i]))
+  tip_states <- summaries %>%
+    dplyr::filter(primer==uprimers[i], Genus %in% tips_to_keep$Genus) %>%
+    group_by(Genus) %>%
+    summarise(values = mean(sum, na.rm=TRUE))%>%
+    ungroup() %>%
+    column_to_rownames("Genus")
+    
+  row2tip <- match(rownames(tip_states), tree$tip.label)
+  tip_states <- tip_states[!is.na(row2tip),,drop = FALSE]
+  hsp_states <- castor::hsp_independent_contrasts(tree = tree,
+                                              tip_states = tip_states$values,
+                                              weighted = TRUE,
+                                              check_input = TRUE)$states
+  
+   p_weights[[i]] <- tip_states %>%
+    rownames_to_column("Genus") %>%
+    mutate(hsp = hsp_states[1:Ntips])
+}
+names(p_weights) <- uprimers
+
+imputed <- summaries %>%
+    left_join(bind_rows(p_weights,.id = "primer"), 
+               by = c("primer", "Genus")) %>%
+  filter(!is.na(hsp))
+
+primer_orders <- imputed %>%
+  group_by(primer) %>%
+  dplyr::summarise(hsp = mean(hsp, na.rm=TRUE), sum = mean(sum, na.rm=TRUE)) %>%
+  arrange(hsp)
+
+# LAbel branches
+tax_groups <- tips_to_keep %>%
+dplyr::rename(label = Genus) %>%
+select(label, Order) %>%
+filter(label %in% tree$tip.label) %>%
+group_by(Order)
+
+group_name <- group_keys(tax_groups)  %>%
+mutate(group_name = Order %>% str_remove_all("\\[|\\]"))
+
+cls <- tax_groups %>%
+group_split() %>%
+purrr::map(pull, label) %>%
+set_names(group_name$group_name)
+
+tree2 <- groupOTU(tree, cls)
+
+# Plot tree
+p1 <- ggtree(tree2, ladderize=TRUE, aes(colour=values)) +
+  geom_text2(aes(subset=!isTip, label=group %>% na_if(0)), hjust=0, check_overlap=TRUE)
+
+weights_p1 <- p1$data %>%
+  left_join(imputed %>%
+              group_by(Genus) %>%
+              summarise(values = mean(sum, na.rm=TRUE))%>%
+              dplyr::rename(label = Genus)
+    )  
+
+
+tip_states <- weights_p1 %>%
+  dplyr::filter(isTip) %>%
+  pull(values)
+names(tip_states) <- weights_p1 %>%
+  dplyr::filter(isTip) %>%
+  pull(label)
+
+weights_p1$values[!weights_p1$isTip] <- castor::asr_independent_contrasts(tree=tree,
+                                                        tip_states=tip_states)$ancestral_states
+
+p2 <- p1 %<+% weights_p1 + geom_tippoint(aes(colour=values)) +
+  scale_color_gradient(low="darkslateblue", high="firebrick") +
+  theme(legend.position = "none") + 
+  scale_y_continuous(expand=c(0,0))+ 
+  scale_x_discrete(expand=c(0,0)) 
+
+## make a clade label list
+#tax_groups <- tips_to_keep %>%
+#  dplyr::rename(label = Genus) %>%
+#  select(label, Order) %>%
+#  filter(label %in% tree$tip.label) %>%
+#  group_by(Order) 
+#
+#group_name <- group_keys(tax_groups)  %>%
+#  mutate(group_name = Order %>% str_remove_all("\\[|\\]"))
+#
+#cls <- tax_groups %>% 
+#  group_split() %>% 
+#  purrr::map(pull, label) %>%
+#  set_names(group_name$group_name) %>%
+#  purrr::map(get_mrca_of_set, tree=tree)
+#
+#p3 <- p2
+#for(i in 1:length(cls)){
+#p3 <- p3 + geom_cladelabel(node=cls[[i]], label=names(cls[i]), align=T, angle=270, hjust='center', #offset.text=.5, barsize=1.5)
+#}
+# Plot heatmap
+gg.mismatch <- imputed %>%
+  left_join(p2$data %>% dplyr::select(label, y) %>% dplyr::rename(Genus = label)) %>%
+  mutate( primer = factor(primer, levels=primer_orders$primer)) %>%     
+  ggplot(aes(x = primer, y = y, fill = hsp)) +
+    geom_raster() +
+    #scale_fill_distiller(palette = "Spectral", limits = c(0, 200)) +
+    scale_fill_gradient(low = "darkslateblue", high = "firebrick", na.value = "grey", limits = c(0, 200), oob = scales::squish) +
+    facet_grid(~dir, scales="free", space="free", drop=TRUE) +
+    #theme_classic() + 
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      axis.title.y = element_blank(),
+      strip.text.y = element_text(angle = 0),
+      #strip.background = element_rect(fill="grey10"),
+      legend.position = "none"
+    ) + 
+  scale_y_continuous(expand=c(0,0))+ 
+  scale_x_discrete(expand=c(0,0))
+
+# Density plot of mismatch
+gg.density <- imputed %>%
+  left_join(p2$data %>% dplyr::select(label, y) %>% dplyr::rename(Genus = label)) %>%
+  group_by(Genus, y) %>%
+  summarise(values = mean(sum, na.rm=TRUE)) %>%
+  ggplot(aes(x = y, y=values, fill=values, colour=values)) +
+  geom_point(size=0.01, alpha=0.5)+
+  #geom_smooth(span = 0.1)+
+  scale_colour_gradient(low="darkslateblue", high="firebrick") + 
+  scale_x_continuous(expand=c(0,0)) +
+  scale_y_continuous(expand=c(0,0)) +
+  theme_void() +
+  theme(legend.position = "none")+
+  coord_flip()
+
+#Fig3 <- p2 + gg.mismatch + plot_layout(widths = c(1,2))
+
+Fig3 <- p2 + gg.mismatch + gg.density + plot_layout(widths = c(1,3,0.25))
+
+pdf(file="fig/fig3.pdf", width = 8, height = 11 , paper="a4")
+  plot(Fig3)
+try(dev.off(), silent=TRUE)
+ 
+
+  
+#- Add a summary metric for mean mismatch for each primer
+#- Add a summary metric for evennes of mismatch for each primer
+#- Add a summary metric for amount of missing data imputed. Is there a way to highlight what data was imputed or not?
+#- Add a metric for amount of degeneracy in each primer
 ```
-
 
 
 # Identification sucess
@@ -657,8 +800,6 @@ Metrics to evaluate primers on:
  
 ## Virtual PCR
 
-problem - when subseqing, remove anythign with less than 100 non-gap characters
- 
 ```{r Virtual PCR}
 # Load seqs
 seqs <- readDNAStringSet("reference/merged_final_aligned.fa.gz")
@@ -1042,16 +1183,20 @@ combos <- expand_grid(primers %>% filter(strand=="F") %>% pull(seq),
   filter( amplicon > 100)
 
 # Check missing
-complete <- fs::dir_ls(path="primer_evaluation/amplicons/output/", glob = "*clustering.csv") %>%
+complete <- list.files(path="primer_evaluation/amplicons/output/", pattern = "clustering.csv") %>%
   basename %>%
   str_remove("_clustering.csv")
 
 setdiff(paste0(combos$Fname, "_",  combos$Rname), complete)
 
-
 # read in mixed clusters
-mixed_clusters <- fs::dir_ls(path="primer_evaluation/amplicons/output/", glob = "*clustering.csv") %>%
-  purrr::map(function(x){
+
+# need to summarise for species, and for seqs
+library(furrr)
+plan(multiprocess)
+mixed_clusters <- fs::dir_ls(path="primer_evaluation/amplicons/output/", glob = "*clustering.csv")[1:10]%>%
+  furrr::future_map(function(x){
+  #purrr::map(function(x){
     df <-  vroom::vroom(x, delim=",")
     all <- df %>%
       dplyr::group_by(threshold) %>% 
@@ -1066,68 +1211,67 @@ mixed_clusters <- fs::dir_ls(path="primer_evaluation/amplicons/output/", glob = 
       dplyr::mutate(type="pest")
     out <- bind_rows(all, pests)
     return(out)
-    }) %>%
+    }) %>%  
+    #},.progress = TRUE) %>%
   bind_rows(.id="source") %>%
-  mutate(source = str_remove(basename(source), "_clustering.csv")) %>%
-mutate(source = source %>%
-str_replace_all("Ill_C_R", "Ill-C-R") %>% #Can remove this with changed amplicon filenames
-str_replace_all("Ill_B_F", "Ill-B-F")%>%
-str_replace_all("C_LepFolR", "C-LepFolR")%>%
-str_replace_all("ZBJ-ArtR2c_deg", "ZBJ-ArtR2c-deg")%>%
-str_replace_all("ZBJ-ArtF1c_deg", "ZBJ-ArtF1c-deg")%>%
-str_replace_all("230_R", "230-R") )
+  mutate(source = str_remove(basename(source), "_clustering.csv"))
 
-amplified <- fs::dir_ls(path="primer_evaluation/amplicons/", glob = "*.fa*") %>%
-   purrr::map_dfr(function(x){
+amplified <- fs::dir_ls(path="primer_evaluation/amplicons/", glob = "*.fa.gz") %>%
+   #purrr::map(function(x){
+    furrr::future_map(function(x){
      df <- fasta.index(x) %>%
         mutate(species = desc %>% 
                  str_remove("(?:[^;]*;){7}") %>% #match 7th ;
                  str_remove(";$")) # match last ;
      all <- df %>%
       dplyr::group_by(filepath) %>%
-      dplyr::summarise(seqs_amplified = n(), species_amplified = n_distinct(species)) %>%
+      dplyr::summarise(seqs_amplified = n(), spp_amplified = n_distinct(species)) %>%
       dplyr::mutate(type="all")
      pests <- df %>%
       dplyr::group_by(filepath) %>%
       dplyr::filter(species %in% pestlist$Species) %>%
-      dplyr::summarise(seqs_amplified = n(), species_amplified = n_distinct(species)) %>%
+      dplyr::summarise(seqs_amplified = n(), spp_amplified = n_distinct(species)) %>%
       dplyr::mutate(type="pest")
      out <- bind_rows(all, pests)
     return(out)
-   })%>%
+   }) %>%
+  bind_rows() %>%
   mutate(source = str_remove(basename(filepath), ".fa.gz")) %>%
-mutate(source = source %>%
-str_replace_all("Ill_C_R", "Ill-C-R") %>%
-str_replace_all("Ill_B_F", "Ill-B-F")%>%
-str_replace_all("C_LepFolR", "C-LepFolR")%>%
-str_replace_all("ZBJ-ArtR2c_deg", "ZBJ-ArtR2c-deg")%>%
-str_replace_all("ZBJ-ArtF1c_deg", "ZBJ-ArtF1c-deg")%>%
-str_replace_all("230_R", "230-R") ) %>%
   dplyr::select(-filepath)
-  
+
 joint <- mixed_clusters %>%
   left_join(amplified) %>%
   mutate(combos = source) %>% 
-  tidyr::separate(source, into=c("Fname", "Rname"), sep="_", extra="merge") %>%
-  left_join(combos) %>% 
-  mutate(success =  seqs_amplified - mixed)
-
+  tidyr::separate(source, into=c("Fname", "Rname"), sep="_", extra="merge")
 vroom::vroom_write(joint, "primer_evaluation/amplicons/mixed_clusters_summary.csv", delim=",")
-#joint <- vroom::vroom("primer_evaluation/amplicons/mixed_clusters_summary.csv", delim=",")
+
+
 # Count reads
+joint <- vroom::vroom("primer_evaluation/amplicons/mixed_clusters_summary.csv", delim=",") %>%
+  left_join(combos) %>% 
+  mutate(success =  (spp_amplified - mixed)/spp_amplified)
 
-# Summarise identification sucess by length on 2d scatte
-
-
-gg.id <- ggplot(joint, aes(x=amplicon, y=success, colour=combos))+
-  geom_point()+
-  #geom_text(aes(label=paste0(Fname, "_", Rname)))+
-  facet_wrap(threshold~type, scales="free_y") +
+# Summarise identification sucess by length on 2d scatter
+gg.id <- joint %>% 
+  dplyr::filter(threshold %in% c(0.97, 1)) %>%
+  ggplot(aes(x=amplicon, y=success, colour=combos))+
+  geom_jitter()+
+  geom_smooth()+
+  #geom_text(aes(label=combos), check_overlap = TRUE) +
+  geom_vline(xintercept = 220) +
+  geom_vline(xintercept = 420)+
+  #annotate("text", x = 220, y = 1, label = "2x150 (NovaSeq)")+
+  #annotate("text", x = 420, y = 1, label = "2x250 (MiSeq)")+
+  #scale_color_gradient(low="firebrick", high="darkslateblue") +
+  facet_grid(threshold~type, scales="free_y") +
   theme(axis.text.x = element_text(angle=45, hjust=1),
-        legend.position = "none")
+        legend.position = "none") + 
+  labs(x="Amplicon length", y="Proportion sucessfully identified")
 
 gg.id
-#ggplotly(gg.id)
+
+library(plotly)
+ggplotly(gg.id)
 ```
 
 
