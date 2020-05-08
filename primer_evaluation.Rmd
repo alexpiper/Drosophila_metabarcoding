@@ -857,10 +857,18 @@ parallel::stopCluster(cl)
 ```
  
 ## Clustering ID Success
+
+
 ```{r clustering.R}
-# load packages ---------------------------------------------------
-.cran_packages <- c("tidyverse", "spider", "insect", "ape",
-                    "seqinr", "ShortRead", "foreach", "doParallel")
+#load packages ---------------------------------------------------
+.cran_packages <- c("tidyverse",
+                    "spider", 
+                    "insect",
+                    "ape",
+                    "seqinr",
+                    "ShortRead",
+                    "foreach",
+                    "doParallel")
 
 .bioc_packages <- c("DECIPHER", "Biostrings")
 
@@ -870,12 +878,11 @@ sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
 # Github packages
 library(taxreturn)
 
-
 # get job name ---------------------------------------------------
 args = commandArgs(trailingOnly=TRUE)
 
 if (length(args)==0) {
-  stop("At least one argument must be supplied (input file).n", call.=FALSE)
+  stop("At least one argument must be supplied (input file) \n", call.=FALSE)
 }
 print(args)
 file <- args[1]
@@ -888,14 +895,14 @@ message("job_name = ", job_name)
 #Get db
 db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
 
-## TESTING
-file <- "primer_evaluation/amplicons/jgLCO1490_BR3.fa.gz"
 amplicon <- insect::readFASTA(file)
 print(amplicon)
-amplicon <- amplicon[1:1000]
+
+# Set random seed for kmeans initialisation 
+set.seed(606)
 
 ## Get distance clustering statistic
-thresholds <- rev(seq(0.99, 1, 0.01)) #Chagne to 90
+thresholds <- rev(seq(0.97, 1, 0.01))
 threshlist <- vector("list", length=length(thresholds))
 
 for (i in 1:length(thresholds)){
@@ -903,8 +910,9 @@ threshlist[[i]] <- taxreturn::get_mixed_clusters(
  x = amplicon, db=db,
  rank = "species",
  threshold = thresholds[i],
+ rngseed = 606,
  return = "all",
- confidence=0, quiet = FALSE) 
+ confidence= 0, quiet = FALSE) 
 }
 names(threshlist) <- thresholds 
 dplyr::bind_rows(threshlist) %>%
@@ -1071,14 +1079,16 @@ Submit array
 
 njobs=$(cat sequence_index.txt | wc -l)
 sbatch --array=1-808 submit_clustering.slurm
+
 ```{bash job script}
 #!/bin/bash
 #SBATCH --job-name=id_metrics       
 #SBATCH --ntasks=1 
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=80GB
-#SBATCH --time=100:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=40GB
+#SBATCH --time=240:00:00
 #SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
+#SBATCH --mail-type=ALL
 #SBATCH --account=pathogens
 #SBATCH --export=none
 
@@ -1117,7 +1127,7 @@ cd $TMPDIR
 #Copy data files, database and decompress all
 cp ${SequencePath}/${FullSampleName}* .
 cp ${SequencePath}/clustering.R .
-cp ${SequencePath}/spider.R .
+#cp ${SequencePath}/spider.R .
 cp -r ${SequencePath}/ott3.2 .
 cp ${SequencePath}/folmer_fullength_model.rds .
 cp ${SequencePath}/pestlist.csv .
@@ -1133,19 +1143,21 @@ module load R
 Rscript clustering.R $FullSampleName
 
 #Run spider R script and send sample name to it
-Rscript spider.R $FullSampleName
+#Rscript spider.R $FullSampleName
 
 # Output useful job stats
 /usr/local/bin/showJobStats.scr | gzip > ${Sample}-jobstats.gz
 
-#Make an output directory
+#Make a directory call ${Sample} and cp all gz files into that directory
 mkdir output
+mkdir output/jobstats
 cp ./*_clustering.csv output
-cp ./*_spider.csv output
-cp ./*-jobstats.gz output
+#cp ./*_spider.csv output
+cp ./*-jobstats.gz output/jobstats
 
 # put all output files back where we started
 cp -r output ${SLURM_SUBMIT_DIR}
+
 ```
  
  
@@ -1162,7 +1174,7 @@ cp -r output ${SLURM_SUBMIT_DIR}
 
 ## Figure 4
 
-```{r figure 3}
+```{r figure 4}
 # Summarise number of mixed clusters that contain pests at %
 pestlist <- read_csv("primer_evaluation/pestlist.csv") 
 
@@ -1194,7 +1206,7 @@ setdiff(paste0(combos$Fname, "_",  combos$Rname), complete)
 # need to summarise for species, and for seqs
 library(furrr)
 plan(multiprocess)
-mixed_clusters <- fs::dir_ls(path="primer_evaluation/amplicons/output/", glob = "*clustering.csv")[1:10]%>%
+mixed_clusters <- fs::dir_ls(path="primer_evaluation/amplicons/output/", glob = "*clustering.csv")%>%
   furrr::future_map(function(x){
   #purrr::map(function(x){
     df <-  vroom::vroom(x, delim=",")
@@ -1455,6 +1467,15 @@ date
 cp -r ${Sample}_output ${SLURM_SUBMIT_DIR}
 ```
 
+## Extract fasta of all unique BLAST hits
+```{bash}
+echo $() >  hits.txt
+for d in ./*_output/ ; do (cd "$d" && zcat *.out.gz | awk '{print $4}' | awk '{split($0,a,"|"); print a[2]}' | sort -u >> ../hits.txt ); done
+cat hits.txt | sort -u > merged_hits.txt
+
+blastdbcmd -entry_batch merged_hits.txt -db /group/blastdb/nt -out merged_hits.fa 
+
+```
 
 Note: Detailed information about installing and running PrimerTree can be found at https://github.com/jimhester/primerTree
 

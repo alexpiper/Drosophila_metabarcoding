@@ -447,6 +447,21 @@ tree <- read.tree("reference/chesters_2017_species_level_tree.nwk")
 # Read in our alignment
 seqs <- insect::readFASTA("reference/merged_final_aligned.fa.gz")
 
+names(seqs) <- names(seqs) %>% 
+  str_remove(";$")
+  
+
+# Prune to only insecta
+filt <- names(seqs) %>%
+  str_remove(";$") %>% 
+  str_split_fixed(";", n=8) %>%
+  as.data.frame(stringsAsFactors=FALSE) %>%
+  dplyr::filter(V4 == "Insecta") %>%
+  tidyr::unite(col="output", V1,V2,V3,V4,V5,V6,V7,V8, sep=";") %>%
+  pull(output)
+
+seqs <- seqs[names(seqs) %in% filt]
+
 #Prune to 1 representative per taxa
 pruned <- prune_groups(seqs, maxGroupSize = 1, discardby = "length")
 
@@ -459,10 +474,10 @@ names(pruned) <- name_vec[,8] %>%
   str_replace_all(" ", "_")
 
 pruned <- pruned[!duplicated(names(pruned))]
-insect::writeFASTA(pruned, "reference/merged_final_1spponly.fa", compress = FALSE)
+insect::writeFASTA(pruned, "reference/merged_final_1spponly.fa.gz", compress = TRUE)
 
 # Get shared tips between two trees
-shared <- intersect(names(pruned), tree2$tip.label)
+shared <- intersect(names(pruned), tree$tip.label)
 length(shared)
 #38520 shared tips
 
@@ -470,19 +485,19 @@ length(shared)
 tree2 <- drop.tip(tree, tree$tip.label[!tree$tip.label %in% shared])
 
 # extract tree constraints
-constraints <- castor::extract_fasttree_constraints(tree2)
+constraints <- castor::extract_fasttree_constraints(tree2)$constraints
 
 # Write out constraints as fasta file
 Ntips <- length(tree2$tip.label)
-cat(paste(sapply(1:Ntips, 
-    FUN=function(tip) sprintf(">%s\n%s\n",tree$tip.label[tip],
-    paste(as.character(constraints[tip,]),collapse=""))),collapse=""), "contstraints.fa")
+cat(paste(sapply(1:Ntips, #Ntips
+    FUN=function(tip) sprintf(">%s\n%s\n",tree2$tip.label[tip],
+    paste(as.character(constraints[tip,]),collapse=""))),collapse=""), file="reference/constraints.fa")
 ```
 
 # Align fasttree using constriants tree
 ```{bash fastree}
 module load FastTree
-FastTree -gtr -cat 20 -constraints constraints.fa -nt reference/merged_final_1spponly.fa > constraint_FastTree.nwk
+FastTree -gtr -cat 20 -constraints reference/constraints.fa -nt reference/merged_final_1spponly.fa > reference/constraint_FastTree.nwk
 ```
 
 # Make ultrametric & Date
@@ -498,6 +513,12 @@ table(tree$tip.label %in% ref_tree$tip.label)
 library(geiger)
 res <- congruify.phylo(reference=ref_tree, target=tree, scale="PATHd8")
 write.tree(res$phy, "reference/ultrametric_insecta_tree.nwk")
+
+
+# Alternatively, castor has - congruent_divergence_times
+
+# Rooting with castor?
+#find_root
 ```
 
 # Sessioninfo
