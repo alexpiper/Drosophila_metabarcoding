@@ -828,7 +828,7 @@ dir.create("primer_evaluation/amplicons")
 # Setup multithreading
 library(foreach)
 library(doParallel)
-cores=2
+cores=12
 cl <- parallel::makeCluster(cores)
 registerDoParallel(cl)
 
@@ -873,7 +873,7 @@ parallel::stopCluster(cl)
 .bioc_packages <- c("DECIPHER", "Biostrings")
 
 #Load all packages
-sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
+sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE, warn.conflicts=FALSE)
 
 # Github packages
 library(taxreturn)
@@ -890,14 +890,21 @@ job_name <- basename(file) %>% str_remove("\\..*$")
 message("file = ", file)
 message("job_name = ", job_name)
 
+message("wd = ", getwd())
+message("files in wd: \n")
+list.files()
+
 # Run code ---------------------------------------------------
 
-#Get db
-db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
-
+# Read in amplicon
 amplicon <- insect::readFASTA(file)
 print(amplicon)
 
+# Testing
+amplicon <- amplicon[1:1000]
+
+#Get db
+db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
 # Set random seed for kmeans initialisation 
 set.seed(606)
 
@@ -1080,6 +1087,7 @@ Submit array
 njobs=$(cat sequence_index.txt | wc -l)
 sbatch --array=1-808 submit_clustering.slurm
 
+
 ```{bash job script}
 #!/bin/bash
 #SBATCH --job-name=id_metrics       
@@ -1091,6 +1099,7 @@ sbatch --array=1-808 submit_clustering.slurm
 #SBATCH --mail-type=ALL
 #SBATCH --account=pathogens
 #SBATCH --export=none
+
 
 #Check if job is launched as array
 if [ -z "$SLURM_ARRAY_TASK_COUNT" ]; then 
@@ -1114,6 +1123,9 @@ FullSampleName=$(sed -n ${SLURM_ARRAY_TASK_ID}p ${Index})
 SequencePath=$(dirname ${FullSampleName})
 Sample=$(basename ${FullSampleName} .fa.gz)
 
+echo ${FullSampleName}
+echo ${Sample}
+
 # Double check that array index is valid
 if [[ ! -f "${FullSampleName}" ]]; then
   echo "Error array index doesnt match up with index file"
@@ -1122,15 +1134,18 @@ if [[ ! -f "${FullSampleName}" ]]; then
 fi
 
 # Goto tmp to do our working out
+echo $TMPDIR
 cd $TMPDIR
+tmp_dir=$(mktemp -d -t ci-XXXXXXXXXX)
+cd $tmp_dir
 
 #Copy data files, database and decompress all
-cp ${SequencePath}/${FullSampleName}* .
+cp ${FullSampleName} .
 cp ${SequencePath}/clustering.R .
 #cp ${SequencePath}/spider.R .
 cp -r ${SequencePath}/ott3.2 .
-cp ${SequencePath}/folmer_fullength_model.rds .
-cp ${SequencePath}/pestlist.csv .
+pwd
+ls
 
 #Decompress all
 pigz -p8 -d ./*.gz
@@ -1140,10 +1155,10 @@ module purge
 module load R
 
 #Run clustering R script and send sample name to it
-Rscript clustering.R $FullSampleName
+Rscript clustering.R $Sample.fa
 
 #Run spider R script and send sample name to it
-#Rscript spider.R $FullSampleName
+#Rscript spider.R $Sample.fa.gz
 
 # Output useful job stats
 /usr/local/bin/showJobStats.scr | gzip > ${Sample}-jobstats.gz
@@ -1152,11 +1167,11 @@ Rscript clustering.R $FullSampleName
 mkdir output
 mkdir output/jobstats
 cp ./*_clustering.csv output
-#cp ./*_spider.csv output
 cp ./*-jobstats.gz output/jobstats
 
-# put all output files back where we started
+#Put all output files back where we started
 cp -r output ${SLURM_SUBMIT_DIR}
+rm -rf $tmp_dir
 
 ```
  
@@ -1266,16 +1281,16 @@ joint <- vroom::vroom("primer_evaluation/amplicons/mixed_clusters_summary.csv", 
 # Summarise identification sucess by length on 2d scatter
 gg.id <- joint %>% 
   dplyr::filter(threshold %in% c(0.97, 1)) %>%
-  ggplot(aes(x=amplicon, y=success, colour=combos))+
-  geom_jitter()+
-  geom_smooth()+
+  ggplot(aes(x=amplicon, y=spp_amplified, colour=combos))+
+  geom_jitter(width = 5, height=0.025)+
+  #geom_smooth()+
   #geom_text(aes(label=combos), check_overlap = TRUE) +
   geom_vline(xintercept = 220) +
   geom_vline(xintercept = 420)+
   #annotate("text", x = 220, y = 1, label = "2x150 (NovaSeq)")+
   #annotate("text", x = 420, y = 1, label = "2x250 (MiSeq)")+
   #scale_color_gradient(low="firebrick", high="darkslateblue") +
-  facet_grid(threshold~type, scales="free_y") +
+  facet_wrap(threshold~type, scales="free") +
   theme(axis.text.x = element_text(angle=45, hjust=1),
         legend.position = "none") + 
   labs(x="Amplicon length", y="Proportion sucessfully identified")
@@ -1353,6 +1368,49 @@ for(i in 1:nrow(combos)){
 
 ```
 
+# Off target chunked
+
+Output all primer combos, fasta files in chunks of 100
+Do as a BLAST array job
+pull the taxid, and query name
+get only unique taxid
+save that as the results
+Calculate off targets as proportion of insecta to total sequences amplified
+
+Probably dont need to do it for all combos? just do for forward and reverse. Define it as a limitation 
+
+```{r off target}
+dir.create("primer_evaluation/off_target/individual_chunked", recursive = TRUE)
+# Load primers
+primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
+  dplyr::filter(!duplicated(name)) %>%
+  mutate(seq = str_replace_all(seq, "I","N")) %>% 
+  mutate(seq =case_when(
+    strand=="F" ~ seq,
+    strand=="R" ~ rc(seq) #Works without RC but RC seems faster
+  )) 
+
+# Disambiguate primers and write out individuals
+seqs <- DECIPHER::Disambiguate(DNAStringSet(primers$seq))
+names(seqs) <- primers$name
+
+for (i in 1:length(seqs)){
+  out <- unlist(seqs[i])
+  names(out) <- make.unique(names(out), sep="_") 
+  # Split into chunks of 100
+  chunks <- split(out, ceiling(seq_along(out)/100))
+
+  #write out chunks as seperate files
+  for (c in 1:length(chunks)){
+    filename <- paste0(names(seqs[i]),"_", names(chunks[c]))
+    writeXStringSet(chunks[[c]],
+                    paste0("primer_evaluation/off_target/individual_chunked/",filename,".fa.gz"),
+                    compress = TRUE)
+  }
+}
+```
+
+
 See primerblast paper:
 
 To evaluate specificity, artificial search sequences were generated by concatenating both primer sequences with a 20 base spacer. This ensures that each primer will be treated separately in the BLAST search and thus achieves the equivalent effect of performing a separate BLAST search for each primer. To create a database of potential non-target sequence ampliciations These artificial sequences as well as just the forward and reverse primers were searched against the local NCBI nr database using BLASTn
@@ -1367,23 +1425,22 @@ blastn -task blastn-short -query $query_file -db $db_file -evalue 30000 "
 Index jobs
 ```{bash generate job index}
 #!/bin/bash
-/usr/bin/ls -d $PWD/*.fa | sort > sequence_index.txt
+/usr/bin/ls -d $PWD/*.fa.gz | sort > sequence_index.txt
 ```
 
 Submit array
 
 njobs=$(cat sequence_index.txt | wc -l)
 
-sbatch --array=1-67 primerblast.slurm
-
+sbatch --array=1-930 primerblast.slurm
 
 ## BLAST
 ```{bash blast}
 #!/bin/bash
 #SBATCH --job-name=BLASTn       
 #SBATCH --ntasks=1 
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=200GB
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=20GB
 #SBATCH --time=240:00:00
 #SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
 #SBATCH --mail-type=ALL
@@ -1410,7 +1467,7 @@ fi
 BlastDB=/group/blastdb/nt
 FullSampleName=$(sed -n ${SLURM_ARRAY_TASK_ID}p ${Index})
 SequencePath=$(dirname ${FullSampleName})
-Sample=$(basename ${FullSampleName} .fa)
+Sample=$(basename ${FullSampleName} .fa.gz)
 
 # Double check that array index is valid
 if [[ ! -f "${FullSampleName}" ]]; then
@@ -1419,12 +1476,17 @@ if [[ ! -f "${FullSampleName}" ]]; then
   exit 1
 fi
 
-# Goto tmp to do our working out
+# Goto tmp to do our processing
+echo $TMPDIR
 cd $TMPDIR
+tmp_dir=$(mktemp -d -t ci-XXXXXXXXXX)
+cd $tmp_dir
 
 #Copy data files, database and decompress all
-cp ${SequencePath}/${Sample}.fa .
-#pigz -p8 -d ./*.gz
+cp ${FullSampleName} .
+pigz -p8 -d ./*.gz
+pwd
+ls
 
 #Load modules
 module purge
@@ -1447,8 +1509,8 @@ blastn -task blastn-short \
 -ungapped \
 -reward 1 \
 -penalty -1 \
--max_hsps 500 \
--max_target_seqs 100000 \
+-max_hsps 1 \
+-max_target_seqs 1000000 \
 -outfmt '6 qseqid qstart qend sseqid staxid sstart send sstrand' \
 -num_threads 8
 
@@ -1477,6 +1539,76 @@ blastdbcmd -entry_batch merged_hits.txt -db /group/blastdb/nt -out merged_hits.f
 
 ```
 
+
+## Extract taxid of all unique BLAST hits
+
+This loops through all out files in the output subfolders and merges the unique tax_ids into hits
+
+The awk call splits the primer name to remove the chunk ID (ie primer_1 > primer 1 ), then prints just the primer and tax_ids, then call unique
+```{bash}
+echo $() >  hits.txt
+for d in ./*_output/ ; do (cd "$d" && zcat *.out.gz | awk '{split($1,a,"_"); print a[1], $5}'| sort -u >> ../hits.txt ); done
+cat hits.txt | sort -u > merged_hits.txt
+pigz merged_hits.txt
+rm hits.txt
+
+```
+
+
+## process hits
+
+```{r process blast taxonomy}
+hits <- vroom::vroom("primer_evaluation/merged_hits.txt.gz", col_names=c("primer", "tax_id"))
+
+db <- taxreturn::get_ncbi_lineage()
+
+test <- hits %>% 
+  left_join(db, by="tax_id") %>%
+  mutate(is_arthropod = case_when(
+    phylum=="Arthropoda" ~ TRUE,
+    !phylum=="Arthropoda" ~ FALSE
+  ), is_insect = case_when(
+    class=="Insecta" ~ TRUE,
+    !class=="Insecta" ~ FALSE
+  )) %>%
+  group_by(primer)%>%
+  summarise(freq_arthropod=(sum(is_arthropod, na.rm = TRUE)/n()),
+            freq_insect=(sum(is_insect, na.rm = TRUE)/n()),
+            n=n()
+            ) %>%
+  arrange(freq_arthropod)
+  
+
+
+table(test$phylum)
+```
+
+
+
+# BBTOOLS CUTPRIMERS
+
+BBTools has is a pair of programs for cutting (and outputting to a file) the sequence between primer pairs, but not for cutting out primers themselves. Is that what you are after?
+
+The usage is like this:
+
+Assume your set of primers for one end is AAAAAA and AAAAAT, and for the other end is GGGGGG and GGGCCC:
+
+module load BBmap
+msa.sh in=test.fa out=primer1.sam literal=ATTGGWGGWTTYGGAAAYTG replicate=t
+msa.sh in=amplicons.fq out=primer2.sam literal=GGGGGG,GGGCCC
+
+
+
+msa.sh in=merged_final.fa.gz out=primer1.sam literal=ATTGGWGGWTTYGGAAAYTG replicate=t
+
+That will find the optimal alignment for the optimal primer, and output one line per amplicon (twice). Then run this:
+
+cutprimers.sh in=amplicons.fq out=middle.fq sam1=primer1.sam sam2=primer2.sam
+
+"middle.fq" will contain the sequence between the primers, one per amplicon, using the best alignment. I designed this to cut V4 regions from full-length 16s.
+
+# PrimerTree
+
 Note: Detailed information about installing and running PrimerTree can be found at https://github.com/jimhester/primerTree
 
 Could use a slurm array to submit each seperately with all combinatons. 
@@ -1484,7 +1616,6 @@ Also worth having a function to count degeneracy for the constraints section
 ```{r off target}
 primers <- read_csv("primer_evaluation/primer_candidates.csv")
 library(primerTree)
-
 
 
 forward <- "GGDRCWGGWTGAACWGTWTAYCCNCC"
