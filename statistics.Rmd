@@ -272,7 +272,7 @@ gg.prev <- prevdf %>%
 
 gg.prev
 
-pdf(file="figs/prevalence.pdf", width = 11, height = 8 , paper="a4r")
+pdf(file="fig/prevalence.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.prev)
 try(dev.off(), silent=TRUE)
 
@@ -331,7 +331,6 @@ ps1 <- subset_samples(ps1, !str_detect(sample_names(ps1), "POS"))
 
 ps1 <- prune_samples(sample_sums(ps1) >0 , ps1)
 
-
 #Plot rarefaction curve
 out <- rarecurve(otu_table(ps1), step=10000)
 
@@ -371,7 +370,7 @@ gg.rare <- ggplot(data = rare)+
 gg.rare
 
 #Write out figure
-pdf(file="figs/rarefaction.pdf", width = 11, height = 8 , paper="a4r")
+pdf(file="fig/rarefaction.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.rare)
 try(dev.off(), silent=TRUE)
 
@@ -1140,8 +1139,6 @@ p1 = plot_ordination(ps.ord, GP.ord, type="samples", color="ExtractID", title="C
 
 ## Comparison between primers for bias
 
-## Approaches to try estiamting / calibrating bias
-
 - Metacal center function
 - lm 
 - lm with CLR in advance?
@@ -1153,10 +1150,9 @@ p1 = plot_ordination(ps.ord, GP.ord, type="samples", color="ExtractID", title="C
   - Stan
   - Pibble from stray package
 
-# How to evaluate?
-
 Pick the model that reduces the residual mean standard error (RMSE) the most
 
+Should be able to do this within a tidymodels framework with bootsrapping
 
 ```{r Drosophila bias}
 #devtools::install_github("mikemc/metacal")
@@ -1171,19 +1167,16 @@ ps_bias <- tax_glom(ps_bias, taxrank="Species")
 
 sample_data(ps_bias)$target_subfragment <- paste0(sample_data(ps_bias)$Fprimer, "_", sample_data(ps_bias)$Rprimer)
 
-primers <- as.character(unique(sample_data(ps_bias)$target_subfragment ))
-plist <- vector("list", length(primers))
-names(plist) = primers
-
-
-sam <- psmelt(ps_bias) %>%
-  arrange(Abundance)%>%
+sam <- speedyseq::psmelt(ps_bias) %>%
+  arrange(Abundance) %>%
   mutate(Taxon = Species) %>%
-  select(OTU,Sample, Taxon, Abundance) %>%
+  dplyr::select(OTU,Sample, Taxon, Abundance) %>%
   mutate(Sample = str_remove(Sample, "HLVKYDMXX_"))
 
 exp <- read_csv("sample_data/expected_quant.csv") %>%
-  gather(Species,Abundance,-X1) %>%
+  pivot_longer(-X1,
+               names_to= "Species",
+               values_to= "Abundance") %>%
   mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
   mutate(X1 = str_split_fixed(X1,"-rep",n=2) %>%
            as_tibble()%>% 
@@ -1227,14 +1220,91 @@ bias.lm <- joint %>%
   mutate_at(vars(Abundance, Actual), ~ . / sum(.) )%>% #Convert to proportions
   dplyr::select(Sample, Taxon, Abundance, Actual) %>% 
   ungroup() %>%
-    group_by(Taxon) %>%
+  filter(Actual > 0) %>%
+   #group_by(Taxon) %>%
     nest() %>%
-    mutate(fit = map(data, ~lm(Abundance ~ 0 + Actual, data = .)),
+    mutate(fit = map(data, ~lm(Abundance ~ 0 + Actual + Taxon, data = .)),
            tidied = map(fit, broom::tidy)) %>%
-  unnest(tidied) %>%
-  select(Taxon, estimate, std.error)
+  unnest(tidied) #%>%
+  dplyr::select(Taxon, estimate, std.error)
 
 bias.lm
+
+# Try with tidymodels
+
+# First plot actual vs obsered to see if there is a linear relationship
+
+# Test make bootstraps
+data <- joint %>%
+  group_by(Sample) %>%
+  mutate_at(vars(Abundance, Actual), ~ . / sum(.) )%>% #Convert to proportions - Could i just do a CLR here?
+  dplyr::select(Sample, Taxon, Abundance, Actual) %>%
+  ungroup() %>%
+  filter(Actual > 0) %>%
+  group_by(Taxon)
+
+boots <- bootstraps(data, times = 1000, apparent = TRUE)
+
+boot_models <-  boots %>%
+      mutate(model = map(splits, ~  lm(Abundance ~ 0 + Actual + Taxon, data = analysis(.))), 
+        # Fore intercept to be 0
+        coef_info = map(model, tidy))
+
+
+boot_coefs <- boot_models %>% 
+  unnest(coef_info)
+
+percentile_intervals <- int_pctl(boot_models, coef_info)
+percentile_intervals
+
+ggplot(boot_coefs, aes(estimate)) +
+  geom_histogram(bins = 30) +
+  facet_wrap( ~ term, scales = "free") +
+  geom_vline(aes(xintercept = .estimate), data = percentile_intervals, col = "red") +
+  geom_vline(aes(xintercept = .lower), data = percentile_intervals, col = "blue") +
+  geom_vline(aes(xintercept = .upper), data = percentile_intervals, col = "blue")
+
+# HOw to compare these models? - See mikemc paper
+boot_aug <- 
+  boot_models %>% 
+  #sample_n(200) %>% 
+  mutate(augmented = map(model, augment)) %>% 
+  unnest(augmented)
+
+ggplot(boot_aug, aes(.fitted, Abundance, color = Taxon)) +
+    geom_jitter()
+
+
+## Group split version
+
+group_name <- group_keys(data) %>%
+  pull(Taxon)
+data <- data %>%
+  group_split() %>%
+  set_names(group_name)
+
+set.seed(606)
+boots <- purrr::map(data, bootstraps, times=100, apparant=TRUE)
+
+# Fit model to bootstraps
+boot_models <- boots %>% 
+  purrr::map(function(x){ 
+    x <- x %>%
+      mutate(model = map(splits, ~  lm(Abundance ~ 0 + Actual, data = .)), # Set slope to 0 to jus estimate intercept
+         coef_info = map(model, tidy))
+    }) 
+
+
+# Get coefficients
+boot_coefs <- boot_models %>% 
+      unnest(coef_info)
+
+# Calculate CIs using percentile method
+percentile_intervals <- boot_models %>%
+  purrr::map(function(x){int_pctl(x, coef_info)}) %>%
+  bind_rows(.id="Taxon")
+
+percentile_intervals
 
 
 ## Mclarens  naive approach
