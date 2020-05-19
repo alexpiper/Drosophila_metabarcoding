@@ -5,10 +5,25 @@ editor_options:
   chunk_output_type: console
 ---
 
+# Introduction
+
+## Analysis structure
+
+Part 1 - Cleanup & Filtering of index switching
+
+Part 1 - Comparison of 4 primers for bias and detection efficiency
+(figure 1)
+
+Part 2 - Comparison of bias between 3 tagged primers
+
+Part 3 - Comparison 
+
+
 ## Load packages
 ```{r setup}
 #Set required packages
-.cran_packages <- c("tidyverse", 
+.cran_packages <- c("tidyverse",
+                    "tidymodels",
                     "patchwork", 
                     "vegan", 
                     "seqinr",
@@ -49,6 +64,8 @@ devtools::install_github("mikemc/speedyseq")
 library(speedyseq)
 devtools::install_github('ggloor/CoDaSeq/CoDaSeq')
 library(CoDaSeq)
+devtools::install_github("mikemc/metacal")
+library(metacal)
 
 #Source internal functions
 source('R/helper_functions.R')
@@ -57,14 +74,6 @@ options(stringsAsFactors = FALSE)
 
 ## Make Phyloseq object
 
-Following taxonomic assignment, the sequence table and taxonomic table are merged into a single phyloseq object alongside the sample info csv.
-
-We then make a plot to evaluate the effectiveness of taxonomic assignment to each rank
-
-#Need to append the FCIDs before merging and removing chimeras
-
-if they have REP and no HLVKYDMXX - Its run 2
-if rhey have no rep its run 1
 
 ```{r create PS, eval = FALSE}
 ## Just subset to the last run
@@ -76,48 +85,65 @@ seqtab <- seqtab[,colSums(seqtab) > 0]
 rownames(seqtab)[!str_detect(rownames(seqtab), "Rep") ] <- paste0("CB3DR_", rownames(seqtab)[!str_detect(rownames(seqtab), "Rep") ])
 
 # Add FCID to run2 samples
-rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & !str_detect(rownames(seqtab), "HLVKYDMXX")]<- paste0("CJKFJ_", rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & !str_detect(rownames(seqtab), "HLVKYDMXX")])
+rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
+                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
+                   !str_detect(rownames(seqtab), "DL|CL")] <- paste0("CK3HD_", rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
+                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
+                   !str_detect(rownames(seqtab), "DL|CL")])
 
-#rownames(seqtab)  <- rownames(seqtab) %>%
-#  str_remove("^HLVKYDMXX_") %>%
-#  str_remove("\\..*$")%>%
-#  str_replace("\\_.*\\_...", replacement="_") %>%
-#  str_replace("_$", "_1") 
-#
+	
+# Add FCID to run 3 samples
+rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
+                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
+                   str_detect(rownames(seqtab), "DL|CL")] <- paste0("CJKFJ_", rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
+                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
+                   str_detect(rownames(seqtab), "DL|CL")])
+
+#Reformat sample IDs
+rownames(seqtab)  <- rownames(seqtab) %>%
+  str_remove("\\..*$") %>%
+  str_replace("\\_S[0-9].*\\_...", replacement="_") %>%
+  str_replace("_$", "_1") %>%
+  str_replace("1in10", "1:10")
+
+table(!rownames(seqtab) %in% rownames(samdf))
+rownames(seqtab)[!rownames(seqtab) %in% rownames(samdf)]
+
 tax <- readRDS("output/rds/tax_IdTaxaExact.rds") 
 seqs <- DNAStringSet(colnames(seqtab))
 names(seqs) <- seqs
 phy <- readRDS("output/rds/phytree.rds")$tree
 
-#### Rename problematic samples
-rownames(seqtab)  <- rownames(seqtab) %>%
- str_replace_all("D250M1-", "D250M4REP-") %>% #Dont think this is necessart
- str_replace_all("D250M2-", "D250M5REP-") %>% # Makes sense on PCA
- str_replace_all("D250M3-", "D250M1REP-") %>% # Way off on PCA
- str_replace_all("D250M4-", "D250M2REP-") %>%
- str_replace_all("D250M5-", "D250M3REP-") %>%
- str_replace_all("D500M1-", "D500M4REP-") %>%
- str_replace_all("D500M2-", "D500M5REP-") %>%
- str_replace_all("D500M3-", "D500M1REP-") %>%
- str_replace_all("D500M4-", "D500M2REP-") %>%
- str_replace_all("D500M5-", "D500M3REP-") %>% # This should maybe be M2?
- str_replace_all("D1000M1-", "D1000M3REP-") %>%
- str_replace_all("D1000M2-", "D1000M4REP-") %>%
- str_replace_all("D1000M3-", "D1000M5REP-") %>%
- str_replace_all("D1000M4-", "D1000M1REP-") %>%
- str_replace_all("D1000M5-", "D1000M2REP-") %>%
- str_replace_all("REP", "")
+##### Rename problematic samples
+#rownames(seqtab)  <- rownames(seqtab) %>%
+# str_replace_all("D250M1-", "D250M4REP-") %>% #Dont think this is necessart
+# str_replace_all("D250M2-", "D250M5REP-") %>% # Makes sense on PCA
+# str_replace_all("D250M3-", "D250M1REP-") %>% # Way off on PCA
+# str_replace_all("D250M4-", "D250M2REP-") %>%
+# str_replace_all("D250M5-", "D250M3REP-") %>%
+# str_replace_all("D500M1-", "D500M4REP-") %>%
+# str_replace_all("D500M2-", "D500M5REP-") %>%
+# str_replace_all("D500M3-", "D500M1REP-") %>%
+# str_replace_all("D500M4-", "D500M2REP-") %>%
+# str_replace_all("D500M5-", "D500M3REP-") %>% # This should maybe be M2?
+# str_replace_all("D1000M1-", "D1000M3REP-") %>%
+# str_replace_all("D1000M2-", "D1000M4REP-") %>%
+# str_replace_all("D1000M3-", "D1000M5REP-") %>%
+# str_replace_all("D1000M4-", "D1000M1REP-") %>%
+# str_replace_all("D1000M5-", "D1000M2REP-") %>%
+# str_replace_all("REP", "")
 
 #Load sample information
 ## ---- samdat ----
 samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE) %>% 
-  mutate(Sample_ID = paste0(Sample_Name, "_", replicate) %>%
-  #str_remove("^HLVKYDMXX_")) %>%
-  #filter(FCID=="HLVKYDMXX") %>%
-  #mutate(Sample_ID = paste0(FCID, "-", Sample_ID)) %>%
+  mutate(Sample_ID = case_when(
+    FCID=="HLVKYDMXX" ~ paste0(Sample_Name, "_", replicate),
+    !FCID=="HLVKYDMXX" ~ paste0(FCID, "_", Sample_Name, "_", replicate)
+  ))  %>%
   filter(!(index=="ATCGATCG" & index2=="ATCACACG"), #CT11-ex1 duplicated
          !(index=="TCGCTGTT" & index2=="ACTCCATC") # CT12-ex1 duplicated
          ) %>%
+  filter(!FCID=="CK3HD") %>%
   mutate(type = case_when(
     str_detect(Sample_ID, "^D")  ~ "Mock",
     str_detect(Sample_ID, "SPD")  ~ "SPD",
@@ -128,6 +154,12 @@ samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE) %>%
     str_detect(Sample_ID, "POS")  ~ "POS",
     str_detect(Sample_ID, "CT")  ~ "CarpTrap",
     str_detect(Sample_ID, "CM")  ~ "CarpMock"
+  )) %>%
+  mutate(target_subfragment = case_when(
+    str_detect(Fprimer, "GGDACWGGWTGAACWGTWTAYCCHCC") & str_detect(Rprimer, "GTRATWGCHCCDGCTARWACWGG") ~ "fwhF2-fwhR2n",
+    str_detect(Fprimer, "ACWGGWTGRACWGTNTAYCC") & str_detect(Rprimer, "ARYATDGTRATDGCHCCDGC") ~ "BF1-BR1",
+    str_detect(Fprimer, "GGDRCWGGWTGAACWGTWTAYCCNCC") & str_detect(Rprimer, "TATDGTRATDGCHCCNGC") ~ "SauronS878-HexCOIR4",
+    str_detect(Fprimer, "GGDACWGGWTGAACWGTWTAYCCHCC") & str_detect(Rprimer, "TATDGTRATDGCHCCNGC") ~ "fwhF2-HexCOIR4",
   )) %>%
   magrittr::set_rownames(.$Sample_ID)
 
@@ -143,6 +175,7 @@ ps <- phyloseq(tax_table(tax),
 if(nrow(seqtab) > nrow(sample_data(ps))){warning("Warning: All samples not included in phyloseq object, check sample names match the sample metadata")}
 
 rownames(samdf)[which(!rownames(sample_data(ps))  %in% rownames(samdf))]
+rownames(sample_data(ps))[which(!rownames(samdf)  %in% rownames(sample_data(ps)))]
 
 # Rename all taxa
 taxa_names(ps) <- paste0("SV", seq(ntaxa(ps)),"-",tax_table(ps)[,7])
@@ -245,7 +278,7 @@ speedyseq::psmelt(ps) %>%
   )) %>%
   drop_na() %>%
   group_by(Rank) %>%
-  summarise_all(funs(n_distinct)) %>%
+  summarise_all(list(n_distinct)) %>%
   mutate(Rank = factor(Rank, rank_names(ps))) %>%
   arrange(Rank)
 ```
@@ -254,8 +287,6 @@ speedyseq::psmelt(ps) %>%
 ### Prevalence assesment
 
 ```{R prevalence}
-# Calculate taxon prevalence across the data set at OTU level
-
 #Prevalence matrix
 prevdf <- ps %>%
     otu_table %>%
@@ -287,7 +318,6 @@ gg.prev
 pdf(file="fig/prevalence.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.prev)
 try(dev.off(), silent=TRUE)
-
 ```
 
 ## Taxon filtering
@@ -308,6 +338,456 @@ get_taxa_unique(ps0, "Order")
 ```
 
 # Filter index switching
+
+
+# Comparison of 4 primers for detection and bias
+
+# Primer comparison
+
+## Comparison between primers for detection
+
+Doesnt seem to be any scaptodrosophila? need to do exact matching
+
+```{r}
+#For run 1
+#rm_samples <- c("Undetermined")
+#ps1 <- subset_samples(ps, sample_names(ps) !=rm_samples) # Drop Undetermined reads
+#ps1 <- prune_samples(sample_sums(ps1)>=20, ps1) # Drop empty samples
+#ps2 <- tax_glom(ps1,taxrank="Species") # Change to ps.merged for later runs
+
+#Agglomerate to species
+ps2 <- speedyseq::tax_glom(ps.merged,taxrank="Species") # Change to ps.merged for later runs
+
+#For run2 
+rm_samples <- c("fwhF2-fwhR2n-CM4","fwhF2-HexCOIR4-CM4")
+ps2 <- subset_samples(ps2, !sample_names(ps2) %in% rm_samples) # Drop Undetermined reads
+
+ps2 <- filter_taxa(ps2, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
+ps2 <- prune_samples(sample_sums(ps2)>=20, ps2) # Drop empty samples
+
+
+#Rough barplot
+col2 <- colorRampPalette(brewer.pal(11, "Spectral"))(71)
+
+rm_samples <- sample_names(ps2)[which(str_detect(sample_names(ps2),"blank"))]
+psbar <- subset_samples(ps2, !sample_names(ps2) %in% rm_samples) # Drop Undetermined reads
+
+Fig1 <- plot_bar(psbar,fill="Species") +
+  theme_bw() +
+    #scale_fill_manual(values=col2) + 
+  theme(legend.position="none",
+        axis.text.x = element_text(angle=90))
+#Change sample names for plotting
+#
+#sample_names(ps2) <- sample_names(ps2) %>%
+##  str_split_fixed("-",n=3) %>%
+#  as_tibble() %>%
+#  pull(V3)
+
+gg.hmap <- plot_heatmap(ps2, "jaccard", "jsd", taxa.label="Species", na.value=NA, taxa.order="Family")   +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=60, hjust=1),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.spacing =unit(0.2, "lines"),
+        legend.position = "bottom",
+        legend.direction = "horizontal") +
+  facet_grid(~target_subfragment,scales="free",space="free", drop=TRUE) +
+    scale_fill_distiller(palette="Reds", direction= 1, trans = 'log10',  na.value = NA)
+
+
+#Summarise this also with a jaccard distance comparison!
+library(RColorBrewer)
+col <- colorRampPalette(brewer.pal(11, "Spectral"))(20)
+
+ps.ord <- subset_taxa(ps2, !Species %in% Syn_taxa)
+ps.ord <- filter_taxa(ps.ord, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
+ps.ord <- prune_samples(sample_sums(ps.ord)>=20, ps2) # Drop empty samples
+GP.ord <- ordinate(ps.ord, "NMDS", "jaccard")
+p1 = plot_ordination(ps.ord, GP.ord, type="samples", color="ExtractID", title="Comparison of 2 primer sets") + 
+  theme_bw() +  
+  theme(legend.position = "none") +
+  #scale_color_manual(values=col)+ 
+  geom_point(size=3) 
+
+#,guide=FALSE
+```
+
+## Comparison between primers for bias
+
+- Metacal center function
+- lm 
+- lm with CLR in advance?
+- glmnet: multinomial regression with regularization (ie Lasso model)
+- nnet::multinomial neural network regression
+- multinomial regression with random effects
+- Poisson regression with random effects
+- Bayesian multinomial logistic normal models
+  - Stan
+  - Pibble from stray package
+
+Pick the model that reduces the residual mean standard error (RMSE) the most
+
+Should be able to do this within a tidymodels framework with bootsrapping
+
+```{r Drosophila bias}
+ps_bias <- ps0 %>%
+  subset_samples(FCID == "CB3DR")
+
+#ps_bias <- subset_samples(ps2, type %in% c("Mock"))
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <- "Carpophilus_nr.dimidiatus"
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
+ps_bias <- speedyseq::tax_glom(ps_bias, taxrank="Species")
+
+sam <- speedyseq::psmelt(ps_bias) %>%
+  arrange(Abundance) %>%
+  mutate(Taxon = Species) %>%
+  filter(!str_detect(Genus, "__")) %>% #Remove unclassified
+  dplyr::select(OTU, Sample_Name,Taxon, Abundance, target_subfragment) %>%
+  mutate(Sample = Sample_Name %>%
+           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-"))
+
+exp <- read_csv("sample_data/expected_quant2.csv") %>%
+  pivot_longer(-X1,
+               names_to= "Species",
+               values_to= "Abundance") %>%
+  mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
+  mutate(X1 = str_split_fixed(X1,"-rep",n=2) %>%
+           as_tibble()%>% 
+           pull(V1)) %>%
+  drop_na() %>%
+  magrittr::set_colnames(c("Sample","Taxon","Actual"))
+
+#Join tables 
+joint <- sam %>%
+  filter(Taxon %in% exp$Taxon) %>%
+  filter(str_detect(Taxon, "Dros")) %>%
+  left_join(exp, by = c("Sample","Taxon")) %>%
+  mutate(Actual = replace_na(Actual, 0)) %>%
+  mutate(Observed0 = (Abundance + 0.5) * (Actual > 0)) %>%
+  mutate(Error = Observed0 / Actual) %>%
+  distinct()# %>%
+  group_by(Sample_Name) %>%
+  mutate_at(vars(Abundance, Actual), ~ . / sum(.) ) %>% #Convert to proportions
+  dplyr::select(Sample_Name, Taxon, Abundance, Actual, Error, target_subfragment) %>%
+  ungroup()
+
+## Visualise errors in proportions
+library(ggbeeswarm)
+library(ggthemes)
+joint %>% 
+  filter(Actual > 0) %>%
+  mutate_at(vars(Actual, Abundance), logit) %>%
+  ggplot(aes(Actual, Abundance, color = Taxon)) + 
+  geom_jitter(alpha=0.7) +
+  scale_color_brewer(palette="Spectral")+
+  facet_wrap(~target_subfragment)+
+  theme_bw()+
+  labs(title = "Observed vs. Actual proportions (log-odds)") 
+
+# Visualise the error in all pairwise ratios
+joint %>%
+  filter(Actual > 0) %>%
+    compute_ratios(group_vars = c("Sample_Name", "target_subfragment")) %>%
+    filter(!is.na(Actual)) %>%
+    mutate(Pair = paste(Taxon.x, Taxon.y, sep = ":")) %>% 
+  ggplot(aes(Pair, Error, colour=Pair)) +
+  geom_jitter(alpha=0.7) +
+  geom_hline(yintercept = 1) +
+  scale_y_log10() +
+  facet_wrap(~target_subfragment)+
+  theme_bw()+
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle=45, hjust=1))
+
+#Note - instead could read in the expected matrix, format to the same as the OTU matrix, then divide them both
+# This would allow using bayesian zero replacement
+
+#Build error matrix
+error_mat <- build_matrix(joint, Sample_Name, Taxon, Error) 
+rows_to_keep <- rowSums(error_mat, na.rm=TRUE) > 0
+cols_to_keep <- colSums(error_mat, na.rm=TRUE) > 0
+error_mat <- error_mat[rows_to_keep,cols_to_keep]
+
+#Estimate bias using metacal
+bias <- center(error_mat, enframe = TRUE) %>%
+    dplyr::rename(Bhat = Center)
+
+#Estimate uncertainty in bias estimate using bootstrapping
+bootreps <- bootrep_center(error_mat) %>%
+    dplyr::rename(Bhat = Center)
+bootreps.summary <- bootreps %>%
+    group_by(Taxon) %>%
+    summarize(Gm_mean = gm_mean(Bhat), Gm_se = gm_sd(Bhat))
+bias0 <- left_join(bias, bootreps.summary, by = "Taxon")
+
+# metacal tidy
+bias <- joint %>%
+    filter(Actual > 0 ) %>%
+    group_by(target_subfragment, Taxon) %>%
+    summarize(Bias = gm_mean(Error)) %>%
+    mutate(Bias = center_elts(Bias)) %>%
+    ungroup
+
+
+stm <- joint %>%
+    left_join(bias, by = c("target_subfragment", "Taxon")) %>%
+    mutate(
+        Residual = Error / Bias,
+        Predicted = Actual * Bias
+    )
+
+reps <- stm %>%
+    group_by(target_subfragment) %>%
+    nest %>%
+    mutate(
+        Error_matrix = map(data, build_matrix, "Sample", "Taxon", "Error"),
+        Bootreps = map(Error_matrix, bootrep_center, R = 4e3, 
+            method = "proj"))%>%
+    unnest(Bootreps) %>%
+    dplyr::rename(Bias = Center)
+stats <- reps %>%
+    group_by(target_subfragment, Taxon) %>%
+    summarize(gm_mean = gm_mean(Bias), gm_se = gm_sd(Bias)) %>%
+    ungroup
+
+bias <- left_join(bias, stats, by = c("target_subfragment", "Taxon"))
+
+
+# Estiamte using lm instread
+bias.lm <- joint %>%
+  filter(Actual > 0) %>%
+   group_by(Taxon, target_subfragment) %>%
+    nest() %>%
+    mutate(fit = map(data, ~lm(Abundance ~ 0 + Actual, data = .)),
+           tidied = map(fit, broom::tidy)) %>%
+  unnest(tidied) %>%
+  dplyr::select(term, estimate, std.error) #%>%
+  mutate(Taxon = term %>% str_remove("Taxon"))
+
+bias.lm
+
+## Bootstrapped seperate regression models on proportions
+library(tidymodels)
+
+lm_dat <- joint %>%
+  dplyr::select(Sample_Name, target_subfragment, Taxon, Abundance, Actual) %>%
+  ungroup() %>%
+  filter(Actual > 0) %>%
+  group_by(Taxon, target_subfragment)
+
+group_name <- group_keys(lm_dat) %>%
+  unite(col="name", everything(), sep=";") %>%
+  pull(name)
+lm_dat <- lm_dat %>%
+  group_split() %>%
+  set_names(group_name)
+
+set.seed(606)
+boots <- purrr::map(lm_dat, bootstraps, times=1000, apparant=TRUE)
+
+# Fit model to bootstraps
+boot_models <- boots %>% 
+  purrr::map(function(x){ 
+    x <- x %>%
+      mutate(model = map(splits, ~  lm(Abundance ~ 0 + Actual, data = .)), # Set slope to 0 to jus estimate intercept
+         coef_info = map(model, tidy))
+    }) 
+
+# Get coefficients
+boot_coefs <- boot_models %>% 
+  purrr::map(unnest,coef_info) %>%
+  bind_rows(.id="name") %>%
+  tidyr::separate(name, into=c("Taxon", "target_subfragment"), sep=";")
+
+# Calculate CIs using percentile method
+bias.lmboot <- boot_models %>%
+  purrr::map(function(x){int_pctl(x, coef_info)}) %>%
+  bind_rows(.id="name") %>%
+  tidyr::separate(name, into=c("Taxon", "target_subfragment"), sep=";") %>%
+  mutate(se = (.upper - .lower) / 3.92)  #3,92 for 95% CIs
+
+bias.lmboot 
+ggplot(boot_coefs, aes(estimate)) +
+  geom_histogram(bins = 30) +
+  facet_grid(target_subfragment ~ Taxon, scales = "free") +
+  geom_vline(aes(xintercept = .estimate), data = bias.lmboot, col = "red") +
+  geom_vline(aes(xintercept = .lower), data = bias.lmboot, col = "blue") +
+  geom_vline(aes(xintercept = .upper), data = bias.lmboot, col = "blue")
+
+# Plot fits
+boot_aug <- boot_models %>% 
+  purrr::map(function(x){ 
+    x %>% 
+      sample_n(200) %>%
+      mutate(augmented = map(model, augment)) %>%
+      unnest(augmented)
+      })%>%
+  bind_rows(.id="name") %>%
+  tidyr::separate(name, into=c("Taxon", "target_subfragment"), sep=";")
+
+ggplot(boot_aug, aes(x=Actual, y=Abundance, colour=Taxon)) +
+  geom_line(aes(y = .fitted, group = id), alpha = .2) +
+  geom_point() +
+  #geom_line(data=bias.clrboot, aes(y=.estimate),col= "black", inherit.aes = FALSE) +
+  facet_grid(target_subfragment ~ Taxon, scales = "free") +
+  theme(legend.position = "none")
+
+
+## Bootstrapped seperate regression models on CLR
+
+clr_dat <- sam %>%
+  dplyr::filter(Taxon %in% exp$Taxon) %>%
+  filter(str_detect(Taxon, "Dros")) %>%
+  left_join(exp, by = c("Sample","Taxon")) %>%
+  mutate(Actual = replace_na(Actual, 0)) %>%
+  dplyr::filter(Actual > 0) %>%
+  mutate(Observed0 = (Abundance + 0.5) * (Actual > 0)) %>%
+  group_by(Sample_Name) %>%
+  mutate(Abundance = clr(Observed0),
+         Actual=clr(Actual)) %>%
+  ungroup() %>%
+  distinct() %>%
+  dplyr::select(Sample_Name,target_subfragment, Taxon, Abundance, Actual) %>%
+  ungroup() %>%
+  group_by(Taxon, target_subfragment)
+  
+group_name <- group_keys(clr_dat) %>%
+  unite(col="name", everything(), sep=";") %>%
+  pull(name)
+clr_dat <- clr_dat %>%
+  group_split() %>%
+  set_names(group_name)
+
+set.seed(606)
+boots <- purrr::map(clr_dat, bootstraps, times=1000, apparant=TRUE)
+
+# Fit model to bootstraps
+boot_models <- boots %>% 
+  purrr::map(function(x){ 
+    x <- x %>%
+      mutate(model = map(splits, ~  lm(Abundance ~ 0 + Actual, data = .)), # Set slope to 0 to jus estimate intercept
+         coef_info = map(model, tidy))
+    }) 
+
+# Get coefficients
+boot_coefs <- boot_models %>% 
+  purrr::map(unnest,coef_info) %>%
+  bind_rows(.id="name") %>%
+  tidyr::separate(name, into=c("Taxon", "target_subfragment"), sep=";")
+
+# Calculate CIs using percentile method
+bias.clrboot <- boot_models %>%
+  purrr::map(function(x){int_pctl(x, coef_info)}) %>%
+  bind_rows(.id="name") %>%
+  tidyr::separate(name, into=c("Taxon", "target_subfragment"), sep=";") %>%
+  mutate(se = (.upper - .lower) / 3.92)  #3,92 for 95% CIs
+
+bias.clrboot 
+
+ggplot(boot_coefs, aes(estimate)) +
+  geom_histogram(bins = 30) +
+  facet_grid(target_subfragment ~ Taxon, scales = "free") +
+  geom_vline(aes(xintercept = .estimate), data = bias.lmboot, col = "red") +
+  geom_vline(aes(xintercept = .lower), data = bias.lmboot, col = "blue") +
+  geom_vline(aes(xintercept = .upper), data = bias.lmboot, col = "blue")
+
+# Plot fits
+boot_aug <- boot_models %>% 
+  purrr::map(function(x){ 
+    x %>% 
+      sample_n(200) %>%
+      mutate(augmented = map(model, augment)) %>%
+      unnest(augmented)
+      })%>%
+  bind_rows(.id="name") %>%
+  tidyr::separate(name, into=c("Taxon", "target_subfragment"), sep=";")
+
+ggplot(boot_aug, aes(x=Actual, y=Abundance, colour=Taxon)) +
+  geom_line(aes(y = .fitted, group = id), alpha = .2) +
+  geom_point() +
+  #geom_line(data=bias.clrboot, aes(y=.estimate),col= "black", inherit.aes = FALSE) +
+  facet_grid(target_subfragment ~ Taxon, scales = "free") +
+  theme(legend.position = "none")
+
+# Evaluate different model fits
+
+fits <- joint %>%
+  dplyr::filter(Actual > 0) %>%
+  mutate(Abundance = as.double(Abundance)) %>%
+  group_by(Sample_Name) %>%
+  mutate_at(vars(Abundance,Actual), ~ . / sum(.) ) %>% #Convert to proportions
+  ungroup() %>%
+  #filter(material == "Carpophilus Adults") %>%
+  left_join(bias %>%
+              dplyr::select(Taxon, target_subfragment, est_metacal=gm_mean, se_metacal=gm_se),
+            by = c("Taxon", "target_subfragment")) %>%
+  left_join(bias.lm %>% 
+              dplyr::select(Taxon, target_subfragment, est_lm=estimate, se_lm=std.error), 
+            by = c("Taxon", "target_subfragment")) %>%
+  left_join(bias.lmboot %>% 
+              dplyr::select(Taxon, target_subfragment, est_lmboot=.estimate, se_lmboot = se),
+            by =c("Taxon", "target_subfragment")) %>%
+  left_join(bias.clrboot %>% 
+              dplyr::select(Taxon, target_subfragment, est_clrboot=.estimate, se_clrboot = se),
+            by = c("Taxon", "target_subfragment")) %>%
+  dplyr::mutate(est_obs = Abundance) %>%
+  pivot_longer(starts_with("est_"),
+              names_to = "Type",
+              values_to= "Estimate") %>%
+  mutate(Type = Type %>% str_remove("est_")) %>%
+  mutate(Abundance = case_when(
+    !Type=="obs" ~ Abundance / Estimate,
+    Type=="obs" ~ Abundance))
+
+std_err <- fits %>%
+              dplyr::select(Taxon, se_metacal, se_lm, se_lmboot, se_clrboot) %>%
+            pivot_longer(starts_with("se_"),
+              names_to = "Type",
+              values_to= "SE")%>%
+  mutate(Type = Type %>% str_remove("se_"))
+
+fits <- fits %>% 
+  left_join(std_err) %>%
+  dplyr::select(-starts_with("se_")) 
+
+# Plot correlations
+ggplot(fits, aes(x=Actual, y=Abundance)) +
+  geom_point(aes(colour=Type, shape=Type), size=3, alpha=0.8, stroke=1) + 
+  geom_abline(slope=1, intercept = 0) +
+  ggpubr::stat_cor(aes(color=Type,label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), label.x = 0.1)  + 
+  xlim(0,1) + 
+  ylim(0,1) + 
+  ylab("Observed")
+
+
+# Plot bias estimates
+fits %>%
+  dplyr::select(-Sample) %>% 
+  filter(!Type=="obs") %>%
+  distinct() %>%
+  ggplot(aes(Taxon, y=Estimate-1, fill=Type, group=Type)) +
+    geom_col(position=position_dodge(width=0.9))+
+    geom_errorbar(aes(ymin=(Estimate-1) - SE, ymax=(Estimate-1) + SE), 
+                  position=position_dodge(width=0.9), width = 0.25) + 
+    scale_fill_brewer(palette="Spectral")+
+    scale_colour_brewer(palette="Spectral") + 
+    theme_bw() +
+    theme(axis.text.x = element_text(angle=90,hjust=1,vjust=0)) + 
+    ylab("Bias")  
+
+
+## Fit the mdoels again without bootstraps and quantify RMSE
+
+## Find a way of quantifying the RMSE
+
+```
+we compared slopes to the 1:1 line (representing ideal prediction of recovered reads from input DNA) by taking the difference between the absolute value of the observed slope and 1. A slope of 1, i.e. a perfect association of read count template amount, would translate into a fold change of 0, a slope of 2 into a fold change of +1 and a slope of 0.5 into a fold change of −1.
+
+Plot all the different regressions
+
+# Comparison of primer replicates
 
 # Overlap between replicates
 
@@ -1075,401 +1555,6 @@ ps.merged %>%
   write.csv(file = "output/csv/unfiltered/drosophila_spp_sum.csv")
 
 ```
-
-# Detection of targets
-
-# Primer comparison
-
-## Comparison between primers for detection
-
-Doesnt seem to be any scaptodrosophila? need to do exact matching
-
-```{r}
-#For run 1
-#rm_samples <- c("Undetermined")
-#ps1 <- subset_samples(ps, sample_names(ps) !=rm_samples) # Drop Undetermined reads
-#ps1 <- prune_samples(sample_sums(ps1)>=20, ps1) # Drop empty samples
-#ps2 <- tax_glom(ps1,taxrank="Species") # Change to ps.merged for later runs
-
-#Agglomerate to species
-ps2 <- speedyseq::tax_glom(ps.merged,taxrank="Species") # Change to ps.merged for later runs
-
-#For run2 
-rm_samples <- c("fwhF2-fwhR2n-CM4","fwhF2-HexCOIR4-CM4")
-ps2 <- subset_samples(ps2, !sample_names(ps2) %in% rm_samples) # Drop Undetermined reads
-
-ps2 <- filter_taxa(ps2, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
-ps2 <- prune_samples(sample_sums(ps2)>=20, ps2) # Drop empty samples
-
-
-#Rough barplot
-col2 <- colorRampPalette(brewer.pal(11, "Spectral"))(71)
-
-rm_samples <- sample_names(ps2)[which(str_detect(sample_names(ps2),"blank"))]
-psbar <- subset_samples(ps2, !sample_names(ps2) %in% rm_samples) # Drop Undetermined reads
-
-Fig1 <- plot_bar(psbar,fill="Species") +
-  theme_bw() +
-    #scale_fill_manual(values=col2) + 
-  theme(legend.position="none",
-        axis.text.x = element_text(angle=90))
-#Change sample names for plotting
-#
-#sample_names(ps2) <- sample_names(ps2) %>%
-##  str_split_fixed("-",n=3) %>%
-#  as_tibble() %>%
-#  pull(V3)
-
-gg.hmap <- plot_heatmap(ps2, "jaccard", "jsd", taxa.label="Species", na.value=NA, taxa.order="Family")   +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle=60, hjust=1),
-        axis.title.x=element_blank(),
-        axis.title.y=element_blank(),
-        panel.spacing =unit(0.2, "lines"),
-        legend.position = "bottom",
-        legend.direction = "horizontal") +
-  facet_grid(~target_subfragment,scales="free",space="free", drop=TRUE) +
-    scale_fill_distiller(palette="Reds", direction= 1, trans = 'log10',  na.value = NA)
-
-
-#Summarise this also with a jaccard distance comparison!
-library(RColorBrewer)
-col <- colorRampPalette(brewer.pal(11, "Spectral"))(20)
-
-ps.ord <- subset_taxa(ps2, !Species %in% Syn_taxa)
-ps.ord <- filter_taxa(ps.ord, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
-ps.ord <- prune_samples(sample_sums(ps.ord)>=20, ps2) # Drop empty samples
-GP.ord <- ordinate(ps.ord, "NMDS", "jaccard")
-p1 = plot_ordination(ps.ord, GP.ord, type="samples", color="ExtractID", title="Comparison of 2 primer sets") + 
-  theme_bw() +  
-  theme(legend.position = "none") +
-  #scale_color_manual(values=col)+ 
-  geom_point(size=3) 
-
-#,guide=FALSE
-```
-
-## Comparison between primers for bias
-
-- Metacal center function
-- lm 
-- lm with CLR in advance?
-- glmnet: multinomial regression with regularization (ie Lasso model)
-- nnet::multinomial neural network regression
-- multinomial regression with random effects
-- Poisson regression with random effects
-- Bayesian multinomial logistic normal models
-  - Stan
-  - Pibble from stray package
-
-Pick the model that reduces the residual mean standard error (RMSE) the most
-
-Should be able to do this within a tidymodels framework with bootsrapping
-
-```{r Drosophila bias}
-#devtools::install_github("mikemc/metacal")
-library(metacal)
-library(tidyverse)
-
-ps_bias <- subset_samples(ps2, type %in% c("Mock"))
-tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <- "Carpophilus_nr.dimidiatus"
-tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
-tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
-ps_bias <- tax_glom(ps_bias, taxrank="Species")
-
-sample_data(ps_bias)$target_subfragment <- paste0(sample_data(ps_bias)$Fprimer, "_", sample_data(ps_bias)$Rprimer)
-
-sam <- speedyseq::psmelt(ps_bias) %>%
-  arrange(Abundance) %>%
-  mutate(Taxon = Species) %>%
-  dplyr::select(OTU,Sample, Taxon, Abundance) %>%
-  mutate(Sample = str_remove(Sample, "HLVKYDMXX_"))
-
-exp <- read_csv("sample_data/expected_quant.csv") %>%
-  pivot_longer(-X1,
-               names_to= "Species",
-               values_to= "Abundance") %>%
-  mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
-  mutate(X1 = str_split_fixed(X1,"-rep",n=2) %>%
-           as_tibble()%>% 
-           pull(V1)) %>%
-  drop_na() %>%
-  magrittr::set_colnames(c("Sample","Taxon","Actual"))
-
-#Join tables 
-joint <- sam %>%
-  filter(Taxon %in% exp$Taxon) %>%
-  left_join(exp, by = c("Sample","Taxon")) %>%
-  mutate(Actual = replace_na(Actual, 0)) %>%
-  mutate(Observed0 = (Abundance + 0.5) * (Actual > 0)) %>%
-  mutate(Error = Observed0 / Actual) %>%
-  distinct() %>%
-  group_by(Sample) %>%
-  mutate_at(vars(Abundance, Actual), ~ . / sum(.) )%>% #Convert to proportions
-  dplyr::select(Sample, Taxon, Abundance, Actual, Error) %>%
-  ungroup()
-
-## Visualise errors in proportions
-library(ggbeeswarm)
-library(ggthemes)
-joint %>% 
-  filter(Actual > 0) %>%
-  mutate_at(vars(Actual, Abundance), logit) %>%
-  ggplot(aes(Actual, Abundance, color = Taxon)) + 
-  geom_jitter(alpha=0.7) +
-  scale_color_brewer(palette="Spectral")+
-  theme_bw()+
-  labs(title = "Observed vs. Actual (log-odds)") 
-
-# Visualise the error in ratios
-joint %>%
-  filter(Actual > 0) %>%
-    compute_ratios(group_vars = c("Sample")) %>%
-    filter(!is.na(Actual)) %>%
-    mutate(Pair = paste(Taxon.x, Taxon.y, sep = ":")) %>% 
-  ggplot(aes(Pair, Error, colour=Pair)) +
-  geom_jitter(alpha=0.7) +
-  geom_hline(yintercept = 1) +
-  scale_y_log10() +
-  theme_bw()+
-    theme(legend.position = "none",
-          axis.text.x = element_text(angle=45, hjust=1))
-
-#Note - instead could read in the expected matrix, format to the same as the OTU matrix, then divide them both
-# This would allow using bayesian zero replacement
-
-#Build error matrix
-error_mat <- build_matrix(joint, Sample, Taxon, Error) 
-rows_to_keep <- rowSums(error_mat, na.rm=TRUE) > 0
-cols_to_keep <- colSums(error_mat, na.rm=TRUE) > 0
-error_mat <- error_mat[rows_to_keep,cols_to_keep]
-
-#Estimate bias using metacal
-bias <- center(error_mat, enframe = TRUE) %>%
-    dplyr::rename(Bhat = Center)
-
-#Estimate uncertainty in bias estimate using bootstrapping
-bootreps <- bootrep_center(error_mat) %>%
-    dplyr::rename(Bhat = Center)
-bootreps.summary <- bootreps %>%
-    group_by(Taxon) %>%
-    summarize(Gm_mean = gm_mean(Bhat), Gm_se = gm_sd(Bhat))
-bias0 <- left_join(bias, bootreps.summary, by = "Taxon")
-
-# Estiamte using lm instread
-bias.lm <- joint %>%
-  filter(Actual > 0) %>%
-   group_by(Taxon) %>%
-    nest() %>%
-    mutate(fit = map(data, ~lm(Abundance ~ 0 + Actual, data = .)),
-           tidied = map(fit, broom::tidy)) %>%
-  unnest(tidied) %>%
-  dplyr::select(term, estimate, std.error) #%>%
-  mutate(Taxon = term %>% str_remove("Taxon"))
-
-bias.lm
-
-## Bootstrapped seperate regression models on proportions
-library(tidymodels)
-
-lm_dat <- joint %>%
-  dplyr::select(Sample, Taxon, Abundance, Actual) %>%
-  ungroup() %>%
-  filter(Actual > 0) %>%
-  group_by(Taxon)
-
-group_name <- group_keys(lm_dat) %>%
-  pull(Taxon)
-lm_dat <- lm_dat %>%
-  group_split() %>%
-  set_names(group_name)
-
-set.seed(606)
-boots <- purrr::map(data, bootstraps, times=1000, apparant=TRUE)
-
-# Fit model to bootstraps
-boot_models <- boots %>% 
-  purrr::map(function(x){ 
-    x <- x %>%
-      mutate(model = map(splits, ~  lm(Abundance ~ 0 + Actual, data = .)), # Set slope to 0 to jus estimate intercept
-         coef_info = map(model, tidy))
-    }) 
-
-# Get coefficients
-boot_coefs <- boot_models %>% 
-  purrr::map(unnest,coef_info) %>%
-  bind_rows(.id="Taxon")
-
-
-# Calculate CIs using percentile method
-bias.lmboot <- boot_models %>%
-  purrr::map(function(x){int_pctl(x, coef_info)}) %>%
-  bind_rows(.id="Taxon") %>%
-  mutate(se = (.upper - .lower) / 3.92)  #3,92 for 95% CIs
-
-bias.lmboot 
-ggplot(boot_coefs, aes(estimate)) +
-  geom_histogram(bins = 30) +
-  facet_wrap( ~ Taxon, scales = "free") +
-  geom_vline(aes(xintercept = .estimate), data = bias.lmboot, col = "red") +
-  geom_vline(aes(xintercept = .lower), data = bias.lmboot, col = "blue") +
-  geom_vline(aes(xintercept = .upper), data = bias.lmboot, col = "blue")
-
-# Plot fits
-boot_aug <- boot_models %>% 
-  purrr::map(function(x){ 
-    x %>% 
-      sample_n(200) %>%
-      mutate(augmented = map(model, augment)) %>%
-      unnest(augmented)
-      })%>%
-  bind_rows(.id="Taxon")
-
-ggplot(boot_aug, aes(x=Actual, y=Abundance, colour=Taxon)) +
-  geom_line(aes(y = .fitted, group = id), alpha = .2) +
-  geom_point() +
-  #geom_line(data=bias.clrboot, aes(y=.estimate),col= "black", inherit.aes = FALSE) +
-  facet_wrap(~Taxon) +
-  theme(legend.position = "none")
-
-
-## Bootstrapped seperate regression models on CLR
-library(tidymodels)
-
-clr_dat <- sam %>%
-  dplyr::filter(Taxon %in% exp$Taxon) %>%
-  left_join(exp, by = c("Sample","Taxon")) %>%
-  mutate(Actual = replace_na(Actual, 0)) %>%
-  dplyr::filter(Actual > 0) %>%
-  mutate(Observed0 = (Abundance + 0.5) * (Actual > 0)) %>%
-  group_by(Sample) %>%
-  mutate(Abundance = clr(Observed0),
-         Actual=clr(Actual)) %>%
-  distinct() %>%
-  dplyr::select(Sample, Taxon, Abundance, Actual) %>%
-  ungroup() %>%
-  group_by(Taxon)
-  
-
-group_name <- group_keys(clr_dat) %>%
-  pull(Taxon)
-clr_dat <- clr_dat %>%
-  group_split() %>%
-  set_names(group_name)
-
-set.seed(606)
-boots <- purrr::map(clr_dat, bootstraps, times=1000, apparant=TRUE)
-
-# Fit model to bootstraps
-boot_models <- boots %>% 
-  purrr::map(function(x){ 
-    x <- x %>%
-      mutate(model = map(splits, ~  lm(Abundance ~ 0 + Actual, data = .)), # Set slope to 0 to jus estimate intercept
-         coef_info = map(model, tidy))
-    }) 
-
-# Get coefficients
-boot_coefs <- boot_models %>% 
-  purrr::map(unnest,coef_info) %>%
-  bind_rows(.id="Taxon")
-
-# Calculate CIs using percentile method
-bias.clrboot <- boot_models %>%
-  purrr::map(function(x){int_pctl(x, coef_info)}) %>%
-  bind_rows(.id="Taxon") %>%
-  mutate(se = (.upper - .lower) / 3.92)  #3,92 for 95% CIs
-
-bias.clrboot 
-
-ggplot(boot_coefs, aes(estimate)) +
-  geom_histogram(bins = 30) +
-  facet_wrap( ~ Taxon, scales = "free") +
-  geom_vline(aes(xintercept = .estimate), data = bias.clrboot, col = "red") +
-  geom_vline(aes(xintercept = .lower), data = bias.clrboot, col = "blue") +
-  geom_vline(aes(xintercept = .upper), data = bias.clrboot, col = "blue")
-
-# Plot fits
-boot_aug <- boot_models %>% 
-  purrr::map(function(x){ 
-    x %>% 
-      sample_n(200) %>%
-      mutate(augmented = map(model, augment)) %>%
-      unnest(augmented)
-      })%>%
-  bind_rows(.id="Taxon")
-
-ggplot(boot_aug, aes(x=Actual, y=Abundance, colour=Taxon)) +
-  geom_line(aes(y = .fitted, group = id), alpha = .2) +
-  geom_point() +
-  #geom_line(data=bias.clrboot, aes(y=.estimate),col= "black", inherit.aes = FALSE) +
-  facet_wrap(~Taxon) +
-  theme(legend.position = "none")
-
-rsq(boot_models, solubility, prediction)
-
-# Evaluate different model fits
-
-fits <- joint %>%
-  dplyr::filter(Actual > 0) %>%
-  #filter(material == "Carpophilus Adults") %>%
-  left_join(bias0 %>% dplyr::select(Taxon, est_metacal=Gm_mean, se_metacal=Gm_se), by = c("Taxon")) %>%
-  left_join(bias.lm %>% dplyr::select(Taxon, est_lm=estimate, se_lm=std.error), by = c("Taxon")) %>%
-  left_join(bias.lmboot %>% dplyr::select(Taxon, est_lmboot=.estimate, se_lmboot = se), by = c("Taxon")) %>%
-  left_join(bias.clrboot %>% dplyr::select(Taxon, est_clrboot=.estimate, se_clrboot = se), by = c("Taxon")) %>%
-  dplyr::mutate(est_obs = Abundance) %>%
-  pivot_longer(starts_with("est_"),
-              names_to = "Type",
-              values_to= "Estimate") %>%
-  mutate(Type = Type %>% str_remove("est_")) %>%
-  mutate(Abundance = case_when(
-    !Type=="obs" ~ Abundance / Estimate,
-    Type=="obs" ~ Abundance))
-
-std_err <- fits %>%
-              dplyr::select(Taxon, se_metacal, se_lm, se_lmboot, se_clrboot) %>%
-            pivot_longer(starts_with("se_"),
-              names_to = "Type",
-              values_to= "SE")%>%
-  mutate(Type = Type %>% str_remove("se_"))
-
-fits <- fits %>% 
-  left_join(std_err) %>%
-  dplyr::select(-starts_with("se_"))
-
-# Plot correlations
-ggplot(fits, aes(x=Actual, y=Abundance)) +
-  geom_point(aes(colour=Type, shape=Type), size=3, alpha=0.8, stroke=1) + 
-  geom_abline(slope=1, intercept = 0) +
-  ggpubr::stat_cor(aes(color=Type,label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), label.x = 0.1)  + 
-  xlim(0,1) + 
-  ylim(0,1) + 
-  ylab("Observed")
-
-
-# Plot bias estimates
-fits %>%
-  dplyr::select(-Sample) %>% 
-  filter(!Type=="obs") %>%
-  distinct() %>%
-  ggplot(aes(Taxon, y=Estimate-1, fill=Type, group=Type)) +
-    geom_col(position=position_dodge(width=0.9))+
-    geom_errorbar(aes(ymin=(Estimate-1) - SE, ymax=(Estimate-1) + SE), 
-                  position=position_dodge(width=0.9), width = 0.25) + 
-    scale_fill_brewer(palette="Spectral")+
-    scale_colour_brewer(palette="Spectral") + 
-    theme_bw() +
-    theme(axis.text.x = element_text(angle=90,hjust=1,vjust=0)) + 
-    ylab("Bias")  
-
-
-## Fit the mdoels again without bootstraps and quantify RMSE
-
-## Find a way of quantifying the RMSE
-
-```
-we compared slopes to the 1:1 line (representing ideal prediction of recovered reads from input DNA) by taking the difference between the absolute value of the observed slope and 1. A slope of 1, i.e. a perfect association of read count template amount, would translate into a fold change of 0, a slope of 2 into a fold change of +1 and a slope of 0.5 into a fold change of −1.
-
-Plot all the different regressions
 
 
 ```{R extra}
