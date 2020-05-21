@@ -1,0 +1,481 @@
+---
+title: "sample_switch"
+author: "Alexander Piper"
+date: "20/05/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Load packages
+```{r setup}
+#Set required packages
+.cran_packages <- c("tidyverse",
+                    "tidymodels",
+                    "patchwork", 
+                    "vegan", 
+                    "seqinr",
+                    "ape", 
+                    "RColorBrewer",
+                    "ggtree", 
+                    "castor", 
+                    "picante",
+                    "skimr",
+                    "devtools")
+.bioc_packages <- c("dada2",
+                    "phyloseq", 
+                    "DECIPHER",
+                    "Biostrings",
+                    "ShortRead", 
+                    "philr",
+                    "ALDEx2")
+
+.inst <- .cran_packages %in% installed.packages()
+if(any(!.inst)) {
+   install.packages(.cran_packages[!.inst])
+}
+.inst <- .bioc_packages %in% installed.packages()
+if(any(!.inst)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+  BiocManager::install(.bioc_packages[!.inst], ask = F)
+}
+
+sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
+
+# Github packages
+devtools::install_github("alexpiper/taxreturn")
+library(taxreturn)
+devtools::install_github("alexpiper/seqateurs")
+library(seqateurs)
+devtools::install_github("mikemc/speedyseq")
+library(speedyseq)
+devtools::install_github('ggloor/CoDaSeq/CoDaSeq')
+library(CoDaSeq)
+devtools::install_github("mikemc/metacal")
+library(metacal)
+
+#Source internal functions
+source('R/helper_functions.R')
+options(stringsAsFactors = FALSE)
+```
+
+## Make Phyloseq object
+
+
+```{r create PS, eval = FALSE}
+## Just subset to the last run
+seqtab <- readRDS("output/rds/seqtab_final.rds")
+#seqtab <- seqtab[str_detect(rownames(seqtab), "HLVKYDMXX"),]
+seqtab <- seqtab[,colSums(seqtab) > 0]
+
+# Add FCID to run 1 samples
+rownames(seqtab)[!str_detect(rownames(seqtab), "Rep") ] <- paste0("CB3DR_", rownames(seqtab)[!str_detect(rownames(seqtab), "Rep") ])
+
+# Add FCID to run2 samples
+rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
+                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
+                   !str_detect(rownames(seqtab), "DL|CL")] <- paste0("CK3HD_", rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
+                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
+                   !str_detect(rownames(seqtab), "DL|CL")])
+
+	
+# Add FCID to run 3 samples
+rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
+                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
+                   str_detect(rownames(seqtab), "DL|CL")] <- paste0("CJKFJ_", rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
+                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
+                   str_detect(rownames(seqtab), "DL|CL")])
+
+#Reformat sample IDs
+rownames(seqtab)  <- rownames(seqtab) %>%
+  str_remove("\\..*$") %>%
+  str_replace("\\_S[0-9].*\\_...", replacement="_") %>%
+  str_replace("_$", "_1") %>%
+  str_replace("1in10", "1:10")
+
+tax <- readRDS("output/rds/tax_IdTaxaExact.rds") 
+seqs <- DNAStringSet(colnames(seqtab))
+names(seqs) <- seqs
+phy <- readRDS("output/rds/phytree.rds")$tree
+
+##### Rename problematic Drosophila samples
+rownames(seqtab)  <- rownames(seqtab) %>%
+ str_replace_all("D250M1-", "D250M4REP-") %>% # Works
+ str_replace_all("D250M4-", "D250M2REP-") %>% # Works
+ str_replace_all("D250M5-", "D250M3REP-") %>% #FAILED library
+ str_replace_all("D250M3-", "D250M1REP-") %>% #FP suzukii - low reads
+ str_replace_all("D250M2-", "D250M5REP-") %>% #Works
+ str_replace_all("D500M1-", "D500M4REP-") %>% #Works 
+ str_replace_all("D500M4-", "D500M1REP-") %>% #FP Suzukii
+ str_replace_all("D500M5-", "D500M2REP-") %>% #Works
+ str_replace_all("D500M3-", "D500M3REP-") %>% #Works but low reads for Suz + Biarmipes 
+ str_replace_all("D500M2-", "D500M5REP-") %>% #Works
+ str_replace_all("D1000M1-", "D1000M3REP-") %>% #Works
+ str_replace_all("D1000M4-", "D1000M1REP-") %>% #Works
+ str_replace_all("D1000M5-", "D1000M2REP-") %>% #Works
+ str_replace_all("D1000M3-", "D1000M5REP-") %>% #Works
+ str_replace_all("D1000M2-", "D1000M4REP-") %>% #Works
+ str_replace_all("REP", "")
+
+#Load sample information
+## ---- samdat ----
+samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE) %>% 
+  mutate(Sample_ID = case_when(
+    FCID=="HLVKYDMXX" ~ paste0(Sample_Name, "_", replicate),
+    !FCID=="HLVKYDMXX" ~ paste0(FCID, "_", Sample_Name, "_", replicate)
+  ))  %>%
+  filter(!(index=="ATCGATCG" & index2=="ATCACACG"), #CT11-ex1 duplicated
+         !(index=="TCGCTGTT" & index2=="ACTCCATC") # CT12-ex1 duplicated
+         ) %>%
+  filter(!FCID=="CK3HD") %>%
+  mutate(type = case_when(
+    str_detect(Sample_ID, "D[0-9][0-9][0-9]M|D[0-9][0-9][0-9][0-9]M|DM[1-5]-")  ~ "DrosMock",
+    str_detect(Sample_ID, "SPD")  ~ "SPD",
+    str_detect(Sample_ID, "ACV")  ~ "ACV",
+    str_detect(Sample_ID, "DC")  ~ "DC",
+    str_detect(Sample_ID, "Sach")  ~ "Sachet",
+    str_detect(Sample_ID, "FF")  ~ "FF",
+    str_detect(Sample_ID, "NTC")  ~ "NTC",
+    str_detect(Sample_ID, "DLarv")  ~ "DrosLarv",
+    str_detect(Sample_ID, "POS|SynMock")  ~ "POS",
+    str_detect(Sample_ID, "extblank|BLANK")  ~ "Extblank",
+    str_detect(Sample_ID, "pcrblank")  ~ "PCRblank",
+    str_detect(Sample_ID, "CT")  ~ "CarpTrap",
+    str_detect(Sample_ID, "CM")  ~ "CarpMock"
+  )) %>%
+  mutate(target_subfragment = case_when(
+    str_detect(Fprimer, "GGDACWGGWTGAACWGTWTAYCCHCC") & str_detect(Rprimer, "GTRATWGCHCCDGCTARWACWGG") ~ "fwhF2-fwhR2n",
+    str_detect(Fprimer, "ACWGGWTGRACWGTNTAYCC") & str_detect(Rprimer, "ARYATDGTRATDGCHCCDGC") ~ "BF1-BR1",
+    str_detect(Fprimer, "GGDRCWGGWTGAACWGTWTAYCCNCC") & str_detect(Rprimer, "TATDGTRATDGCHCCNGC") ~ "SauronS878-HexCOIR4",
+    str_detect(Fprimer, "GGDACWGGWTGAACWGTWTAYCCHCC") & str_detect(Rprimer, "TATDGTRATDGCHCCNGC") ~ "fwhF2-HexCOIR4",
+  )) %>%
+  magrittr::set_rownames(.$Sample_ID)
+
+
+test <- samdf %>% 
+  dplyr::select(Sample_Name, type)
+# Will probably need to rename the seqtabs and append the flowcell number onto the samples before they are merged
+
+## ---- phyloseq ----
+ps <- phyloseq(tax_table(tax), 
+               sample_data(samdf),
+               otu_table(seqtab, taxa_are_rows = FALSE),
+               phy_tree(phy),
+               refseq(seqs))
+
+if(nrow(seqtab) > nrow(sample_data(ps))){warning("Warning: All samples not included in phyloseq object, check sample names match the sample metadata")}
+
+rownames(samdf)[which(!rownames(sample_data(ps))  %in% rownames(samdf))]
+rownames(sample_data(ps))[which(!rownames(samdf)  %in% rownames(sample_data(ps)))]
+
+# Rename all taxa
+taxa_names(ps) <- paste0("SV", seq(ntaxa(ps)),"-",tax_table(ps)[,7])
+
+saveRDS(ps, "output/rds/ps_idtaxaExact.rds") 
+
+#Rename synthetic orders
+tax_table(ps)[,2][which(str_detect(tax_table(ps)[,7], "Synthetic"))] <- "Arthropoda"
+
+ps <- ps %>%
+  subset_samples(!str_detect(Sample_ID, "^CT|^CM") # remove carpophilus
+  ) %>%
+  subset_taxa(Phylum == "Arthropoda") %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE) 
+```
+
+
+## Taxon filtering
+
+```{R taxon filt}
+get_taxa_unique(ps, "Order")
+
+ps # Check the number of taxa prior to removal
+ps0 <- ps %>%
+  subset_taxa(
+    Phylum == "Arthropoda" & 
+    Class %in% c("Insecta", "Arachnida", "Collembola")
+  )
+ps # Confirm that the taxa were removed
+get_taxa_unique(ps0, "Phylum")
+get_taxa_unique(ps0, "Class")
+get_taxa_unique(ps0, "Order")
+```
+
+# Merge technical replicates
+
+```{r merge replicates}
+# Merge replicates
+ps.merged <- ps0 %>%
+    merge_samples(group = "Sample_Name", fun="sum")
+
+#This loses the sample metadata - Need to add it agian
+sample_data(ps.merged) <- sample_data(ps0) %>%
+  filter(!duplicated(Sample_Name)) %>%
+  magrittr::set_rownames(.$Sample_Name)
+
+ps1 <- ps.merged
+```
+
+# Bias permutations
+
+```{r bias}
+ps_bias <- ps1 %>%
+  subset_samples(target_subfragment == "fwhF2-fwhR2n") %>%
+  #subset_samples(type %in% c("DrosMock","CarpMock",  "CarpTrap")) %>%
+  subset_samples(type %in% c("DrosMock")) %>%
+  subset_samples(FCID %in% c("HLVKYDMXX", "CB3DR")) %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE) 
+
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <- "Carpophilus_nr.dimidiatus"
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
+ps_bias <- speedyseq::tax_glom(ps_bias, taxrank="Species")
+
+exp <- read_csv("sample_data/expected_quant2.csv") %>%
+  pivot_longer(-X1,
+               names_to= "Species",
+               values_to= "Abundance") %>%
+  mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
+  mutate(X1 = str_split_fixed(X1,"-rep",n=2) %>%
+           as_tibble()%>% 
+           pull(V1)) %>%
+  drop_na() %>%
+  magrittr::set_colnames(c("Sample","Taxon","Actual"))%>%
+  filter(str_detect(Sample, "D100M")) %>% #Use just the 100 abundance compositions
+  #filter(str_detect(Sample, "D[0-9][0-9][0-9]M|D[0-9][0-9][0-9][0-9]M")) %>%
+  mutate(comm = str_extract(Sample,"M[0-9]")) %>%
+  dplyr::select(-Sample)
+
+sam <- speedyseq::psmelt(ps_bias) %>%
+  arrange(Abundance) %>%
+  mutate(Taxon = Species) %>%
+  filter(!str_detect(Genus, "__")) %>%#Remove unclassified
+  mutate(comm = case_when(
+    type=="DrosMock" ~ str_extract(Sample_Name,"M[0-9]"),
+    TRUE ~ as.character(NA) )) %>% 
+  dplyr::select(Sample_Name,Taxon, Abundance, target_subfragment, FCID, comm) %>%
+  mutate(Sample = Sample_Name %>%
+           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
+           str_remove("HLVKYDMXX_") %>%
+           str_remove("-ex[0-9]"))%>%
+  filter(Taxon %in% exp$Taxon) %>%
+  #filter(Sample %in% exp$Sample) %>%
+  filter(str_detect(Taxon, "Dros")) %>%
+  mutate(commsize = Sample %>% 
+           str_remove(pattern="M[0-9]$") %>%
+           str_remove(pattern="^D")) %>%
+  mutate(commsize = case_when(
+    str_detect(Sample_Name, "DM[1-9]-")  ~ as.character(100),
+    TRUE ~ commsize
+  ))
+
+
+# Get all permutations
+set.seed(666)  
+elements <- unique(sam$comm)
+
+#Allow for 2 M3's for run 500 to deal with failed sample
+
+k <- length(elements) 
+#for run 500 Allow duplcated m3 c(elements, "M3")
+res <- purrr::map(1:1000, function(x) sample(elements, k, replace=FALSE)) %>%
+  unique() %>%
+  purrr::map(function(x){
+    tibble(comm=elements, newcomm=x)})
+# below, check you have all the permutations you need (if not, try again)
+length(res) == factorial(k)
+
+# Split into known and mixed samples
+sam2 <- sam %>% 
+  filter(FCID=="HLVKYDMXX") %>%
+  group_by(commsize) %>%
+  group_split()
+
+test <- sam2[[4]]
+
+permuted <- res %>%
+  purrr::map(function(x){ 
+    df <- x %>% 
+      full_join(test, by="comm") %>%
+      dplyr::select(-comm) %>%
+      dplyr::rename(comm = newcomm) %>% 
+      bind_rows(sam %>% 
+       filter(!commsize=="500")) %>% # For run  500
+        #filter(FCID=="CB3DR")) %>% #Bind to known
+      left_join(exp, by = c("comm","Taxon")) %>%
+      mutate(Actual = replace_na(Actual, 0)) %>%
+      mutate(Observed0 = (Abundance + 0.5) * (Actual > 0)) %>%
+      mutate(Error = Observed0 / Actual) %>%
+      distinct() 
+    
+    #Calculate bias
+    bias <- df %>%
+    filter(Actual > 0 ) %>%
+    group_by(Taxon) %>%
+    summarize(Bias = gm_mean(Error), se=gm_sd(Error)) %>%
+    mutate(Bias = center_elts(Bias)) %>%
+    ungroup
+    
+    # Sumamrise bias
+    out <- list(
+      df = df,
+      bias = bias,
+      se = bias %>%
+      summarise(se = sum(se)),
+      transtab=x)
+    return(out)
+    } )
+
+# Rank SE's  - Get the permutation that minimises se
+permut_ranks <- permuted %>%
+  map("se") %>%
+  bind_rows(.id="permutation") %>%
+  dplyr::arrange(se)
+
+permut_ranks
+
+top_permut <- permut_ranks %>%
+  dplyr::slice(1) %>%
+  pull(permutation) %>%
+  as.numeric()
+
+# Visualise the error of the top permutation in all pairwise ratios
+permuted[[top_permt]]$df %>%
+  filter(Actual > 0) %>%
+    compute_ratios(group_vars = c("Sample_Name", "FCID")) %>%
+    filter(!is.na(Actual)) %>%
+    mutate(Pair = paste(Taxon.x, Taxon.y, sep = ":")) %>% 
+  ggplot(aes(Pair, Error, colour=Sample_Name)) +
+  geom_jitter(alpha=0.7) +
+  geom_hline(yintercept = 1) +
+  scale_y_log10() +
+  facet_wrap(~FCID)+
+  theme_bw()+
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle=45, hjust=1))
+
+#Check the translation table ro the best match
+permuted[[top_permut]]$transtab 
+
+translation <- permuted[[top_permut]]$transtab %>%
+  full_join(test)
+# May need to make it robust to low abundance d.suzukii, d.biarmipes, d. subpulchrella?
+```
+
+
+# Heatmap
+```{r check spikeins}
+gg.hmap <- plot_heatmap(ps_bias, "jaccard", "jsd", taxa.label="Species", na.value=NA, taxa.order="Family")   +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=60, hjust=1),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.spacing =unit(0.2, "lines"),
+        legend.position = "bottom",
+        legend.direction = "horizontal") +
+  facet_grid(~target_subfragment,scales="free",space="free", drop=TRUE) 
+
+gg.hmap
+```
+
+
+## Bias whole dataset
+
+```{r Drosophila bias}
+ps_bias <- ps1 %>%
+  subset_samples(target_subfragment == "fwhF2-fwhR2n") %>%
+  subset_samples(type %in% "DrosMock") %>%
+  subset_samples(FCID %in% c("HLVKYDMXX", "CB3DR")) %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE) 
+
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <- "Carpophilus_nr.dimidiatus"
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
+ps_bias <- speedyseq::tax_glom(ps_bias, taxrank="Species")
+
+exp <- read_csv("sample_data/expected_quant2.csv") %>%
+  pivot_longer(-X1,
+               names_to= "Species",
+               values_to= "Abundance") %>%
+  mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
+  mutate(X1 = str_split_fixed(X1,"-rep",n=2) %>%
+           as_tibble()%>% 
+           pull(V1)) %>%
+  drop_na() %>%
+  magrittr::set_colnames(c("Sample","Taxon","Actual"))
+
+sam <- speedyseq::psmelt(ps_bias) %>%
+  arrange(Abundance) %>%
+  mutate(Taxon = Species) %>%
+  filter(!str_detect(Genus, "__")) %>%
+  dplyr::select(Sample_Name,Taxon, Abundance, target_subfragment, FCID) %>%
+  mutate(Sample = Sample_Name %>%
+           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
+           str_remove("HLVKYDMXX_") %>%
+           str_remove("-ex[0-9]"))%>%
+  filter(Taxon %in% exp$Taxon) %>%
+  filter(str_detect(Taxon, "Dros"))
+
+#Join tables 
+joint <- sam %>%
+  left_join(exp, by = c("Sample","Taxon")) %>%
+  mutate(Actual = replace_na(Actual, 0)) %>%
+  mutate(Observed0 = (Abundance + 0.5) * (Actual > 0)) %>%
+  mutate(Error = Observed0 / Actual) %>%
+  distinct() %>%
+  group_by(Sample_Name) %>%
+  mutate_at(vars(Abundance, Actual), ~ . / sum(.) ) %>% #Convert to proportions
+  dplyr::select(Sample_Name, Taxon, Abundance, Actual, Error, FCID) %>%
+  ungroup()
+
+ 
+## Visualise errors in proportions
+library(ggbeeswarm)
+library(ggthemes)
+errorplot <- joint %>%
+  filter(Actual > 0) %>%
+    compute_ratios(group_vars = c("Sample_Name", "FCID")) %>%
+    filter(!is.na(Actual)) %>%
+    mutate(Pair = paste(Taxon.x, Taxon.y, sep = ":")) %>% 
+  ggplot(aes(Pair, Error, colour=Sample_Name)) +
+  geom_jitter(alpha=0.7) +
+  geom_hline(yintercept = 1) +
+  scale_y_log10() +
+  facet_wrap(~FCID)+
+  theme_bw()+
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle=45, hjust=1))
+
+errorplot
+
+library(plotly)
+ggplotly(errorplot)
+
+
+#Build error matrix
+error_mat <- build_matrix(joint, Sample_Name, Taxon, Error) 
+rows_to_keep <- rowSums(error_mat, na.rm=TRUE) > 0
+cols_to_keep <- colSums(error_mat, na.rm=TRUE) > 0
+error_mat <- error_mat[rows_to_keep,cols_to_keep]
+
+#Estimate bias using metacal
+bias <- center(error_mat, enframe = TRUE) %>%
+    dplyr::rename(Bhat = Center)
+
+#Estimate uncertainty in bias estimate using bootstrapping
+bootreps <- bootrep_center(error_mat) %>%
+    dplyr::rename(Bhat = Center)
+bootreps.summary <- bootreps %>%
+    group_by(Taxon) %>%
+    summarize(Gm_mean = gm_mean(Bhat), Gm_se = gm_sd(Bhat))
+bias0 <- left_join(bias, bootreps.summary, by = "Taxon")
+
+```
+
+# Do for carpophilus as well

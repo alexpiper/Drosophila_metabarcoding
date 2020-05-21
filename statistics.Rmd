@@ -114,24 +114,24 @@ seqs <- DNAStringSet(colnames(seqtab))
 names(seqs) <- seqs
 phy <- readRDS("output/rds/phytree.rds")$tree
 
-##### Rename problematic samples
-#rownames(seqtab)  <- rownames(seqtab) %>%
-# str_replace_all("D250M1-", "D250M4REP-") %>% #Dont think this is necessart
-# str_replace_all("D250M2-", "D250M5REP-") %>% # Makes sense on PCA
-# str_replace_all("D250M3-", "D250M1REP-") %>% # Way off on PCA
-# str_replace_all("D250M4-", "D250M2REP-") %>%
-# str_replace_all("D250M5-", "D250M3REP-") %>%
-# str_replace_all("D500M1-", "D500M4REP-") %>%
-# str_replace_all("D500M2-", "D500M5REP-") %>%
-# str_replace_all("D500M3-", "D500M1REP-") %>%
-# str_replace_all("D500M4-", "D500M2REP-") %>%
-# str_replace_all("D500M5-", "D500M3REP-") %>% # This should maybe be M2?
-# str_replace_all("D1000M1-", "D1000M3REP-") %>%
-# str_replace_all("D1000M2-", "D1000M4REP-") %>%
-# str_replace_all("D1000M3-", "D1000M5REP-") %>%
-# str_replace_all("D1000M4-", "D1000M1REP-") %>%
-# str_replace_all("D1000M5-", "D1000M2REP-") %>%
-# str_replace_all("REP", "")
+##### Rename problematic Drosophila samples
+rownames(seqtab)  <- rownames(seqtab) %>%
+ str_replace_all("D250M1-", "D250M4REP-") %>% # Works
+ str_replace_all("D250M4-", "D250M2REP-") %>% # Works
+ str_replace_all("D250M5-", "D250M3REP-") %>% #FAILED library
+ str_replace_all("D250M3-", "D250M1REP-") %>% #FP suzukii - low reads
+ str_replace_all("D250M2-", "D250M5REP-") %>% #Works
+ str_replace_all("D500M1-", "D500M4REP-") %>% #Works 
+ str_replace_all("D500M4-", "D500M1REP-") %>% #FP Suzukii
+ str_replace_all("D500M5-", "D500M2REP-") %>% #Works
+ str_replace_all("D500M3-", "D500M3REP-") %>% #Works but low reads for Suz + Biarmipes 
+ str_replace_all("D500M2-", "D500M5REP-") %>% #Works
+ str_replace_all("D1000M1-", "D1000M3REP-") %>% #Works
+ str_replace_all("D1000M4-", "D1000M1REP-") %>% #Works
+ str_replace_all("D1000M5-", "D1000M2REP-") %>% #Works
+ str_replace_all("D1000M3-", "D1000M5REP-") %>% #Works
+ str_replace_all("D1000M2-", "D1000M4REP-") %>% #Works
+ str_replace_all("REP", "")
 
 #Load sample information
 ## ---- samdat ----
@@ -145,13 +145,17 @@ samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE) %>%
          ) %>%
   filter(!FCID=="CK3HD") %>%
   mutate(type = case_when(
-    str_detect(Sample_ID, "^D")  ~ "Mock",
+    str_detect(Sample_ID, "D[0-9][0-9][0-9]M|D[0-9][0-9][0-9][0-9]M|DM[0-9]")  ~ "DrosMock",
     str_detect(Sample_ID, "SPD")  ~ "SPD",
     str_detect(Sample_ID, "ACV")  ~ "ACV",
     str_detect(Sample_ID, "DC")  ~ "DC",
+    str_detect(Sample_ID, "Sach")  ~ "Sachet",
     str_detect(Sample_ID, "FF")  ~ "FF",
     str_detect(Sample_ID, "NTC")  ~ "NTC",
-    str_detect(Sample_ID, "POS")  ~ "POS",
+    str_detect(Sample_ID, "DLarv")  ~ "DrosLarv",
+    str_detect(Sample_ID, "POS|SynMock")  ~ "POS",
+    str_detect(Sample_ID, "extblank|BLANK")  ~ "Extblank",
+    str_detect(Sample_ID, "pcrblank")  ~ "PCRblank",
     str_detect(Sample_ID, "CT")  ~ "CarpTrap",
     str_detect(Sample_ID, "CM")  ~ "CarpMock"
   )) %>%
