@@ -859,6 +859,8 @@ parallel::stopCluster(cl)
 ## Clustering ID Success
 
 
+### Kmer  clustering
+
 ```{r clustering.R}
 #load packages ---------------------------------------------------
 .cran_packages <- c("tidyverse",
@@ -896,6 +898,7 @@ list.files()
 
 # Run code ---------------------------------------------------
 
+file <- "primer_evaluation/amplicons/dgLCO1490_Uni-MinibarR1.fa.gz"
 # Read in amplicon
 amplicon <- insect::readFASTA(file)
 print(amplicon)
@@ -905,8 +908,6 @@ amplicon <- amplicon[1:1000]
 
 #Get db
 db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
-# Set random seed for kmeans initialisation 
-set.seed(606)
 
 ## Get distance clustering statistic
 thresholds <- rev(seq(0.97, 1, 0.01))
@@ -914,7 +915,7 @@ threshlist <- vector("list", length=length(thresholds))
 
 for (i in 1:length(thresholds)){
 threshlist[[i]] <- taxreturn::get_mixed_clusters( 
- x = amplicon, db=db,
+ x = amplicon, db=db, k=4,
  rank = "species",
  threshold = thresholds[i],
  rngseed = 606,
@@ -1079,7 +1080,7 @@ out %>%
 Index jobs
 ```{bash generate job index}
 #!/bin/bash
-/usr/bin/ls -d $PWD/* | sed -e '1p' -e '/.fa.gz/!d' | sort > sequence_index.txt
+/usr/bin/ls -d $PWD/* | sed -e '1p' -e '/.fa.gz/!d' | sort -u > sequence_index.txt
 ```
 
 Submit array
@@ -1176,6 +1177,219 @@ rm -rf $tmp_dir
 ```
  
  
+ 
+### SUMACLUST clustering
+```{bash sumaclust}
+#!/bin/bash
+#SBATCH --job-name=sumaclust       
+#SBATCH --ntasks=1 
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=20GB
+#SBATCH --time=240:00:00
+#SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
+#SBATCH --mail-type=ALL
+#SBATCH --account=pathogens
+#SBATCH --export=none
+
+
+#Check if job is launched as array
+if [ -z "$SLURM_ARRAY_TASK_COUNT" ]; then 
+  echo SLURM_ARRAY_TASK_COUNT unset; 
+  echo You must launch this job as an array
+  echo see https://slurm.schedmd.com/job_array.html
+  echo for info on how to run arrays
+  exit 1
+fi
+
+Index=sequence_index.txt
+
+# Make sure that sequence index file is there before we do anything
+if [[ ! -f "${Index}" ]]; then
+  echo "Error sequence index file ${Index} does not exist"
+  exit 1
+fi
+
+#Gather info on our samples
+FullSampleName=$(sed -n ${SLURM_ARRAY_TASK_ID}p ${Index})
+SequencePath=$(dirname ${FullSampleName})
+Sample=$(basename ${FullSampleName} .fa.gz)
+
+echo ${FullSampleName}
+echo ${Sample}
+
+# Double check that array index is valid
+if [[ ! -f "${FullSampleName}" ]]; then
+  echo "Error array index doesnt match up with index file"
+  echo "Array index is  ${SLURM_ARRAY_TASK_ID}"
+  exit 1
+fi
+
+# Goto tmp to do our working out
+echo $TMPDIR
+cd $TMPDIR
+tmp_dir=$(mktemp -d -t ci-XXXXXXXXXX)
+cd $tmp_dir
+
+#Copy data files, database and decompress all
+cp ${FullSampleName} .
+#cp ${SequencePath}/spider.R .
+pwd
+ls
+
+#Decompress all
+pigz -p8 -d ./*.gz
+
+#Load modules
+module purge
+module load R
+
+# Try clustal0
+
+
+# Run sumaclust for each ID level
+
+#100%
+/home/ap0y/sumaclust_v1.0.31/sumaclust -p 8 -t 1 $Sample.fa > $Sample.clustered_100.fa 
+cat $Sample.clustered_100.fa  | grep '>' > $Sample.clustered_100.txt
+
+#99%
+/home/ap0y/sumaclust_v1.0.31/sumaclust -p 8 -t 0.99 $Sample.fa > $Sample.clustered_99.fa 
+cat $Sample.clustered_99.fa  | grep '>' > $Sample.clustered_99.txt
+
+#98%
+/home/ap0y/sumaclust_v1.0.31/sumaclust -p 8 -t 1 $Sample.fa > $Sample.clustered_98.fa 
+cat $Sample.clustered_98.fa  | grep '>' > $Sample.clustered_98.txt
+
+#97%
+/home/ap0y/sumaclust_v1.0.31/sumaclust -p 8 -t 1 $Sample.fa > $Sample.clustered_97.fa 
+cat $Sample.clustered_97.fa  | grep '>' > $Sample.clustered_97.txt
+
+#96%
+/home/ap0y/sumaclust_v1.0.31/sumaclust -p 8 -t 1 $Sample.fa > $Sample.clustered_96.fa 
+cat $Sample.clustered_96.fa  | grep '>' > $Sample.clustered_96.txt
+
+#95%
+/home/ap0y/sumaclust_v1.0.31/sumaclust -p 8 -t 1 $Sample.fa > $Sample.clustered_95.fa 
+cat $Sample.clustered_95.fa  | grep '>' > $Sample.clustered_95.txt
+
+# Zip all files
+pigz -p8 *.txt
+
+# Output useful job stats
+/usr/local/bin/showJobStats.scr | gzip > ${Sample}-jobstats.gz
+
+#Make a directory call ${Sample} and cp all gz files into that directory
+mkdir output
+mkdir output/jobstats
+cp ./*.txt.gz output
+cp ./*-jobstats.gz output/jobstats
+
+#Put all output files back where we started
+cp -r output ${SLURM_SUBMIT_DIR}
+rm -rf $tmp_dir
+
+```
+
+
+# Index jobs
+```{bash generate job index}
+#!/bin/bash
+/usr/bin/ls -d $PWD/* | sed -e '1p' -e '/.fa.gz/!d' | sort -u > sequence_index.txt
+```
+
+sbatch --array=1-807 usearch_distmat.slurm
+
+### Usearch distance matrix
+
+```{bash usearch}
+#!/bin/bash
+#SBATCH --job-name=usearch       
+#SBATCH --ntasks=1 
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=20GB
+#SBATCH --time=240:00:00
+#SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
+#SBATCH --mail-type=ALL
+#SBATCH --account=pathogens
+#SBATCH --export=none
+
+
+#Check if job is launched as array
+if [ -z "$SLURM_ARRAY_TASK_COUNT" ]; then 
+  echo SLURM_ARRAY_TASK_COUNT unset; 
+  echo You must launch this job as an array
+  echo see https://slurm.schedmd.com/job_array.html
+  echo for info on how to run arrays
+  exit 1
+fi
+
+Index=sequence_index.txt
+
+# Make sure that sequence index file is there before we do anything
+if [[ ! -f "${Index}" ]]; then
+  echo "Error sequence index file ${Index} does not exist"
+  exit 1
+fi
+
+#Gather info on our samples
+FullSampleName=$(sed -n ${SLURM_ARRAY_TASK_ID}p ${Index})
+SequencePath=$(dirname ${FullSampleName})
+Sample=$(basename ${FullSampleName} .fa.gz)
+
+echo ${FullSampleName}
+echo ${Sample}
+
+# Double check that array index is valid
+if [[ ! -f "${FullSampleName}" ]]; then
+  echo "Error array index doesnt match up with index file"
+  echo "Array index is  ${SLURM_ARRAY_TASK_ID}"
+  exit 1
+fi
+
+# Goto tmp to do our working out
+echo $TMPDIR
+cd $TMPDIR
+tmp_dir=$(mktemp -d -t ci-XXXXXXXXXX)
+cd $tmp_dir
+
+#Copy data files, database and decompress all
+cp ${FullSampleName} .
+#cp ${SequencePath}/spider.R .
+pwd
+ls
+
+#Decompress all
+pigz -p8 -d ./*.gz
+
+#Load modules
+module purge
+module load USEARCH
+
+#USEARCH
+usearch -calc_distmx $Sample.fa -tabbedout $Sample.txt -maxdist 0.2 -termdist 0.3 -threads 8
+
+# Zip all files
+pigz -p8 *.txt
+
+# Output useful job stats
+/usr/local/bin/showJobStats.scr | gzip > ${Sample}-jobstats.gz
+
+#Make a directory call ${Sample} and cp all gz files into that directory
+mkdir output
+mkdir output/jobstats
+cp ./*.txt.gz output
+cp ./*-jobstats.gz output/jobstats
+
+#Put all output files back where we started
+cp -r output ${SLURM_SUBMIT_DIR}
+rm -rf $tmp_dir
+
+
+```
+
+
+ 
+ 
  # Clustering - need to write out results as RDS, or can i do it in a way that doesnt require masses of NA's
  Actually all the mixed should be in the cluster ID anyway?
  # Write out summaries as CSV?
@@ -1227,14 +1441,12 @@ mixed_clusters <- fs::dir_ls(path="primer_evaluation/amplicons/output/", glob = 
     df <-  vroom::vroom(x, delim=",")
     all <- df %>%
       dplyr::group_by(threshold) %>% 
-      dplyr::filter(!duplicated(tax_name)) %>% 
-      dplyr::summarise(mixed=n()) %>%
+      dplyr::summarise(mixed=n_distinct(tax_name)) %>%
       dplyr::mutate(type="all")
     pests <- df %>%
       dplyr::group_by(threshold) %>% 
       filter(tax_name %in% pestlist$Species) %>%
-      dplyr::filter(!duplicated(tax_name)) %>% 
-      dplyr::summarise(mixed=n()) %>%
+      dplyr::summarise(mixed=n_distinct(tax_name)) %>%
       dplyr::mutate(type="pest")
     out <- bind_rows(all, pests)
     return(out)
@@ -1273,15 +1485,25 @@ joint <- mixed_clusters %>%
 vroom::vroom_write(joint, "primer_evaluation/amplicons/mixed_clusters_summary.csv", delim=",")
 
 
+#Test bad mixed
+df <- vroom::vroom("primer_evaluation/amplicons/output/LCO1490_230-R_clustering.csv") 
+
+#%>%
+      dplyr::group_by(threshold) %>% 
+      dplyr::summarise(mixed=n_distinct(tax_name)) %>%
+      dplyr::mutate(type="all")
+
+
 # Count reads
 joint <- vroom::vroom("primer_evaluation/amplicons/mixed_clusters_summary.csv", delim=",") %>%
   left_join(combos) %>% 
-  mutate(success =  (spp_amplified - mixed)/spp_amplified)
+  mutate(success =  (spp_amplified - mixed)/spp_amplified) %>%
+  dplyr::select(Fname,Rname, threshold,mixed,type,seqs_amplified,spp_amplified,amplicon,combos,success)
 
 # Summarise identification sucess by length on 2d scatter
 gg.id <- joint %>% 
   dplyr::filter(threshold %in% c(0.97, 1)) %>%
-  ggplot(aes(x=amplicon, y=spp_amplified, colour=combos))+
+  ggplot(aes(x=amplicon, y=success, colour=combos))+
   geom_jitter(width = 5, height=0.025)+
   #geom_smooth()+
   #geom_text(aes(label=combos), check_overlap = TRUE) +
@@ -1425,7 +1647,7 @@ blastn -task blastn-short -query $query_file -db $db_file -evalue 30000 "
 Index jobs
 ```{bash generate job index}
 #!/bin/bash
-/usr/bin/ls -d $PWD/*.fa.gz | sort > sequence_index.txt
+/usr/bin/ls -d $PWD/*.fa.gz | sort -u > sequence_index.txt
 ```
 
 Submit array
@@ -1433,6 +1655,8 @@ Submit array
 njobs=$(cat sequence_index.txt | wc -l)
 
 sbatch --array=1-930 primerblast.slurm
+
+sbatch --array=1-4 primerblast.slurm
 
 ## BLAST
 ```{bash blast}
@@ -1531,11 +1755,11 @@ cp -r ${Sample}_output ${SLURM_SUBMIT_DIR}
 
 ## Extract fasta of all unique BLAST hits
 ```{bash}
-echo $() >  hits.txt
-for d in ./*_output/ ; do (cd "$d" && zcat *.out.gz | awk '{print $4}' | awk '{split($0,a,"|"); print a[2]}' | sort -u >> ../hits.txt ); done
-cat hits.txt | sort -u > merged_hits.txt
-
-blastdbcmd -entry_batch merged_hits.txt -db /group/blastdb/nt -out merged_hits.fa 
+#echo $() >  hits.txt
+#for d in ./*_output/ ; do (cd "$d" && zcat *.out.gz | awk '{print $4}' | awk '{split($0,a,"|"); print a[2]}' | sort -u #>> ../hits.txt ); done
+#cat hits.txt | sort -u > merged_hits.txt
+#
+##blastdbcmd -entry_batch merged_hits.txt -db /group/blastdb/nt -out merged_hits.fa 
 
 ```
 
@@ -1551,6 +1775,8 @@ for d in ./*_output/ ; do (cd "$d" && zcat *.out.gz | awk '{split($1,a,"_"); pri
 cat hits.txt | sort -u > merged_hits.txt
 pigz merged_hits.txt
 rm hits.txt
+
+
 
 ```
 
