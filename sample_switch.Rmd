@@ -65,8 +65,9 @@ source('R/helper_functions.R')
 options(stringsAsFactors = FALSE)
 ```
 
-## Make Phyloseq object
+# Drosophila 
 
+## Make Phyloseq object
 
 ```{r create PS, eval = FALSE}
 ## Just subset to the last run
@@ -121,7 +122,17 @@ rownames(seqtab)  <- rownames(seqtab) %>%
  str_replace_all("D1000M5-", "D1000M2REP-") %>% #Works
  str_replace_all("D1000M3-", "D1000M5REP-") %>% #Works
  str_replace_all("D1000M2-", "D1000M4REP-") %>% #Works
- str_replace_all("REP", "")
+ str_replace_all("CM10-", "CM9REP-") %>%
+ str_replace_all("CM11-", "CM10REP-") %>%
+ str_replace_all("CM9-", "CM11REP-") %>%
+ str_replace_all("CML2-", "CML6REP-")%>%
+ str_replace_all("CML3-", "CML2REP-")%>%
+ str_replace_all("CML4-", "CML3REP-")%>%
+ str_replace_all("CML5-", "CML4REP-")%>%
+ str_replace_all("CML6-", "CML5REP-")%>%
+ str_replace_all("CT5-", "CT4REP-")%>%
+ str_replace_all("CT4-", "CT5REP-") %>%
+str_replace_all("REP", "")
 
 #Load sample information
 ## ---- samdat ----
@@ -181,12 +192,6 @@ saveRDS(ps, "output/rds/ps_idtaxaExact.rds")
 
 #Rename synthetic orders
 tax_table(ps)[,2][which(str_detect(tax_table(ps)[,7], "Synthetic"))] <- "Arthropoda"
-
-ps <- ps %>%
-  subset_samples(!str_detect(Sample_ID, "^CT|^CM") # remove carpophilus
-  ) %>%
-  subset_taxa(Phylum == "Arthropoda") %>%
-  filter_taxa( function(x) mean(x) > 0, TRUE) 
 ```
 
 
@@ -227,7 +232,7 @@ ps1 <- ps.merged
 ```{r bias}
 ps_bias <- ps1 %>%
   subset_samples(target_subfragment == "fwhF2-fwhR2n") %>%
-  #subset_samples(type %in% c("DrosMock","CarpMock",  "CarpTrap")) %>%
+  #subset_samples(type %in% c("CarpMock",  "CarpTrap")) %>%
   subset_samples(type %in% c("DrosMock")) %>%
   subset_samples(FCID %in% c("HLVKYDMXX", "CB3DR")) %>%
   filter_taxa( function(x) mean(x) > 0, TRUE) 
@@ -237,7 +242,7 @@ tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp1")] <- "Br
 tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
 ps_bias <- speedyseq::tax_glom(ps_bias, taxrank="Species")
 
-exp <- read_csv("sample_data/expected_quant2.csv") %>%
+exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
   pivot_longer(-X1,
                names_to= "Species",
                values_to= "Abundance") %>%
@@ -399,7 +404,7 @@ tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp1")] <- "Br
 tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
 ps_bias <- speedyseq::tax_glom(ps_bias, taxrank="Species")
 
-exp <- read_csv("sample_data/expected_quant2.csv") %>%
+exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
   pivot_longer(-X1,
                names_to= "Species",
                values_to= "Abundance") %>%
@@ -478,4 +483,367 @@ bias0 <- left_join(bias, bootreps.summary, by = "Taxon")
 
 ```
 
-# Do for carpophilus as well
+# Carpophilus
+
+## Taxon filtering
+
+```{R taxon filt}
+get_taxa_unique(ps, "Order")
+
+ps # Check the number of taxa prior to removal
+ps0 <- ps %>%
+  subset_taxa(
+    Phylum == "Arthropoda" & 
+    Class %in% c("Insecta", "Arachnida", "Collembola")
+  )
+ps # Confirm that the taxa were removed
+get_taxa_unique(ps0, "Phylum")
+get_taxa_unique(ps0, "Class")
+get_taxa_unique(ps0, "Order")
+```
+
+# Merge technical replicates
+
+```{r merge replicates}
+# Merge replicates
+ps.merged <- ps0 %>%
+    merge_samples(group = "Sample_Name", fun="sum")
+
+#This loses the sample metadata - Need to add it agian
+sample_data(ps.merged) <- sample_data(ps0) %>%
+  filter(!duplicated(Sample_Name)) %>%
+  magrittr::set_rownames(.$Sample_Name)
+
+ps1 <- ps.merged
+```
+
+# Bias permutations
+
+```{r bias}
+ps_bias <- ps1 %>%
+  subset_samples(target_subfragment == "fwhF2-fwhR2n") %>%
+  subset_samples(type %in% c("CarpMock",  "CarpTrap")) %>%
+  subset_samples(FCID %in% c("HLVKYDMXX", "CB3DR")) %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE) 
+
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <- "Carpophilus_nr.dimidiatus"
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
+ps_bias <- speedyseq::tax_glom(ps_bias, taxrank="Species")
+
+exp <- read_csv("sample_data/expected_quant_carpophilus.csv") %>%
+  pivot_longer(-X1,
+               names_to= "Species",
+               values_to= "Abundance") %>%
+  mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
+  mutate(X1 = str_split_fixed(X1,"-rep",n=2) %>%
+           as_tibble()%>% 
+           pull(V1)) %>%
+  drop_na() %>%
+  magrittr::set_colnames(c("Sample","Taxon","Actual"))%>%
+  filter(str_detect(Sample, "CM[0-9]|CT[0-9]|CML[0-9]")) %>%
+  mutate(Sample = Sample %>% str_remove("-ex[0-9]")) %>%
+  distinct()
+
+exp %>% 
+  group_by(Sample) %>%
+  mutate_at(vars(Actual), ~ . / sum(.) ) %>% #Convert to proportions
+  ggplot(aes(x=Sample, y=Actual, fill=Taxon)) +
+  geom_col(position="stack")
+
+sam <- speedyseq::psmelt(ps_bias) %>%
+  arrange(Abundance) %>%
+  mutate(Taxon = Species) %>%
+  filter(!str_detect(Genus, "__")) %>%#Remove unclassified
+  dplyr::select(Sample_Name,Taxon, Abundance, target_subfragment, FCID) %>%
+  mutate(Sample = Sample_Name %>%
+           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
+           str_remove("HLVKYDMXX_") %>%
+           str_remove("-ex[0-9]"))%>%
+  filter(Taxon %in% exp$Taxon,
+         Sample %in% exp$Sample) %>%
+  mutate(chunk = case_when(
+    str_detect(Sample, "CM[1-5]$") ~ "CM[1-5]",
+    str_detect(Sample, "CM[6-9]$|CM10$|CM11$") ~ "CM[6-11]",
+    str_detect(Sample, "CML[1-6]") ~ "CML[1-6]",
+    str_detect(Sample, "CT[1-6]$") ~ "CT[1-6]$",
+    str_detect(Sample, "CT[7-9]$|CT10$|CT11$|CT12$") ~ "CT[7-12]"
+    ))
+
+# Split into known and mixed samples
+known <- sam %>% 
+  #filter(FCID=="CB3DR")
+  filter(chunk %in% c("CM[1-5]","CT[7-12]"))
+
+mixed <- sam %>% 
+  filter(FCID=="HLVKYDMXX") %>%
+  filter(!chunk %in% c("CM[1-5]","CT[7-12]"))%>%
+  group_by(chunk) %>%
+  group_split()
+
+#Subset to test set
+test <- mixed[[3]]
+  
+# Get all permutations for each chunk
+set.seed(666)  
+elements <- unique(test$Sample)
+k <- length(elements) 
+#for run 500 Allow duplcated m3 c(elements, "M3")
+res <- purrr::map(1:100000, function(x) sample(elements, k, replace=FALSE)) %>%
+  unique() %>%
+  purrr::map(function(x){
+    tibble(Sample=elements, new_sample=x)})
+# below, check you have all the permutations you need (if not, try again)
+length(res) == factorial(k)
+
+permuted <- res %>%
+  purrr::map(function(x){ 
+    df <- x %>% 
+      full_join(test, by="Sample") %>%
+      dplyr::select(-Sample) %>%
+      dplyr::rename(Sample = new_sample) %>% 
+      bind_rows(known) %>% #joint to known samples
+      left_join(exp, by = c("Sample","Taxon")) %>%
+      mutate(Actual = replace_na(Actual, 0)) %>%
+      mutate(Observed0 = (Abundance + 0.5) * (Actual > 0)) %>%
+      mutate(Error = Observed0 / Actual) %>%
+      distinct() 
+    
+    #Calculate bias
+    bias <- df %>%
+    filter(Actual > 0 ) %>%
+    group_by(Taxon) %>%
+    summarize(Bias = gm_mean(Error), se=gm_sd(Error)) %>%
+    mutate(Bias = center_elts(Bias)) %>%
+    ungroup
+    
+    # Sumamrise bias
+    out <- list(
+      df = df,
+      bias = bias,
+      se = bias %>%
+      summarise(se = sum(se)),
+      transtab=x)
+    return(out)
+    } )
+
+# Rank SE's  - Get the permutation that minimises se
+permut_ranks <- permuted %>%
+  map("se") %>%
+  bind_rows(.id="permutation") %>%
+  dplyr::arrange(se)
+
+permut_ranks
+
+## current observed arrangement SE
+test %>% 
+      bind_rows(known) %>% #joint to known samples
+      left_join(exp, by = c("Sample","Taxon")) %>%
+      mutate(Actual = replace_na(Actual, 0)) %>%
+      mutate(Observed0 = (Abundance + 0.5) * (Actual > 0)) %>%
+      mutate(Error = Observed0 / Actual) %>%
+      distinct() %>%
+    filter(Actual > 0 ) %>%
+    group_by(Taxon) %>%
+    summarize(Bias = gm_mean(Error), se=gm_sd(Error)) %>%
+    mutate(Bias = center_elts(Bias)) %>%
+    ungroup%>%
+      summarise(se = sum(se))
+
+top_permut <- 22
+
+# Visualise the error of the top permutation in all pairwise ratios
+permuted[[top_permut]]$df %>%
+  filter(Actual > 0) %>%
+    compute_ratios(group_vars = c("Sample_Name", "FCID")) %>%
+    filter(!is.na(Actual)) %>%
+    mutate(Pair = paste(Taxon.x, Taxon.y, sep = ":")) %>% 
+  ggplot(aes(Pair, Error, colour=Sample_Name)) +
+  geom_jitter(alpha=0.7) +
+  geom_hline(yintercept = 1) +
+  scale_y_log10() +
+  facet_wrap(~FCID)+
+  theme_bw()+
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle=45, hjust=1))
+
+
+#Check the translation table ro the best match
+permuted[[top_permut]]$transtab 
+
+translation <- permuted[[top_permut]]$transtab %>%
+  full_join(test)
+# May need to make it robust to low abundance d.suzukii, d.biarmipes, d. subpulchrella?
+```
+
+#Rename carpophilus
+```{R}
+rownames(seqtab)  <- rownames(seqtab) %>%
+ str_replace_all("CM10-", "CM9REP-") %>%
+ str_replace_all("CM11-", "CM10REP-") %>%
+ str_replace_all("CM9-", "CM11REP-") %>%
+ str_replace_all("CML2-", "CML6REP-")%>%
+ str_replace_all("CML3-", "CML2REP-")%>%
+ str_replace_all("CML4-", "CML3REP-")%>%
+ str_replace_all("CML5-", "CML4REP-")%>%
+ str_replace_all("CML6-", "CML5REP-")%>%
+ str_replace_all("CT5-", "CT4REP-")%>%
+ str_replace_all("CT4-", "CT5REP-")
+
+test2 <- sam %>%
+  group_by(Sample_Name) %>%
+  mutate_at(vars(Abundance), ~ . / sum(.) ) %>%#Convert to proportions
+  mutate(Abundance = round(Abundance, 3))
+```
+Chunk1- No change
+Sample new_sample 
+CM1      CM1
+CM2      CM2
+CM3      CM3
+CM4      CM4
+CM5      CM5
+Chunk2 - 
+  Sample new_sample   
+1 CM10 -> CM9  
+2 CM11 -> CM10    
+3 CM6    CM6   
+4 CM9 -> CM11      
+5 CM7    CM7     
+Chunk3- Larval - no clear winner
+ Sample new_sample
+1 CML2 ->   CML6  #Makes sense
+2 CML3 ->   CML2  # Makes sense
+3 CML4 ->   CML3  # CMl5 has more hemi?
+4 CML5 ->   CML4  # makes sense due to lack of hemi    
+5 CML6 ->   CML5  # Makes sense
+6 CML1   CML1  
+
+Chunk4- Traps - No clear winner
+1 CT1    CT1 - CT1 an outlier
+2 CT3    CT3       
+3 CT5 ->   CT4       
+4 CT4 ->   CT5  
+Chunk5 - Traps no change
+  Sample new_sample
+  <chr>  <chr>     
+1 CT8    CT8       
+2 CT11   CT11      
+3 CT10   CT10      
+4 CT12   CT12      
+5 CT9    CT9   
+
+
+# Heatmap
+```{r check spikeins}
+gg.hmap <- plot_heatmap(ps_bias, "jaccard", "jsd", taxa.label="Species", na.value=NA, taxa.order="Family")   +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=60, hjust=1),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.spacing =unit(0.2, "lines"),
+        legend.position = "bottom",
+        legend.direction = "horizontal") +
+  facet_grid(~target_subfragment,scales="free",space="free", drop=TRUE) 
+
+gg.hmap
+```
+
+
+## Bias whole dataset
+
+```{r Drosophila bias}
+ps_bias <- ps1 %>%
+  subset_samples(target_subfragment == "fwhF2-fwhR2n") %>%
+  subset_samples(type %in% "DrosMock") %>%
+  #subset_samples(type %in% c("CarpMock",  "CarpTrap")) %>%
+  subset_samples(FCID %in% c("HLVKYDMXX", "CB3DR")) %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE) 
+
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <- "Carpophilus_nr.dimidiatus"
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
+tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
+ps_bias <- speedyseq::tax_glom(ps_bias, taxrank="Species")
+
+exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
+  pivot_longer(-Sample,
+               names_to= "Species",
+               values_to= "Abundance") %>%
+  mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
+  mutate(Sample = str_split_fixed(Sample,"-rep",n=2) %>%
+           as_tibble()%>% 
+           pull(V1)) %>%
+  drop_na() %>%
+  magrittr::set_colnames(c("Sample","Taxon","Actual"))
+
+sam <- speedyseq::psmelt(ps_bias) %>%
+  arrange(Abundance) %>%
+  mutate(Taxon = Species) %>%
+  filter(!str_detect(Genus, "__")) %>%
+  dplyr::select(Sample_Name,Taxon, Abundance, target_subfragment, FCID) %>%
+  mutate(Sample = Sample_Name %>%
+           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
+           str_remove("HLVKYDMXX_") %>%
+           str_remove("-ex[0-9]"))%>%
+  filter(Taxon %in% exp$Taxon) 
+
+#Join tables 
+joint <- sam %>%
+  left_join(exp, by = c("Sample","Taxon")) %>%
+  mutate(Actual = replace_na(Actual, 0)) %>%
+  mutate(Observed0 = (Abundance + 0.5) * (Actual > 0)) %>%
+  mutate(Error = Observed0 / Actual) %>%
+  distinct() %>%
+  group_by(Sample_Name) %>%
+  mutate_at(vars(Abundance, Actual), ~ . / sum(.) ) %>% #Convert to proportions
+  dplyr::select(Sample_Name, Taxon, Abundance, Actual, Error, FCID) %>%
+  ungroup()
+
+ 
+## Visualise errors in proportions
+library(ggbeeswarm)
+library(ggthemes)
+errorplot <- joint %>%
+  filter(Actual > 0) %>%
+    compute_ratios(group_vars = c("Sample_Name", "FCID")) %>%
+    filter(!is.na(Actual)) %>%
+    mutate(Pair = paste(Taxon.x, Taxon.y, sep = ":")) %>% 
+  ggplot(aes(Pair, Error, colour=Sample_Name)) +
+  geom_jitter(alpha=0.7) +
+  geom_hline(yintercept = 1) +
+  scale_y_log10() +
+  facet_wrap(~FCID)+
+  theme_bw()+
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle=45, hjust=1))
+
+errorplot
+
+library(plotly)
+ggplotly(errorplot)
+
+
+#Build error matrix
+error_mat <- build_matrix(joint, Sample_Name, Taxon, Error) 
+rows_to_keep <- rowSums(error_mat, na.rm=TRUE) > 0
+cols_to_keep <- colSums(error_mat, na.rm=TRUE) > 0
+error_mat <- error_mat[rows_to_keep,cols_to_keep]
+
+#Estimate bias using metacal
+bias <- center(error_mat, enframe = TRUE) %>%
+    dplyr::rename(Bhat = Center)
+
+#Estimate uncertainty in bias estimate using bootstrapping
+bootreps <- bootrep_center(error_mat) %>%
+    dplyr::rename(Bhat = Center)
+bootreps.summary <- bootreps %>%
+    group_by(Taxon) %>%
+    summarize(Gm_mean = gm_mean(Bhat), Gm_se = gm_sd(Bhat))
+bias0 <- left_join(bias, bootreps.summary, by = "Taxon")
+
+bias0
+
+ggplot(bias0, aes(x=Taxon, y=Gm_mean-1)) + 
+  geom_col() +
+  geom_pointrange(aes(y = Gm_mean-1, 
+            ymin = Gm_mean-1 / Gm_se^2, ymax = Gm_mean-1 * Gm_se^2))
+```
