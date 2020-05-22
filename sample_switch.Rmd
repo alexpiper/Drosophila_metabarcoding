@@ -485,38 +485,6 @@ bias0 <- left_join(bias, bootreps.summary, by = "Taxon")
 
 # Carpophilus
 
-## Taxon filtering
-
-```{R taxon filt}
-get_taxa_unique(ps, "Order")
-
-ps # Check the number of taxa prior to removal
-ps0 <- ps %>%
-  subset_taxa(
-    Phylum == "Arthropoda" & 
-    Class %in% c("Insecta", "Arachnida", "Collembola")
-  )
-ps # Confirm that the taxa were removed
-get_taxa_unique(ps0, "Phylum")
-get_taxa_unique(ps0, "Class")
-get_taxa_unique(ps0, "Order")
-```
-
-# Merge technical replicates
-
-```{r merge replicates}
-# Merge replicates
-ps.merged <- ps0 %>%
-    merge_samples(group = "Sample_Name", fun="sum")
-
-#This loses the sample metadata - Need to add it agian
-sample_data(ps.merged) <- sample_data(ps0) %>%
-  filter(!duplicated(Sample_Name)) %>%
-  magrittr::set_rownames(.$Sample_Name)
-
-ps1 <- ps.merged
-```
-
 # Bias permutations
 
 ```{r bias}
