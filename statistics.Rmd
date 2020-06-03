@@ -57,14 +57,15 @@ sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
 
 # Github packages
 devtools::install_github("alexpiper/taxreturn")
-library(taxreturn)
 devtools::install_github("alexpiper/seqateurs")
-library(seqateurs)
 devtools::install_github("mikemc/speedyseq")
-library(speedyseq)
 devtools::install_github('ggloor/CoDaSeq/CoDaSeq')
-library(CoDaSeq)
 devtools::install_github("mikemc/metacal")
+
+library(speedyseq)
+library(taxreturn)
+library(seqateurs)
+library(CoDaSeq)
 library(metacal)
 
 #Source internal functions
@@ -72,14 +73,25 @@ source('R/helper_functions.R')
 options(stringsAsFactors = FALSE)
 ```
 
+
+## Define themes
+
+```{R theme}
+library(ggthemes)
+base_theme <- theme_tufte() + 
+    theme(
+        text = element_text(size=9, family = ""),
+        strip.text = element_text(size=9, family = ""),
+        # axis.text = element_text(size=8, family = ""),
+        legend.position = "none"
+        )
+
+# Would be nice to modify the strip labels a bit more
+```
 ## Make Phyloseq object
 
-
 ```{r create PS, eval = FALSE}
-## Just subset to the last run
 seqtab <- readRDS("output/rds/seqtab_final.rds")
-#seqtab <- seqtab[str_detect(rownames(seqtab), "HLVKYDMXX"),]
-seqtab <- seqtab[,colSums(seqtab) > 0]
 
 # Add FCID to run 1 samples
 rownames(seqtab)[!str_detect(rownames(seqtab), "Rep") ] <- paste0("CB3DR_", rownames(seqtab)[!str_detect(rownames(seqtab), "Rep") ])
@@ -106,15 +118,14 @@ rownames(seqtab)  <- rownames(seqtab) %>%
   str_replace("_$", "_1") %>%
   str_replace("1in10", "1:10")
 
-table(!rownames(seqtab) %in% rownames(samdf))
-rownames(seqtab)[!rownames(seqtab) %in% rownames(samdf)]
-
 tax <- readRDS("output/rds/tax_IdTaxaExact.rds") 
 seqs <- DNAStringSet(colnames(seqtab))
 names(seqs) <- seqs
 phy <- readRDS("output/rds/phytree.rds")$tree
 
-##### Rename problematic Drosophila samples
+
+##### Rename problematic samples
+#Could do this with the new dplyr functionality
 rownames(seqtab)  <- rownames(seqtab) %>%
  str_replace_all("D250M1-", "D250M4REP-") %>% # Works
  str_replace_all("D250M4-", "D250M2REP-") %>% # Works
@@ -131,41 +142,53 @@ rownames(seqtab)  <- rownames(seqtab) %>%
  str_replace_all("D1000M5-", "D1000M2REP-") %>% #Works
  str_replace_all("D1000M3-", "D1000M5REP-") %>% #Works
  str_replace_all("D1000M2-", "D1000M4REP-") %>% #Works
- str_replace_all("REP", "")
+ str_replace_all("CM10-", "CM9REP-") %>%
+ str_replace_all("CM11-", "CM10REP-") %>%
+ str_replace_all("CM9-", "CM11REP-") %>%
+ str_replace_all("CML2-", "CML6REP-")%>%
+ str_replace_all("CML3-", "CML2REP-")%>%
+ str_replace_all("CML4-", "CML3REP-")%>%
+ str_replace_all("CML5-", "CML4REP-")%>%
+ str_replace_all("CML6-", "CML5REP-")%>%
+ str_replace_all("CT5-", "CT4REP-")%>%
+ str_replace_all("CT4-", "CT5REP-") %>%
+str_replace_all("REP", "")
 
 #Load sample information
 ## ---- samdat ----
-samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE) %>% 
-  mutate(Sample_ID = case_when(
-    FCID=="HLVKYDMXX" ~ paste0(Sample_Name, "_", replicate),
-    !FCID=="HLVKYDMXX" ~ paste0(FCID, "_", Sample_Name, "_", replicate)
+samdf <- read.csv("sample_data/sample_info.csv", header=TRUE) %>% 
+  janitor::clean_names() %>%
+  mutate(sample_id = case_when(
+    fcid=="HLVKYDMXX" ~ paste0(sample_name, "_", replicate),
+    !fcid=="HLVKYDMXX" ~ paste0(fcid, "_", sample_name, "_", replicate)
   ))  %>%
   filter(!(index=="ATCGATCG" & index2=="ATCACACG"), #CT11-ex1 duplicated
          !(index=="TCGCTGTT" & index2=="ACTCCATC") # CT12-ex1 duplicated
          ) %>%
-  filter(!FCID=="CK3HD") %>%
+  filter(!fcid=="CK3HD") %>%
   mutate(type = case_when(
-    str_detect(Sample_ID, "D[0-9][0-9][0-9]M|D[0-9][0-9][0-9][0-9]M|DM[0-9]")  ~ "DrosMock",
-    str_detect(Sample_ID, "SPD")  ~ "SPD",
-    str_detect(Sample_ID, "ACV")  ~ "ACV",
-    str_detect(Sample_ID, "DC")  ~ "DC",
-    str_detect(Sample_ID, "Sach")  ~ "Sachet",
-    str_detect(Sample_ID, "FF")  ~ "FF",
-    str_detect(Sample_ID, "NTC")  ~ "NTC",
-    str_detect(Sample_ID, "DLarv")  ~ "DrosLarv",
-    str_detect(Sample_ID, "POS|SynMock")  ~ "POS",
-    str_detect(Sample_ID, "extblank|BLANK")  ~ "Extblank",
-    str_detect(Sample_ID, "pcrblank")  ~ "PCRblank",
-    str_detect(Sample_ID, "CT")  ~ "CarpTrap",
-    str_detect(Sample_ID, "CM")  ~ "CarpMock"
+    str_detect(sample_id, "D[0-9][0-9][0-9]M|D[0-9][0-9][0-9][0-9]M|DM[0-9]")  ~ "DrosMock",
+    str_detect(sample_id, "SPD")  ~ "SPD",
+    str_detect(sample_id, "ACV")  ~ "ACV",
+    str_detect(sample_id, "DC")  ~ "DC",
+    str_detect(sample_id, "Sach")  ~ "Sachet",
+    str_detect(sample_id, "FF")  ~ "FF",
+    str_detect(sample_id, "NTC")  ~ "NTC",
+    str_detect(sample_id, "DLarv")  ~ "DrosLarv",
+    str_detect(sample_id, "POS|SynMock")  ~ "POS",
+    str_detect(sample_id, "extblank|BLANK")  ~ "Extblank",
+    str_detect(sample_id, "pcrblank")  ~ "PCRblank",
+    str_detect(sample_id, "CT")  ~ "CarpTrap",
+    str_detect(sample_id, "CM[0-9]")  ~ "CarpMock",
+    str_detect(sample_id, "CML[0-9]")  ~ "CarpLarval"
   )) %>%
   mutate(target_subfragment = case_when(
-    str_detect(Fprimer, "GGDACWGGWTGAACWGTWTAYCCHCC") & str_detect(Rprimer, "GTRATWGCHCCDGCTARWACWGG") ~ "fwhF2-fwhR2n",
-    str_detect(Fprimer, "ACWGGWTGRACWGTNTAYCC") & str_detect(Rprimer, "ARYATDGTRATDGCHCCDGC") ~ "BF1-BR1",
-    str_detect(Fprimer, "GGDRCWGGWTGAACWGTWTAYCCNCC") & str_detect(Rprimer, "TATDGTRATDGCHCCNGC") ~ "SauronS878-HexCOIR4",
-    str_detect(Fprimer, "GGDACWGGWTGAACWGTWTAYCCHCC") & str_detect(Rprimer, "TATDGTRATDGCHCCNGC") ~ "fwhF2-HexCOIR4",
+    str_detect(fprimer, "GGDACWGGWTGAACWGTWTAYCCHCC") & str_detect(rprimer, "GTRATWGCHCCDGCTARWACWGG") ~ "fwhF2-fwhR2n",
+    str_detect(fprimer, "ACWGGWTGRACWGTNTAYCC") & str_detect(rprimer, "ARYATDGTRATDGCHCCDGC") ~ "BF1-BR1",
+    str_detect(fprimer, "GGDRCWGGWTGAACWGTWTAYCCNCC") & str_detect(rprimer, "TATDGTRATDGCHCCNGC") ~ "SauronS878-HexCOIR4",
+    str_detect(fprimer, "GGDACWGGWTGAACWGTWTAYCCHCC") & str_detect(rprimer, "TATDGTRATDGCHCCNGC") ~ "fwhF2-HexCOIR4",
   )) %>%
-  magrittr::set_rownames(.$Sample_ID)
+  magrittr::set_rownames(.$sample_id)
 
 # Will probably need to rename the seqtabs and append the flowcell number onto the samples before they are merged
 
@@ -189,12 +212,12 @@ saveRDS(ps, "output/rds/ps_idtaxaExact.rds")
 #Rename synthetic orders
 tax_table(ps)[,2][which(str_detect(tax_table(ps)[,7], "Synthetic"))] <- "Arthropoda"
 
+#Subset to Drosophila (Remove carpophilus)
 ps <- ps %>%
-  subset_samples(!str_detect(Sample_ID, "^CT|^CM") # remove carpophilus
+  subset_samples(!str_detect(sample_name, "CM[0-9]|CT[0-9]|CML[0-9]")
   ) %>%
   subset_taxa(Phylum == "Arthropoda") %>%
   filter_taxa( function(x) mean(x) > 0, TRUE) 
-
 dir.create("output/csv")
 dir.create("output/csv/unfiltered/")
 
@@ -204,18 +227,16 @@ export <- speedyseq::psmelt(ps) %>%
 write.csv(export, file = "output/csv/rawdata.csv")
 
 #Summary export
-library(data.table)
-seqateurs::summarise_taxa(ps, "Species", "Sample_ID") %>%
-  filter(str_detect(Sample_ID, "NTC")) %>%
-  #filter(str_detect(Species, "Drosophila|Scaptodrosophila")) %>%
-  spread(key="Sample_ID", value="totalRA") %>%
+seqateurs::summarise_taxa(ps, "Species", "sample_name") %>%
+  filter(!str_detect(sample_name, "NTC")) %>%
+  spread(key="sample_name", value="totalRA") %>%
   write.csv(file = "output/csv/unfiltered/spp_sum.csv")
 
-seqateurs::summarise_taxa(ps, "Genus", "Sample_ID") %>%
-  spread(key="Sample_ID", value="totalRA") %>%
+seqateurs::summarise_taxa(ps, "Genus", "sample_name") %>%
+  spread(key="sample_name", value="totalRA") %>%
   write.csv(file = "output/csv/unfiltered/gen_sum.csv")
 
-##Output fasta of all ASV's - Name each one by abundance + Taxonomic assignment
+##Output fasta of all ASV's - Name each one by abundance + taxonomic assignment
 seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta")
 ```
 
@@ -225,11 +246,11 @@ seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta")
 ```{r sum taxa}
 # N unique species and samples
 speedyseq::psmelt(ps) %>%
-  summarise(n_extracts = n_distinct(Sample_Name), n_samples = n_distinct(Sample_ID))
+  summarise(n_extracts = n_distinct(sample_name), n_samples = n_distinct(sample_id))
 
 # Spread of reads
 speedyseq::psmelt(ps) %>%
-  group_by(Sample_Name) %>%
+  group_by(sample_name) %>%
   summarise(Abundance = sum(Abundance)) %>%
   ungroup() %>%
   summarise(mean = mean(Abundance), 
@@ -239,7 +260,7 @@ speedyseq::psmelt(ps) %>%
 
 # Spread of ASVs
 speedyseq::psmelt(ps) %>%
-  group_by(Sample_Name) %>%
+  group_by(sample_name) %>%
   dplyr::filter(Abundance > 0) %>%
   summarise(counts = n_distinct(OTU)) %>%
   ungroup() %>%
@@ -250,41 +271,43 @@ speedyseq::psmelt(ps) %>%
 
 #Fraction of reads assigned to each taxonomic rank
 speedyseq::psmelt(ps) %>%
-  gather("Rank","Name", rank_names(ps)) %>%
-  group_by(Rank) %>% 
-  mutate(Name = replace(Name, str_detect(Name, "__"), NA)) %>% # This line turns the "__" we added to lower ranks back to NA's
-  dplyr::summarise(Reads_classified = sum(Abundance * !is.na(Name))) %>%
-  mutate(Frac_reads = Reads_classified / sum(sample_sums(ps))) %>%
-  mutate(Rank = factor(Rank, rank_names(ps))) %>%
-  arrange(Rank)
+  dplyr::select(rank_names(ps), Abundance) %>%
+  pivot_longer(rank_names(ps),
+               names_to="rank",
+               values_to="name") %>%
+  group_by(rank) %>% 
+  mutate(name = replace(name, str_detect(name, "__"), NA)) %>% 
+  dplyr::summarise(reads_classified = sum(Abundance * !is.na(name))) %>%
+  mutate(frac_reads = reads_classified / sum(sample_sums(ps))) %>%
+  mutate(rank = factor(rank, rank_names(ps))) %>%
+  arrange(rank)
 
 #Fraction of ASV's assigned to each taxonomic rank
 tax_table(ps) %>%
   as("matrix") %>%
   as_tibble(rownames="OTU") %>%
-  gather("Rank","Name",rank_names(ps)) %>%
-  group_by(Rank) %>%
-  mutate(Name = replace(Name, str_detect(Name, "__"), NA)) %>% # This line turns the "__" we added to lower ranks back to NA's
-  dplyr::summarise(OTUs_classified = sum(!is.na(Name))) %>%
-  mutate(Frac_OTUs = OTUs_classified / ntaxa(ps)) %>%
-  mutate(Rank = factor(Rank, rank_names(ps))) %>%
-  arrange(Rank)
+    pivot_longer(rank_names(ps),
+               names_to="rank",
+               values_to="name") %>%
+  group_by(rank) %>%
+  mutate(name = replace(name, str_detect(name, "__"), NA)) %>% 
+  dplyr::summarise(OTUs_classified = sum(!is.na(name))) %>%
+  mutate(frac_OTUs = OTUs_classified / ntaxa(ps)) %>%
+  mutate(rank = factor(rank, rank_names(ps))) %>%
+  arrange(rank)
 
 # Unique taxa at each rank
 speedyseq::psmelt(ps) %>%
   dplyr::select(rank_names(ps)) %>%
-  pivot_longer(everything(),
-               names_to = "Rank",
-               values_to = "value") %>%
-  mutate(value = case_when(
-    str_detect(value, "__") ~ as.character(NA),
-    !str_detect(value, "__") ~ value
-  )) %>%
+    pivot_longer(rank_names(ps),
+               names_to="rank",
+               values_to="name") %>%
+  mutate(name = replace(name, str_detect(name, "__"), NA)) %>% 
   drop_na() %>%
-  group_by(Rank) %>%
+  group_by(rank) %>%
   summarise_all(list(n_distinct)) %>%
-  mutate(Rank = factor(Rank, rank_names(ps))) %>%
-  arrange(Rank)
+  mutate(rank = factor(rank, rank_names(ps))) %>%
+  arrange(rank)
 ```
 
 
@@ -314,6 +337,8 @@ gg.prev <- prevdf %>%
   scale_x_log10() +
   xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
   facet_wrap(~Order) +
+  base_theme+
+  geom_rangeframe(colour="black")+
   theme(legend.position="none") +
   ggtitle("Phylum Prevalence in All Samples\nColored by Order")
 
@@ -346,452 +371,366 @@ get_taxa_unique(ps0, "Order")
 
 # Comparison of 4 primers for detection and bias
 
-# Primer comparison
+# Overview of run 1
 
-## Comparison between primers for detection
+```{r run 1 overview}
+ps_run1 <- ps0 %>%
+  subset_samples(fcid %in% c("CB3DR")) 
+ps_run1 <- ps_run1 %>%
+  subset_samples(!str_detect(sample_names(ps_run1),"blank")) %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE) 
 
-Doesnt seem to be any scaptodrosophila? need to do exact matching
+tax_table(ps_run1)[,7][which(tax_table(ps_run1)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <- "Carpophilus_nr.dimidiatus"
+tax_table(ps_run1)[,7][which(tax_table(ps_run1)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
+tax_table(ps_run1)[,7][which(tax_table(ps_run1)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
+ps_run1 <- speedyseq::tax_glom(ps_run1, taxrank="Species")
 
-```{r}
-#For run 1
-#rm_samples <- c("Undetermined")
-#ps1 <- subset_samples(ps, sample_names(ps) !=rm_samples) # Drop Undetermined reads
-#ps1 <- prune_samples(sample_sums(ps1)>=20, ps1) # Drop empty samples
-#ps2 <- tax_glom(ps1,taxrank="Species") # Change to ps.merged for later runs
+ps_run1 %>% 
+  speedyseq::psmelt() %>%
+  group_by(sample_id) %>%
+  mutate_at(vars(Abundance), ~ . / sum(.) ) %>% #Convert to proportions
+  mutate(plotlabel = case_when(
+    Abundance >= 0.01  ~ Species, # Change this to whatever taxrank we want
+    Abundance < 0.01 ~ as.character(NA)
+    )) %>%
+  ggplot(aes(x=sample_name, y=Abundance, fill=plotlabel)) +
+  geom_col(position="stack") + 
+  facet_grid(target_subfragment~type, scales="free") +
+  scale_y_continuous(labels = scales::percent) +
+  coord_flip()+
+  geom_rangeframe() +
+  base_theme+
+  theme(legend.position = "bottom") +
+  labs(x = "Sample Name",
+       y= "Relative abundance",
+       fill="Species",
+       title = "Run 1 - Primer testing")
 
-#Agglomerate to species
-ps2 <- speedyseq::tax_glom(ps.merged,taxrank="Species") # Change to ps.merged for later runs
-
-#For run2 
-rm_samples <- c("fwhF2-fwhR2n-CM4","fwhF2-HexCOIR4-CM4")
-ps2 <- subset_samples(ps2, !sample_names(ps2) %in% rm_samples) # Drop Undetermined reads
-
-ps2 <- filter_taxa(ps2, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
-ps2 <- prune_samples(sample_sums(ps2)>=20, ps2) # Drop empty samples
-
-
-#Rough barplot
-col2 <- colorRampPalette(brewer.pal(11, "Spectral"))(71)
-
-rm_samples <- sample_names(ps2)[which(str_detect(sample_names(ps2),"blank"))]
-psbar <- subset_samples(ps2, !sample_names(ps2) %in% rm_samples) # Drop Undetermined reads
-
-Fig1 <- plot_bar(psbar,fill="Species") +
-  theme_bw() +
-    #scale_fill_manual(values=col2) + 
-  theme(legend.position="none",
-        axis.text.x = element_text(angle=90))
-#Change sample names for plotting
-#
-#sample_names(ps2) <- sample_names(ps2) %>%
-##  str_split_fixed("-",n=3) %>%
-#  as_tibble() %>%
-#  pull(V3)
-
-gg.hmap <- plot_heatmap(ps2, "jaccard", "jsd", taxa.label="Species", na.value=NA, taxa.order="Family")   +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle=60, hjust=1),
-        axis.title.x=element_blank(),
-        axis.title.y=element_blank(),
-        panel.spacing =unit(0.2, "lines"),
-        legend.position = "bottom",
-        legend.direction = "horizontal") +
-  facet_grid(~target_subfragment,scales="free",space="free", drop=TRUE) +
-    scale_fill_distiller(palette="Reds", direction= 1, trans = 'log10',  na.value = NA)
+# Plot as heatmap
+ps_run1 %>%
+  speedyseq::psmelt() %>%
+  group_by(sample_id) %>%
+  mutate_at(vars(Abundance), ~ . / sum(.) ) %>%
+  mutate(extract_id = str_remove(sample_name, "^.*-D")) %>%
+    ggplot(aes(x=extract_id, y=Species, fill=Abundance)) +
+    geom_tile() +
+    facet_grid(~target_subfragment, scales="free") +
+  geom_rangeframe() +
+  base_theme+
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+          legend.position = "bottom") +
+    scale_fill_viridis_c(labels = scales::percent) +
+    labs(x="Sample",
+         y="Taxon",
+         fill="Relative abundance",
+         title="Run 1 - Primer testing")
 
 
-#Summarise this also with a jaccard distance comparison!
-library(RColorBrewer)
-col <- colorRampPalette(brewer.pal(11, "Spectral"))(20)
+#Compositional PCA
+pca_dat <- ps_run1 %>% 
+  speedyseq::tax_glom("Species") %>%
+  otu_table %>%
+  as("matrix") %>%
+  as.data.frame()  
+pca_dat <- pca_dat[,colSums(pca_dat) > 100]
+pca_dat <- zCompositions::cmultRepl(t(pca_dat))
+pca_dat <- t(codaSeq.clr(pca_dat))
 
-ps.ord <- subset_taxa(ps2, !Species %in% Syn_taxa)
-ps.ord <- filter_taxa(ps.ord, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
-ps.ord <- prune_samples(sample_sums(ps.ord)>=20, ps2) # Drop empty samples
-GP.ord <- ordinate(ps.ord, "NMDS", "jaccard")
-p1 = plot_ordination(ps.ord, GP.ord, type="samples", color="ExtractID", title="Comparison of 2 primer sets") + 
-  theme_bw() +  
-  theme(legend.position = "none") +
-  #scale_color_manual(values=col)+ 
-  geom_point(size=3) 
+pca <- prcomp(pca_dat)
 
-#,guide=FALSE
+#Look at contributions to rownames
+tidy(pca$rotation) %>%
+  pivot_longer(starts_with("PC"),
+               names_to = "component",
+               values_to="value") %>%
+  dplyr::rename(terms = .rownames) %>%
+  filter(component %in% paste0("PC",1:5)) %>%
+  mutate(component = fct_inorder(component)) %>%
+  ggplot(aes(value, terms, fill = terms)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~component, nrow = 1) +
+  labs(y = NULL) 
+
+#PCA 
+
+# Get pca data
+pca_data <- pca$x %>%
+  as_tibble(rownames = "sample_id") %>%
+  dplyr::select(1:6)%>%
+  left_join(sample_data(ps_run1) %>%
+              as("matrix") %>%
+  as.data.frame() %>%
+    dplyr::select(sample_id, sample_name, type, target_subfragment) %>%
+    distinct()) %>%
+  mutate(extract_id = sample_name %>%
+           str_remove_all("BF1-BR1-|fwhF2-fwhR2n-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-"))
+
+#Get PCA loadings
+pca_loadings <- data.frame(OTU = rownames(pca$rotation), pca$rotation[, 1:2])
+mult <- min(
+    (max(pca_data$PC1) - min(pca_data$PC1)/(max(pca_loadings$PC1)-min(pca_loadings$PC1))),
+    (max(pca_data$PC2) - min(pca_data$PC2)/(max(pca_loadings$PC2)-min(pca_loadings$PC2)))
+    )
+pca_loadings <- transform(pca_loadings,
+        v1 = .7 * mult * (pca_loadings$PC1),
+        v2 = .7 * mult * (pca_loadings$PC1)
+        )
+
+# calculate percent variance explained for the axis labels
+pc1 <- round(pca$sdev[1]^2/sum(pca$sdev^2),2)
+pc2 <- round(pca$sdev[2]^2/sum(pca$sdev^2),2)
+pc_ylab <- paste("PC1: ", pc1, sep="")
+pc_xlab <- paste("PC2: ", pc2, sep="")
+
+# Plot PCA
+gg.pca <- ggplot(data=pca_data, aes(x=PC1, y=PC2)) + 
+  geom_point(aes(colour = extract_id, shape = target_subfragment), alpha=0.8, size=3) +
+  scale_colour_brewer(palette="Paired") +
+  geom_hline(yintercept = 0, linetype=2, alpha=0.5) +  
+  geom_vline(xintercept = 0, linetype=2, alpha=0.5) +
+  xlab(pc_xlab) + 
+  ylab(pc_ylab) +
+  #Add loadings
+  geom_text(data=pca_loadings, aes(x=v1, y=v2, label=OTU), 
+            size = 5, vjust=1,hjust=1, color="red", check_overlap = TRUE,
+            alpha=0.5)+
+  geom_segment(data=pca_loadings, aes(x=0, y=0, xend=v1, yend=v2),
+               arrow=arrow(length=unit(0.2,"cm")), alpha=0.5, color="red") +
+  base_theme+
+  theme(legend.position = "bottom") +
+  geom_rangeframe()+
+coord_fixed(ratio=pc1/pc2) # Scale plot by variance explained
+
+gg.pca
 ```
+# Heatmap of jaccard simiarity to show all are detected in all samples??
 
-## Comparison between primers for bias
+## Effect of primer on bias
 
-- Metacal center function
-- lm 
-- lm with CLR in advance?
-- glmnet: multinomial regression with regularization (ie Lasso model)
-- nnet::multinomial neural network regression
-- multinomial regression with random effects
-- Poisson regression with random effects
-- Bayesian multinomial logistic normal models
-  - Stan
-  - Pibble from stray package
-
-Pick the model that reduces the residual mean standard error (RMSE) the most
-
-Should be able to do this within a tidymodels framework with bootsrapping
 
 ```{r Drosophila bias}
-ps_bias <- ps0 %>%
-  subset_samples(FCID == "CB3DR")
+# Merge replicates
+ps.merged <- ps0 %>%
+    merge_samples(group = "sample_name", fun="sum")
 
-#ps_bias <- subset_samples(ps2, type %in% c("Mock"))
+#This loses the sample metadata - Need to add it agian
+sample_data(ps.merged) <- sample_data(ps0) %>%
+  filter(!duplicated(sample_name)) %>%
+  magrittr::set_rownames(.$sample_name)
+
+ps_bias <- ps.merged %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE) 
+
 tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <- "Carpophilus_nr.dimidiatus"
 tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
 tax_table(ps_bias)[,7][which(tax_table(ps_bias)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
 ps_bias <- speedyseq::tax_glom(ps_bias, taxrank="Species")
 
-sam <- speedyseq::psmelt(ps_bias) %>%
-  arrange(Abundance) %>%
-  mutate(Taxon = Species) %>%
-  filter(!str_detect(Genus, "__")) %>% #Remove unclassified
-  dplyr::select(OTU, Sample_Name,Taxon, Abundance, target_subfragment) %>%
-  mutate(Sample = Sample_Name %>%
-           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-"))
+exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
+  dplyr::rename(sample_name = Sample) %>%
+  pivot_longer(-sample_name,
+               names_to= "taxon",
+               values_to= "expected") %>%
+  mutate(taxon = str_replace(taxon, pattern=" ",replacement="_"),
+         sample_name = str_remove(sample_name, "-exp*.$")) %>%
+  dplyr::filter(!is.na(sample_name),
+  !str_detect(sample_name, "CM[0-9]|CT[0-9]|CML[0-9]|Syn"),
+  expected > 0) %>%
+  distinct()
 
-exp <- read_csv("sample_data/expected_quant2.csv") %>%
-  pivot_longer(-X1,
-               names_to= "Species",
-               values_to= "Abundance") %>%
-  mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
-  mutate(X1 = str_split_fixed(X1,"-rep",n=2) %>%
-           as_tibble()%>% 
-           pull(V1)) %>%
-  drop_na() %>%
-  magrittr::set_colnames(c("Sample","Taxon","Actual"))
+#plot expected
+exp %>% 
+  group_by(sample_name) %>%
+  mutate_at(vars(expected), ~ . / sum(.) ) %>% #Convert to proportions
+  ggplot(aes(x=sample_name, y=expected, fill=taxon)) +
+  geom_col(position="stack") + 
+  scale_fill_brewer(palette="Spectral") +
+  scale_y_continuous(labels=scales::percent) +
+  geom_rangeframe() +
+  base_theme+
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle=45, hjust=1)) +
+  labs(x = "Sample Name",
+       y= "Relative abundance",
+       title="Expected mock communities",
+       fill="Species")
+
+#Get observed
+sam <- speedyseq::psmelt(ps_bias) %>%
+  janitor::clean_names() %>%
+  mutate(taxon = species) %>%
+  filter(!str_detect(genus, "__")) %>%#Remove unclassified
+  dplyr::select(sample_name, taxon, abundance, target_subfragment, fcid, material_type = type) %>%
+  mutate(sample_name = sample_name %>%
+           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
+           str_remove("HLVKYDMXX_"),
+         sample_id = paste0(fcid, "_", sample_name),
+         sample_name = sample_name %>%
+           str_remove("-ex[0-9]")) 
 
 #Join tables 
 joint <- sam %>%
-  filter(Taxon %in% exp$Taxon) %>%
-  filter(str_detect(Taxon, "Dros")) %>%
-  left_join(exp, by = c("Sample","Taxon")) %>%
-  mutate(Actual = replace_na(Actual, 0)) %>%
-  mutate(Observed0 = (Abundance + 0.5) * (Actual > 0)) %>%
-  mutate(Error = Observed0 / Actual) %>%
-  distinct()# %>%
-  group_by(Sample_Name) %>%
-  mutate_at(vars(Abundance, Actual), ~ . / sum(.) ) %>% #Convert to proportions
-  dplyr::select(Sample_Name, Taxon, Abundance, Actual, Error, target_subfragment) %>%
+  filter(taxon %in% exp$taxon,
+         sample_name %in% exp$sample_name) %>%
+  left_join(exp, by = c("sample_name","taxon")) %>%
+  dplyr::rename(observed = abundance) %>%
+  mutate(expected = replace_na(expected, 0),
+         observed0 = (observed + 0.5) * (expected > 0),
+         error = observed0 / expected) %>%
+  distinct() %>%
+  group_by(sample_id) %>%
+  mutate_at(vars(observed, expected), ~ . / sum(.) ) %>% #Convert to proportions
   ungroup()
 
-## Visualise errors in proportions
-library(ggbeeswarm)
-library(ggthemes)
-joint %>% 
-  filter(Actual > 0) %>%
-  mutate_at(vars(Actual, Abundance), logit) %>%
-  ggplot(aes(Actual, Abundance, color = Taxon)) + 
-  geom_jitter(alpha=0.7) +
-  scale_color_brewer(palette="Spectral")+
-  facet_wrap(~target_subfragment)+
-  theme_bw()+
-  labs(title = "Observed vs. Actual proportions (log-odds)") 
 
 # Visualise the error in all pairwise ratios
-joint %>%
-  filter(Actual > 0) %>%
-    compute_ratios(group_vars = c("Sample_Name", "target_subfragment")) %>%
-    filter(!is.na(Actual)) %>%
-    mutate(Pair = paste(Taxon.x, Taxon.y, sep = ":")) %>% 
-  ggplot(aes(Pair, Error, colour=Pair)) +
+gg.ratio <- joint %>%
+  dplyr::filter(expected > 0 ) %>%
+  dplyr::mutate(Taxon = taxon %>%
+                 str_replace("^.+_", paste0(str_extract(taxon, "."), "_"))) %>%
+    compute_ratios(group_vars = c("sample_id", "material_type", "target_subfragment")) %>%
+  mutate(Pair = paste(Taxon.x, Taxon.y, sep = ":")) %>% 
+  ggplot(aes(Pair, expected, colour=sample_id)) +
+  geom_hline(yintercept = 1, alpha=0.8) +
   geom_jitter(alpha=0.7) +
-  geom_hline(yintercept = 1) +
+  geom_rangeframe(colour="black")+
   scale_y_log10() +
-  facet_wrap(~target_subfragment)+
-  theme_bw()+
+  base_theme+
+  facet_grid(target_subfragment~.)+
     theme(legend.position = "none",
-          axis.text.x = element_text(angle=45, hjust=1))
+          axis.text.x = element_text(angle=45, hjust=1))+
+  labs(y= "Error in taxon ratios (log10)") 
 
-#Note - instead could read in the expected matrix, format to the same as the OTU matrix, then divide them both
-# This would allow using bayesian zero replacement
+gg.ratio
 
-#Build error matrix
-error_mat <- build_matrix(joint, Sample_Name, Taxon, Error) 
-rows_to_keep <- rowSums(error_mat, na.rm=TRUE) > 0
-cols_to_keep <- colSums(error_mat, na.rm=TRUE) > 0
-error_mat <- error_mat[rows_to_keep,cols_to_keep]
+# Estimate bias on CLR transformed ratios
+bias.clr <- joint %>%
+  filter(material_type=="DrosMock") %>%
+  filter(expected > 0) %>%
+  group_by(sample_id) %>%
+  mutate(clr_error = clr(observed0 /expected)) %>%
+  ungroup() %>%
+  group_by(target_subfragment, material_type)  %>%
+    nest() %>%
+    mutate(fit = map(data, ~lm(clr_error ~ 0 + taxon , data = .)), 
+           tidied = map(fit, broom::tidy),
+           aug = map(fit, broom::augment)
+    ) %>%
+  dplyr::select(-fit) %>%
+  unnest(tidied) %>%
+  mutate(estimate =  exp(estimate),
+         taxon = str_remove(term, "taxon")) %>%
+   dplyr::select(target_subfragment, material_type, taxon, estimate) 
 
-#Estimate bias using metacal
-bias <- center(error_mat, enframe = TRUE) %>%
-    dplyr::rename(Bhat = Center)
+# See how well bias estiamte fits data
+library(plotly)
 
-#Estimate uncertainty in bias estimate using bootstrapping
-bootreps <- bootrep_center(error_mat) %>%
-    dplyr::rename(Bhat = Center)
-bootreps.summary <- bootreps %>%
-    group_by(Taxon) %>%
-    summarize(Gm_mean = gm_mean(Bhat), Gm_se = gm_sd(Bhat))
-bias0 <- left_join(bias, bootreps.summary, by = "Taxon")
+preds <- joint %>%
+  left_join(bias.clr) %>%
+  #filter(!is.na(estimate)) %>%
+  dplyr::mutate(predicted = expected * estimate) %>%
+  group_by(sample_id) %>%
+  mutate_at(vars(predicted), ~ . / sum(., na.rm=TRUE) ) %>%
+  filter(expected > 0) %>%
+  filter(observed > 0)
 
-# metacal tidy
-bias <- joint %>%
-    filter(Actual > 0 ) %>%
-    group_by(target_subfragment, Taxon) %>%
-    summarize(Bias = gm_mean(Error)) %>%
-    mutate(Bias = center_elts(Bias)) %>%
-    ungroup
-
-
-stm <- joint %>%
-    left_join(bias, by = c("target_subfragment", "Taxon")) %>%
-    mutate(
-        Residual = Error / Bias,
-        Predicted = Actual * Bias
+library(ggthemes)
+ggplot(preds,  aes(x=logit(predicted), y=logit(observed), color = taxon))+
+  geom_abline(intercept = 0, slope = 1, color = "grey") +
+    geom_jitter(width = 0.1, height = 0, alpha=0.7) +
+    geom_rangeframe(color = "black") + 
+  facet_grid(fcid~target_subfragment)+
+    labs(x = "log-odds(Predicted proportion)", 
+        y = "log-odds(Observed proportion)",
+        colour = "Taxon",
+        title="Bias model fits") +
+    coord_fixed() + 
+  base_theme +
+  theme(
+        panel.spacing.x = unit(1, "lines"),
+        legend.position = "bottom",
     )
 
-reps <- stm %>%
-    group_by(target_subfragment) %>%
-    nest %>%
-    mutate(
-        Error_matrix = map(data, build_matrix, "Sample", "Taxon", "Error"),
-        Bootreps = map(Error_matrix, bootrep_center, R = 4e3, 
-            method = "proj"))%>%
-    unnest(Bootreps) %>%
-    dplyr::rename(Bias = Center)
-stats <- reps %>%
-    group_by(target_subfragment, Taxon) %>%
-    summarize(gm_mean = gm_mean(Bias), gm_se = gm_sd(Bias)) %>%
-    ungroup
-
-bias <- left_join(bias, stats, by = c("target_subfragment", "Taxon"))
-
-
-# Estiamte using lm instread
-bias.lm <- joint %>%
-  filter(Actual > 0) %>%
-   group_by(Taxon, target_subfragment) %>%
-    nest() %>%
-    mutate(fit = map(data, ~lm(Abundance ~ 0 + Actual, data = .)),
-           tidied = map(fit, broom::tidy)) %>%
-  unnest(tidied) %>%
-  dplyr::select(term, estimate, std.error) #%>%
-  mutate(Taxon = term %>% str_remove("Taxon"))
-
-bias.lm
-
-## Bootstrapped seperate regression models on proportions
-library(tidymodels)
-
-lm_dat <- joint %>%
-  dplyr::select(Sample_Name, target_subfragment, Taxon, Abundance, Actual) %>%
-  ungroup() %>%
-  filter(Actual > 0) %>%
-  group_by(Taxon, target_subfragment)
-
-group_name <- group_keys(lm_dat) %>%
-  unite(col="name", everything(), sep=";") %>%
-  pull(name)
-lm_dat <- lm_dat %>%
-  group_split() %>%
-  set_names(group_name)
-
-set.seed(606)
-boots <- purrr::map(lm_dat, bootstraps, times=1000, apparant=TRUE)
-
-# Fit model to bootstraps
-boot_models <- boots %>% 
-  purrr::map(function(x){ 
-    x <- x %>%
-      mutate(model = map(splits, ~  lm(Abundance ~ 0 + Actual, data = .)), # Set slope to 0 to jus estimate intercept
-         coef_info = map(model, tidy))
-    }) 
-
-# Get coefficients
-boot_coefs <- boot_models %>% 
-  purrr::map(unnest,coef_info) %>%
-  bind_rows(.id="name") %>%
-  tidyr::separate(name, into=c("Taxon", "target_subfragment"), sep=";")
-
-# Calculate CIs using percentile method
-bias.lmboot <- boot_models %>%
-  purrr::map(function(x){int_pctl(x, coef_info)}) %>%
-  bind_rows(.id="name") %>%
-  tidyr::separate(name, into=c("Taxon", "target_subfragment"), sep=";") %>%
-  mutate(se = (.upper - .lower) / 3.92)  #3,92 for 95% CIs
-
-bias.lmboot 
-ggplot(boot_coefs, aes(estimate)) +
-  geom_histogram(bins = 30) +
-  facet_grid(target_subfragment ~ Taxon, scales = "free") +
-  geom_vline(aes(xintercept = .estimate), data = bias.lmboot, col = "red") +
-  geom_vline(aes(xintercept = .lower), data = bias.lmboot, col = "blue") +
-  geom_vline(aes(xintercept = .upper), data = bias.lmboot, col = "blue")
-
-# Plot fits
-boot_aug <- boot_models %>% 
-  purrr::map(function(x){ 
-    x %>% 
-      sample_n(200) %>%
-      mutate(augmented = map(model, augment)) %>%
-      unnest(augmented)
-      })%>%
-  bind_rows(.id="name") %>%
-  tidyr::separate(name, into=c("Taxon", "target_subfragment"), sep=";")
-
-ggplot(boot_aug, aes(x=Actual, y=Abundance, colour=Taxon)) +
-  geom_line(aes(y = .fitted, group = id), alpha = .2) +
-  geom_point() +
-  #geom_line(data=bias.clrboot, aes(y=.estimate),col= "black", inherit.aes = FALSE) +
-  facet_grid(target_subfragment ~ Taxon, scales = "free") +
-  theme(legend.position = "none")
-
-
-## Bootstrapped seperate regression models on CLR
-
-clr_dat <- sam %>%
-  dplyr::filter(Taxon %in% exp$Taxon) %>%
-  filter(str_detect(Taxon, "Dros")) %>%
-  left_join(exp, by = c("Sample","Taxon")) %>%
-  mutate(Actual = replace_na(Actual, 0)) %>%
-  dplyr::filter(Actual > 0) %>%
-  mutate(Observed0 = (Abundance + 0.5) * (Actual > 0)) %>%
-  group_by(Sample_Name) %>%
-  mutate(Abundance = clr(Observed0),
-         Actual=clr(Actual)) %>%
-  ungroup() %>%
-  distinct() %>%
-  dplyr::select(Sample_Name,target_subfragment, Taxon, Abundance, Actual) %>%
-  ungroup() %>%
-  group_by(Taxon, target_subfragment)
-  
-group_name <- group_keys(clr_dat) %>%
-  unite(col="name", everything(), sep=";") %>%
-  pull(name)
-clr_dat <- clr_dat %>%
-  group_split() %>%
-  set_names(group_name)
-
-set.seed(606)
-boots <- purrr::map(clr_dat, bootstraps, times=1000, apparant=TRUE)
-
-# Fit model to bootstraps
-boot_models <- boots %>% 
-  purrr::map(function(x){ 
-    x <- x %>%
-      mutate(model = map(splits, ~  lm(Abundance ~ 0 + Actual, data = .)), # Set slope to 0 to jus estimate intercept
-         coef_info = map(model, tidy))
-    }) 
-
-# Get coefficients
-boot_coefs <- boot_models %>% 
-  purrr::map(unnest,coef_info) %>%
-  bind_rows(.id="name") %>%
-  tidyr::separate(name, into=c("Taxon", "target_subfragment"), sep=";")
-
-# Calculate CIs using percentile method
-bias.clrboot <- boot_models %>%
-  purrr::map(function(x){int_pctl(x, coef_info)}) %>%
-  bind_rows(.id="name") %>%
-  tidyr::separate(name, into=c("Taxon", "target_subfragment"), sep=";") %>%
-  mutate(se = (.upper - .lower) / 3.92)  #3,92 for 95% CIs
-
-bias.clrboot 
-
-ggplot(boot_coefs, aes(estimate)) +
-  geom_histogram(bins = 30) +
-  facet_grid(target_subfragment ~ Taxon, scales = "free") +
-  geom_vline(aes(xintercept = .estimate), data = bias.lmboot, col = "red") +
-  geom_vline(aes(xintercept = .lower), data = bias.lmboot, col = "blue") +
-  geom_vline(aes(xintercept = .upper), data = bias.lmboot, col = "blue")
-
-# Plot fits
-boot_aug <- boot_models %>% 
-  purrr::map(function(x){ 
-    x %>% 
-      sample_n(200) %>%
-      mutate(augmented = map(model, augment)) %>%
-      unnest(augmented)
-      })%>%
-  bind_rows(.id="name") %>%
-  tidyr::separate(name, into=c("Taxon", "target_subfragment"), sep=";")
-
-ggplot(boot_aug, aes(x=Actual, y=Abundance, colour=Taxon)) +
-  geom_line(aes(y = .fitted, group = id), alpha = .2) +
-  geom_point() +
-  #geom_line(data=bias.clrboot, aes(y=.estimate),col= "black", inherit.aes = FALSE) +
-  facet_grid(target_subfragment ~ Taxon, scales = "free") +
-  theme(legend.position = "none")
-
-# Evaluate different model fits
-
-fits <- joint %>%
-  dplyr::filter(Actual > 0) %>%
-  mutate(Abundance = as.double(Abundance)) %>%
-  group_by(Sample_Name) %>%
-  mutate_at(vars(Abundance,Actual), ~ . / sum(.) ) %>% #Convert to proportions
-  ungroup() %>%
-  #filter(material == "Carpophilus Adults") %>%
-  left_join(bias %>%
-              dplyr::select(Taxon, target_subfragment, est_metacal=gm_mean, se_metacal=gm_se),
-            by = c("Taxon", "target_subfragment")) %>%
-  left_join(bias.lm %>% 
-              dplyr::select(Taxon, target_subfragment, est_lm=estimate, se_lm=std.error), 
-            by = c("Taxon", "target_subfragment")) %>%
-  left_join(bias.lmboot %>% 
-              dplyr::select(Taxon, target_subfragment, est_lmboot=.estimate, se_lmboot = se),
-            by =c("Taxon", "target_subfragment")) %>%
-  left_join(bias.clrboot %>% 
-              dplyr::select(Taxon, target_subfragment, est_clrboot=.estimate, se_clrboot = se),
-            by = c("Taxon", "target_subfragment")) %>%
-  dplyr::mutate(est_obs = Abundance) %>%
-  pivot_longer(starts_with("est_"),
-              names_to = "Type",
-              values_to= "Estimate") %>%
-  mutate(Type = Type %>% str_remove("est_")) %>%
-  mutate(Abundance = case_when(
-    !Type=="obs" ~ Abundance / Estimate,
-    Type=="obs" ~ Abundance))
-
-std_err <- fits %>%
-              dplyr::select(Taxon, se_metacal, se_lm, se_lmboot, se_clrboot) %>%
-            pivot_longer(starts_with("se_"),
-              names_to = "Type",
-              values_to= "SE")%>%
-  mutate(Type = Type %>% str_remove("se_"))
-
-fits <- fits %>% 
-  left_join(std_err) %>%
-  dplyr::select(-starts_with("se_")) 
-
-# Plot correlations
-ggplot(fits, aes(x=Actual, y=Abundance)) +
-  geom_point(aes(colour=Type, shape=Type), size=3, alpha=0.8, stroke=1) + 
-  geom_abline(slope=1, intercept = 0) +
-  ggpubr::stat_cor(aes(color=Type,label = paste(..rr.label.., ..p.label.., sep = "~`,`~")), label.x = 0.1)  + 
-  xlim(0,1) + 
-  ylim(0,1) + 
-  ylab("Observed")
-
-
 # Plot bias estimates
-fits %>%
-  dplyr::select(-Sample) %>% 
-  filter(!Type=="obs") %>%
+preds %>%
   distinct() %>%
-  ggplot(aes(Taxon, y=Estimate-1, fill=Type, group=Type)) +
-    geom_col(position=position_dodge(width=0.9))+
-    geom_errorbar(aes(ymin=(Estimate-1) - SE, ymax=(Estimate-1) + SE), 
-                  position=position_dodge(width=0.9), width = 0.25) + 
-    scale_fill_brewer(palette="Spectral")+
-    scale_colour_brewer(palette="Spectral") + 
-    theme_bw() +
-    theme(axis.text.x = element_text(angle=90,hjust=1,vjust=0)) + 
-    ylab("Bias")  
+  ggplot(aes(x=taxon, y=estimate-1, fill=target_subfragment)) +
+    geom_col()+
+    facet_grid(target_subfragment~material_type) +
+  coord_flip() +
+  geom_rangeframe() +
+  base_theme+
+  scale_fill_brewer(palette="Paired") +
+  labs(
+    x="Taxon",
+    y= "Bias / Geometric mean")
 
-
-## Fit the mdoels again without bootstraps and quantify RMSE
-
-## Find a way of quantifying the RMSE
 
 ```
-we compared slopes to the 1:1 line (representing ideal prediction of recovered reads from input DNA) by taking the difference between the absolute value of the observed slope and 1. A slope of 1, i.e. a perfect association of read count template amount, would translate into a fold change of 0, a slope of 2 into a fold change of +1 and a slope of 0.5 into a fold change of −1.
 
-Plot all the different regressions
 
-# Comparison of primer replicates
+## Effect of primer on detection probability
+How do the primers affect its probability of detection (presence/absence). We used a generalized linear mixed effects model of presence/absense as a function of primer
+primer. To account for the paired design (where both types of samples were derived from the samen community), we defined Sample ID as a random effect.
+Since the response was binomial, we assumed a logit‐link and binomially distributed error
+```{r}
+
+# Use joint to get a table of expected/absent
+det_table <- joint %>% 
+  filter(material_type=="DrosMock") %>%
+  mutate(detected = case_when(
+    expected > 0 & observed > 0 ~ 1,
+    expected > 0 & observed == 0 ~ 0,
+    TRUE ~ as.numeric(NA)
+    )) %>%
+  mutate(extract_id = sample_name %>%
+           str_remove_all("BF1-BR1-|fwhF2-fwhR2n-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-"))
+
+# Estimate detection efficiency of all taxa - problem is all are detected and none are failed!
+# Need to filter for index switching
+# 
+library(lme4)
+detmodel <- det_table %>%
+  filter(fcid=="CB3DR") %>%
+  dplyr::select(sample_id, extract_id, taxon, detected, target_subfragment) %>%
+  #group_by(taxon) %>%
+  nest() %>%
+  mutate(fit = map(data, ~glmer(detected ~ target_subfragment + (1|extract_id), family=binomial, data = .)), 
+           tidied = map(fit, broom::tidy),
+           aug = map(fit, broom::augment)
+
+  ) %>%
+  dplyr::select(-fit) %>%
+  unnest(tidied) 
+
+# Estimate detection efficiency of targets
+library(lme4)
+det_suzukii <- ps_qual %>%
+  filter(fcid=="CB3DR") %>%
+  group_by(Species) %>%
+  nest() %>%
+  mutate(fit = map(data, ~glmer(detection ~ target_subfragment + (1|extract_id), family=binomial, data = .)), 
+           tidied = map(fit, broom::tidy),
+           aug = map(fit, broom::augment)
+
+  ) %>%
+  dplyr::select(-fit) %>%
+  unnest(tidied) 
+
+det_suzukii
+```
+
+
+#FIGURE 1  Comparison of primers for detection, bias, and PCA of overlap  
+
+# Supplementary Comparison of primer replicates for detection and bias
+
+Run 2 - see the differences in bias between replicates
+
+```{R run2}
+
+
+```
 
 # Overlap between replicates
 
@@ -1203,7 +1142,7 @@ suzukii_detections = occData(det_suzukii, siteColName = 'site',
 #Make covariate tables
 
 # Read in expected table
-exp <- read_csv("sample_data/expected_quant.csv") %>%
+exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
   gather(Species, Actual, -X1) %>%
   mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
   filter(str_detect(X1,"D100M|D250M|D500M|D1000M|DLarv")) %>%
@@ -1343,7 +1282,7 @@ ps_qual <- ps %>%
   dplyr::select(Sample, Species, `1`, `2`,)
 
 # Read in expected table
-exp <- read_csv("sample_data/expected_quant.csv") %>%
+exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
   gather(Species, Actual, -X1) %>%
   mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
   #filter(str_detect(X1,"D100M|D250M|D500M|D1000M|DLarv")) %>%
@@ -1458,7 +1397,7 @@ nine replicates between sites
 
 ```{r PCA}
 # Read in expected table
-exp <- read_csv("sample_data/expected_quant.csv") %>%
+exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
   gather(Species, Abundance, -X1) %>%
   mutate(Species = str_replace(Species, pattern=" ",replacement="_")) %>%
   filter(str_detect(X1,"D100M|D250M|D500M|D1000M|DLarv")) %>%
@@ -1631,5 +1570,6 @@ gg.bias <- ggplot(ratios, aes(Pair, Error, color = Sample)) +
     geom_jitter(width = 0.2) +
     scale_y_log10() +
     coord_flip()
+
 
 ```
