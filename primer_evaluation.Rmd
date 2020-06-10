@@ -1291,7 +1291,9 @@ rm -rf $tmp_dir
 ```
 
 
-# Index jobs
+# USEARCH
+
+## Index jobs
 ```{bash generate job index}
 #!/bin/bash
 /usr/bin/ls -d $PWD/* | sed -e '1p' -e '/.fa.gz/!d' | sort -u > sequence_index.txt
@@ -1366,7 +1368,9 @@ module purge
 module load USEARCH
 
 #USEARCH
-usearch -calc_distmx $Sample.fa -tabbedout $Sample.txt -maxdist 0.2 -termdist 0.3 -threads 8
+usearch -calc_distmx $Sample.fa -tabbedout $Sample.txt -maxdist 0.05 -termdist 0.1 -threads 8
+
+# Termdist and maxdist need to be changed as this produces massive files
 
 # Zip all files
 pigz -p8 *.txt
@@ -1387,8 +1391,175 @@ rm -rf $tmp_dir
 
 ```
 
+From this distance matrix...
+Can calculate the probability of lowest common ancestor at different similarities
 
- 
+## USEARCH MIXED
+
+```{r analyse uclust}
+# Summarise number of mixed clusters that contain pests at %
+pestlist <- read_csv("primer_evaluation/pestlist.csv") 
+
+# Load primers
+primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
+  mutate(seq = str_replace_all(seq, "I","N")) 
+
+# Get all possible primer combinations
+combos <- expand_grid(primers %>% filter(strand=="F") %>% pull(seq),
+                      primers %>% filter(strand=="R") %>% pull(seq)
+                      ) %>%
+  mutate_if(is.factor, as.character)%>%
+  unique() %>%
+  magrittr::set_colnames(c("Fseq", "Rseq")) %>%
+  left_join(primers %>% filter(strand=="F") %>% rename_all(. %>% paste0("F",.)), by="Fseq") %>%
+  left_join(primers %>% filter(strand=="R") %>% rename_all(. %>% paste0("R",.)), by="Rseq") %>%
+  mutate(amplicon = Rstart - Fend) %>%
+  filter( amplicon > 100)
+
+# Check missing
+complete <- list.files(path="primer_evaluation/amplicons/uclust_output/", pattern = ".txt.gz") %>%
+  basename %>%
+  str_remove(".txt.gz")
+
+setdiff(paste0(combos$Fname, "_",  combos$Rname), complete)
+setdiff(complete,paste0(combos$Fname, "_",  combos$Rname))
+
+
+# Get mixed clusters
+library(furrr)
+plan(multiprocess)
+mixed_clusters <- fs::dir_ls(path="primer_evaluation/amplicons/uclust_output/", glob = "*.txt.gz")%>%
+  furrr::future_map(function(x){
+  #purrr::map(function(x){
+  df <- vroom::vroom(x, delim="\t", col_names = c("acc1", "acc2", "dist")) %>%
+    dplyr::mutate(spp1 = acc1 %>%
+                    str_remove(";$") %>%
+                    str_remove("^.*;"),
+                  acc1 = acc1 %>% str_remove(";.*$"),
+                  spp2 = acc2 %>%
+                    str_remove(";$") %>%
+                    str_remove("^.*;"),
+                  acc2 = acc2 %>% str_remove(";.*$"),
+                  dist = round(dist, 2)) %>%
+    dplyr::filter(!spp1==spp2)
+
+  all <- df %>%
+        dplyr::group_by(dist) %>% 
+        dplyr::summarise(mixed=n_distinct(spp1)) %>%
+        dplyr::mutate(type="all")
+  pests <- df %>%
+        dplyr::group_by(dist) %>% 
+        filter(spp1 %in% pestlist$Species) %>%
+        dplyr::summarise(mixed=n_distinct(spp1)) %>%
+        dplyr::mutate(type="pest")
+      out <- bind_rows(all, pests)
+      return(out)
+  
+  })%>%  
+    #},.progress = TRUE) %>%
+  bind_rows(.id="source") %>%
+  mutate(source = str_remove(basename(source), ".txt.gz"))
+  
+#Get amplified
+amplified <- fs::dir_ls(path="primer_evaluation/amplicons/", glob = "*.fa.gz") %>%
+   purrr::map(function(x){
+   #furrr::future_map(function(x){
+     df <- fasta.index(x) %>%
+        mutate(species = desc %>% 
+                 str_remove("(?:[^;]*;){7}") %>% #match 7th ;
+                 str_remove(";$")) # match last ;
+     all <- df %>%
+      dplyr::group_by(filepath) %>%
+      dplyr::summarise(seqs_amplified = n(), spp_amplified = n_distinct(species)) %>%
+      dplyr::mutate(type="all")
+     pests <- df %>%
+      dplyr::group_by(filepath) %>%
+      dplyr::filter(species %in% pestlist$Species) %>%
+      dplyr::summarise(seqs_amplified = n(), spp_amplified = n_distinct(species)) %>%
+      dplyr::mutate(type="pest")
+     out <- bind_rows(all, pests)
+    return(out)
+   }) %>%
+  bind_rows() %>%
+  mutate(source = str_remove(basename(filepath), ".fa.gz")) %>%
+  dplyr::select(-filepath)
+
+joint <- mixed_clusters %>%
+  left_join(amplified) %>%
+  mutate(combos = source) %>% 
+  tidyr::separate(source, into=c("Fname", "Rname"), sep="_", extra="merge")
+vroom::vroom_write(joint, "primer_evaluation/amplicons/mixed_clusters_summary.csv", delim=",")
+
+```
+
+## USEARCH LCA PROBS
+```{r lca probs}
+## Get LCA probs
+library(furrr)
+plan(multiprocess)
+
+ranks = c("kingdom", 
+    "phylum", "class", "order", "family", 
+    "genus", "species")
+
+lca_probs <- fs::dir_ls(path="primer_evaluation/amplicons/uclust_output/", glob = "*.txt.gz") %>%
+  #furrr::future_map(function(x){
+  purrr::map(function(x){
+  df <- vroom::vroom(x, delim="\t", col_names = c("acc1", "acc2", "dist")) %>%
+    dplyr::mutate(acc1 = acc1 %>%
+                    str_remove(";$"),
+                  acc2 = acc2 %>%
+                    str_remove(";$"),
+      dist = round(dist, 2),
+                  ) 
+  lca <- df %>%
+    group_by(dist) %>%
+    group_split() %>%
+    purrr::map(function(y){
+      print(unique(y$dist))
+      logidf <- y %>% 
+        tidyr::separate(acc1, into = c("Acc", paste0(ranks, "_1")), sep = ";") %>%
+        tidyr::separate(acc2, into = c("Acc", paste0(ranks, "_2")), sep = ";") %>%
+        transmute(
+          kingdom = case_when(kingdom_1 == kingdom_2 ~ TRUE, TRUE ~ FALSE),
+          phylum = case_when(phylum_1 == phylum_2 ~ TRUE, TRUE ~ FALSE),
+          class = case_when(class_1 == class_2 ~ TRUE, TRUE ~ FALSE),
+          order = case_when(order_1 == order_2 ~ TRUE, TRUE ~ FALSE),
+          family = case_when(family_1 == family_2 ~ TRUE, TRUE ~ FALSE),
+          genus = case_when(genus_1 == genus_2 ~ TRUE, TRUE ~ FALSE),
+          species = case_when(species_1 == species_2 ~ TRUE, TRUE ~ FALSE),
+          ) %>%
+        dplyr::select(rev(ranks))
+        keepvec <- apply(logidf, 1, which.max)
+        rows <- seq(as.data.frame(logidf)[, 1])
+        selector <- matrix(ncol = 2, c(rows, keepvec))
+        logidf[selector] <- "KEEP"
+        logidf[!logidf == "KEEP"] <- 0
+        logidf[logidf == "KEEP"] <- 1
+        logidf <- logidf %>%
+          mutate_all(as.numeric) %>%
+          colSums()/length(rows) 
+        out <-as_tibble(logidf, rownames="rank") %>%
+          mutate(dist = unique(y$dist))
+        return(out)
+    }) %>%
+  dplyr::bind_rows() %>% 
+      dplyr::group_by(rank, dist) %>% 
+      dplyr::summarise(prob = mean(value))
+  
+  return(lca)
+  }) %>%
+  bind_rows(.id="source") %>%
+  mutate(source = str_remove(basename(source), ".txt.gz"))
+
+
+# Plot out
+lca_probs %>% 
+  ggplot(aes(x=dist, y=prob, colour = rank, group = rank)) +
+  geom_line() + 
+  facet_wrap(~source)
+
+``` 
  
  # Clustering - need to write out results as RDS, or can i do it in a way that doesnt require masses of NA's
  Actually all the mixed should be in the cluster ID anyway?
