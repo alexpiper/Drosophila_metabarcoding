@@ -483,7 +483,7 @@ pc_ylab <- paste("PC1: ", pc1, sep="")
 pc_xlab <- paste("PC2: ", pc2, sep="")
 
 # Plot PCA
-gg.pca <- ggplot(data=pca_data, aes(x=PC1, y=PC2)) + 
+gg.pca <- ggplot(data=pca_data, aes(x=PC2, y=PC3)) + 
   geom_point(aes(colour = extract_id, shape = target_subfragment), alpha=0.8, size=3) +
   scale_colour_brewer(palette="Paired") +
   geom_hline(yintercept = 0, linetype=2, alpha=0.5) +  
@@ -498,7 +498,7 @@ gg.pca <- ggplot(data=pca_data, aes(x=PC1, y=PC2)) +
                arrow=arrow(length=unit(0.2,"cm")), alpha=0.5, color="red") +
   base_theme+
   theme(legend.position = "bottom") +
-  geom_rangeframe()+
+  geom_rangeframe() +
 coord_fixed(ratio=pc1/pc2) # Scale plot by variance explained
 
 gg.pca
@@ -674,7 +674,6 @@ How do the primers affect its probability of detection (presence/absence). We us
 primer. To account for the paired design (where both types of samples were derived from the samen community), we defined Sample ID as a random effect.
 Since the response was binomial, we assumed a logit‐link and binomially distributed error
 ```{r}
-
 # Use joint to get a table of expected/absent
 det_table <- joint %>% 
   filter(material_type=="DrosMock") %>%

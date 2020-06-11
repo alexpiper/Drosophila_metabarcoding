@@ -105,7 +105,7 @@ seqs <- DNAStringSet(colnames(seqtab))
 names(seqs) <- seqs
 phy <- readRDS("output/rds/phytree.rds")$tree
 
-##### Rename problematic Drosophila samples
+##### Rename problematic samples
 rownames(seqtab)  <- rownames(seqtab) %>%
  str_replace_all("D250M1-", "D250M4REP-") %>% # Works
  str_replace_all("D250M4-", "D250M2REP-") %>% # Works

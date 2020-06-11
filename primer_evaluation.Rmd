@@ -55,6 +55,18 @@ library(PrimerMiner)
 # SOurce internal functions
 source("R/helper_functions.R")
 
+# Define themes
+library(ggthemes)
+base_theme <- theme_tufte() + 
+    theme(
+        text = element_text(size=9, family = ""),
+        strip.text = element_text(size=9, family = ""),
+        # axis.text = element_text(size=8, family = ""),
+        legend.position = "none"
+        )
+
+
+
 ```
 
 # Assemble pest list
@@ -510,6 +522,11 @@ gg.primers <- ggplot(data=values[values$pos==1,], aes(x = as.numeric(pos))) +
         axis.title = element_blank())
 
 Fig2 <- gg.box / gg.density / gg.primers 
+
+pdf(file="fig/Fig2.pdf", width = 11, height = 8 , paper="a4r")
+  plot(Fig2)
+try(dev.off(), silent=TRUE)
+ 
 ```
 
 # Predicted mismatch
@@ -587,6 +604,7 @@ summaries <- dat %>%
     ))  
 
 # Arrange on tree
+library(castor)
 tree <- rncl::read_newick_phylo("reference/ultrametric_insecta_tree.nwk")
 
 # Prune tree to genus
@@ -773,7 +791,7 @@ gg.density <- imputed %>%
 
 Fig3 <- p2 + gg.mismatch + gg.density + plot_layout(widths = c(1,3,0.25))
 
-pdf(file="fig/fig3.pdf", width = 8, height = 11 , paper="a4")
+pdf(file="fig/Fig3.pdf", width = 8, height = 11 , paper="a4")
   plot(Fig3)
 try(dev.off(), silent=TRUE)
  
@@ -856,444 +874,14 @@ parallel::stopCluster(cl)
 
 ```
  
-## Clustering ID Success
-
-
-### Kmer  clustering
-
-```{r clustering.R}
-#load packages ---------------------------------------------------
-.cran_packages <- c("tidyverse",
-                    "spider", 
-                    "insect",
-                    "ape",
-                    "seqinr",
-                    "ShortRead",
-                    "foreach",
-                    "doParallel")
-
-.bioc_packages <- c("DECIPHER", "Biostrings")
-
-#Load all packages
-sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE, warn.conflicts=FALSE)
-
-# Github packages
-library(taxreturn)
-
-# get job name ---------------------------------------------------
-args = commandArgs(trailingOnly=TRUE)
-
-if (length(args)==0) {
-  stop("At least one argument must be supplied (input file) \n", call.=FALSE)
-}
-print(args)
-file <- args[1]
-job_name <- basename(file) %>% str_remove("\\..*$")
-message("file = ", file)
-message("job_name = ", job_name)
-
-message("wd = ", getwd())
-message("files in wd: \n")
-list.files()
-
-# Run code ---------------------------------------------------
-
-file <- "primer_evaluation/amplicons/dgLCO1490_Uni-MinibarR1.fa.gz"
-# Read in amplicon
-amplicon <- insect::readFASTA(file)
-print(amplicon)
-
-# Testing
-amplicon <- amplicon[1:1000]
-
-#Get db
-db <- taxreturn::get_ott_taxonomy(dir="ott3.2")
-
-## Get distance clustering statistic
-thresholds <- rev(seq(0.97, 1, 0.01))
-threshlist <- vector("list", length=length(thresholds))
-
-for (i in 1:length(thresholds)){
-threshlist[[i]] <- taxreturn::get_mixed_clusters( 
- x = amplicon, db=db, k=4,
- rank = "species",
- threshold = thresholds[i],
- rngseed = 606,
- return = "all",
- confidence= 0, quiet = FALSE) 
-}
-names(threshlist) <- thresholds 
-dplyr::bind_rows(threshlist) %>%
-  write_csv(paste0(job_name,"_clustering.csv"))
-```
-
-
-## Spider ID Sucess
-```{r Spider}
-# install and load packages ---------------------------------------------------
-.cran_packages <- c("tidyverse", "spider", "insect", "ape",
-                    "seqinr", "ShortRead", "foreach", "doParallel")
-
-.bioc_packages <- c("DECIPHER", "Biostrings")
-
-.inst <- .cran_packages %in% installed.packages()
-if(any(!.inst)) {
-   install.packages(.cran_packages[!.inst])
-}
-.inst <- .bioc_packages %in% installed.packages()
-if(any(!.inst)) {
-  if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-  BiocManager::install(.bioc_packages[!.inst], ask = F)
-}
-
-#Load all packages
-sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
-
-# Github packages
-devtools::install_github("alexpiper/taxreturn")
-library(taxreturn)
-
-
-# get job name ---------------------------------------------------
-args = commandArgs(trailingOnly=TRUE)
-
-if (length(args)==0) {
-  stop("At least one argument must be supplied (input file).n", call.=FALSE)
-}
-print(args)
-file <- args[1]
-job_name <- basename(file) %>% str_remove("\\..*$")
-message("file = ", file)
-message("job_name = ", job_name)
-
-# Run code ---------------------------------------------------
-
-# Load resources
-model <- readRDS("folmer_fullength_model.rds")
-pestlist <- read_csv("primer_evaluation/pestlist.csv")
-
-## Read in seqs
-seqs <- insect::readFASTA(file)
-
-#Filter to pest genera and remove singletons
-names <- names(seqs)  %>% 
-  str_split_fixed(";", n = 8) %>% 
-  as_tibble() %>% 
-  magrittr::set_colnames(c("acc", "kingdom", "phylum",
-                          "class", "order", "family", 
-                          "genus", "species")) %>%
-  filter(genus %in% pestlist$Genus)%>%
-  group_by(species) %>%
-  add_tally %>%
-  filter(n > 1) %>%
-  select(-n) %>%
- unite(names,everything(),sep=";") #%>%
-  
-subset <- seqs[names(seqs) %in% names$names]
-print(subset)
-
-# Testing
-subset <- subset[1:1000]
-
-# Map to model
-lengthfilt <- taxreturn::map_to_model(subset, model, minscore = 100, shave= TRUE, pad=TRUE, check_indels=TRUE, maxNs=Inf, cores=2, quiet=FALSE)
-
-# All should be same length, if not -warn and subset to most frequent value
-seqLength <- lengths(lengthfilt)
-uniqx <- unique(na.omit(seqLength))
-if(length(uniqx) > 1) {message("Warning, more than one length in lengthfilt")}
-freqlen <- uniqx[which.max(tabulate(match(seqLength, uniqx)))]
-lengthfilt <- as.matrix(lengthfilt[which(seqLength == freqlen)])
-
-# Genus and species names
-aa <- Biostrings::strsplit(dimnames(lengthfilt)[[1]], split = ";")
-Genus <- sapply(aa, function(x) paste(x[7], sep = "_"))
-Spp <- sapply(aa, function(x) paste(x[8], sep = "_"))
-
-# Create distance matrix
-Dist <- dist.dna(lengthfilt, pairwise.deletion = TRUE)
-
-# Nearest neighbour metric
-nn <- tibble(
-  query = labels(lengthfilt),
-  Spp = Spp,
-  result = nearNeighbour(Dist, Spp),
-  nn_spp = enframe(nearNeighbour(Dist, Spp, names = TRUE)) %>% pull(value))
-  
-# Closematch metric
-cm <- tibble(
-  query = labels(lengthfilt),
-  Spp = Spp,
-  result99 = bestCloseMatch(Dist, Spp, threshold = 0.01),
-  result98 = bestCloseMatch(Dist, Spp, threshold = 0.02),
-  result97 = bestCloseMatch(Dist, Spp, threshold = 0.03),
-  result96 = bestCloseMatch(Dist, Spp, threshold = 0.04),
-  result95 = bestCloseMatch(Dist, Spp, threshold = 0.05))
-
-cm_names <- tibble(
-  query = labels(lengthfilt),
-  Spp = Spp,
-  names99 = bestCloseMatch(Dist, Spp, names = TRUE, threshold = 0.01),
-  names98 = bestCloseMatch(Dist, Spp, names = TRUE, threshold = 0.02),
-  names97 = bestCloseMatch(Dist, Spp, names = TRUE, threshold = 0.03),
-  names96 = bestCloseMatch(Dist, Spp, names = TRUE, threshold = 0.04),
-  names95 = bestCloseMatch(Dist, Spp, names = TRUE, threshold = 0.05)) 
-
-cm_names <- cm_names %>%
-  mutate(names99 = map(names99, ~set_names(., paste0("closematch99_",seq_along(.))))) %>%
-  mutate(names98 = map(names98, ~set_names(., paste0("closematch98_",seq_along(.))))) %>%
-  mutate(names97 = map(names97, ~set_names(., paste0("closematch97_",seq_along(.))))) %>%
-  mutate(names96 = map(names96, ~set_names(., paste0("closematch96_",seq_along(.))))) %>%
-  mutate(names95 = map(names95, ~set_names(., paste0("closematch95_",seq_along(.))))) %>%     
-  unnest_wider(names99) %>%     
-  unnest_wider(names98) %>%     
-  unnest_wider(names97) %>%     
-  unnest_wider(names96) %>%     
-  unnest_wider(names95)
-
-closematch <- dplyr::left_join(cm, cm_names, by=c("query", "Spp"))
-
-# Monophyly metric
-Tr <- nj(Dist)
-maxInt <- max(Tr$edge.length[Tr$edge[, 2] > length(Tr$tip.label)])
-nodeRoot <- Tr$edge[which(Tr$edge.length == maxInt), 2]
-TrRoot <- root(Tr, node = nodeRoot, resolve.root = TRUE)
-TrRoot$tip.label <- Spp
-mono <- monophyly(TrRoot, Spp, singletonsMono = TRUE)
-
-out <-  tibble(
-  primer = job_name,
-  Spp = Spp,
-  query = dimnames(lengthfilt)[[1]],
-  mono=mono[match(Spp, unique(Spp))]
-) %>%
-  left_join(nn, by=c("query", "Spp")) %>%
-  left_join(closematch, by=c("query", "Spp")) 
-
-out %>% 
-  write_csv(paste0(job_name,"_spider.csv"))
-```
-
-## SLURM job submit
-
-Index jobs
-```{bash generate job index}
-#!/bin/bash
-/usr/bin/ls -d $PWD/* | sed -e '1p' -e '/.fa.gz/!d' | sort -u > sequence_index.txt
-```
+## Pairwise ID Success
 
 Submit array
 
 njobs=$(cat sequence_index.txt | wc -l)
 sbatch --array=1-808 submit_clustering.slurm
 
-
-```{bash job script}
-#!/bin/bash
-#SBATCH --job-name=id_metrics       
-#SBATCH --ntasks=1 
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=40GB
-#SBATCH --time=240:00:00
-#SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
-#SBATCH --mail-type=ALL
-#SBATCH --account=pathogens
-#SBATCH --export=none
-
-
-#Check if job is launched as array
-if [ -z "$SLURM_ARRAY_TASK_COUNT" ]; then 
-  echo SLURM_ARRAY_TASK_COUNT unset; 
-  echo You must launch this job as an array
-  echo see https://slurm.schedmd.com/job_array.html
-  echo for info on how to run arrays
-  exit 1
-fi
-
-Index=sequence_index.txt
-
-# Make sure that sequence index file is there before we do anything
-if [[ ! -f "${Index}" ]]; then
-  echo "Error sequence index file ${Index} does not exist"
-  exit 1
-fi
-
-#Gather info on our samples
-FullSampleName=$(sed -n ${SLURM_ARRAY_TASK_ID}p ${Index})
-SequencePath=$(dirname ${FullSampleName})
-Sample=$(basename ${FullSampleName} .fa.gz)
-
-echo ${FullSampleName}
-echo ${Sample}
-
-# Double check that array index is valid
-if [[ ! -f "${FullSampleName}" ]]; then
-  echo "Error array index doesnt match up with index file"
-  echo "Array index is  ${SLURM_ARRAY_TASK_ID}"
-  exit 1
-fi
-
-# Goto tmp to do our working out
-echo $TMPDIR
-cd $TMPDIR
-tmp_dir=$(mktemp -d -t ci-XXXXXXXXXX)
-cd $tmp_dir
-
-#Copy data files, database and decompress all
-cp ${FullSampleName} .
-cp ${SequencePath}/clustering.R .
-#cp ${SequencePath}/spider.R .
-cp -r ${SequencePath}/ott3.2 .
-pwd
-ls
-
-#Decompress all
-pigz -p8 -d ./*.gz
-
-#Load modules
-module purge
-module load R
-
-#Run clustering R script and send sample name to it
-Rscript clustering.R $Sample.fa
-
-#Run spider R script and send sample name to it
-#Rscript spider.R $Sample.fa.gz
-
-# Output useful job stats
-/usr/local/bin/showJobStats.scr | gzip > ${Sample}-jobstats.gz
-
-#Make a directory call ${Sample} and cp all gz files into that directory
-mkdir output
-mkdir output/jobstats
-cp ./*_clustering.csv output
-cp ./*-jobstats.gz output/jobstats
-
-#Put all output files back where we started
-cp -r output ${SLURM_SUBMIT_DIR}
-rm -rf $tmp_dir
-
-```
- 
- 
- 
-### SUMACLUST clustering
-```{bash sumaclust}
-#!/bin/bash
-#SBATCH --job-name=sumaclust       
-#SBATCH --ntasks=1 
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=20GB
-#SBATCH --time=240:00:00
-#SBATCH --mail-user=alexander.piper@agriculture.vic.gov.au
-#SBATCH --mail-type=ALL
-#SBATCH --account=pathogens
-#SBATCH --export=none
-
-
-#Check if job is launched as array
-if [ -z "$SLURM_ARRAY_TASK_COUNT" ]; then 
-  echo SLURM_ARRAY_TASK_COUNT unset; 
-  echo You must launch this job as an array
-  echo see https://slurm.schedmd.com/job_array.html
-  echo for info on how to run arrays
-  exit 1
-fi
-
-Index=sequence_index.txt
-
-# Make sure that sequence index file is there before we do anything
-if [[ ! -f "${Index}" ]]; then
-  echo "Error sequence index file ${Index} does not exist"
-  exit 1
-fi
-
-#Gather info on our samples
-FullSampleName=$(sed -n ${SLURM_ARRAY_TASK_ID}p ${Index})
-SequencePath=$(dirname ${FullSampleName})
-Sample=$(basename ${FullSampleName} .fa.gz)
-
-echo ${FullSampleName}
-echo ${Sample}
-
-# Double check that array index is valid
-if [[ ! -f "${FullSampleName}" ]]; then
-  echo "Error array index doesnt match up with index file"
-  echo "Array index is  ${SLURM_ARRAY_TASK_ID}"
-  exit 1
-fi
-
-# Goto tmp to do our working out
-echo $TMPDIR
-cd $TMPDIR
-tmp_dir=$(mktemp -d -t ci-XXXXXXXXXX)
-cd $tmp_dir
-
-#Copy data files, database and decompress all
-cp ${FullSampleName} .
-#cp ${SequencePath}/spider.R .
-pwd
-ls
-
-#Decompress all
-pigz -p8 -d ./*.gz
-
-#Load modules
-module purge
-module load R
-
-# Try clustal0
-
-
-# Run sumaclust for each ID level
-
-#100%
-/home/ap0y/sumaclust_v1.0.31/sumaclust -p 8 -t 1 $Sample.fa > $Sample.clustered_100.fa 
-cat $Sample.clustered_100.fa  | grep '>' > $Sample.clustered_100.txt
-
-#99%
-/home/ap0y/sumaclust_v1.0.31/sumaclust -p 8 -t 0.99 $Sample.fa > $Sample.clustered_99.fa 
-cat $Sample.clustered_99.fa  | grep '>' > $Sample.clustered_99.txt
-
-#98%
-/home/ap0y/sumaclust_v1.0.31/sumaclust -p 8 -t 1 $Sample.fa > $Sample.clustered_98.fa 
-cat $Sample.clustered_98.fa  | grep '>' > $Sample.clustered_98.txt
-
-#97%
-/home/ap0y/sumaclust_v1.0.31/sumaclust -p 8 -t 1 $Sample.fa > $Sample.clustered_97.fa 
-cat $Sample.clustered_97.fa  | grep '>' > $Sample.clustered_97.txt
-
-#96%
-/home/ap0y/sumaclust_v1.0.31/sumaclust -p 8 -t 1 $Sample.fa > $Sample.clustered_96.fa 
-cat $Sample.clustered_96.fa  | grep '>' > $Sample.clustered_96.txt
-
-#95%
-/home/ap0y/sumaclust_v1.0.31/sumaclust -p 8 -t 1 $Sample.fa > $Sample.clustered_95.fa 
-cat $Sample.clustered_95.fa  | grep '>' > $Sample.clustered_95.txt
-
-# Zip all files
-pigz -p8 *.txt
-
-# Output useful job stats
-/usr/local/bin/showJobStats.scr | gzip > ${Sample}-jobstats.gz
-
-#Make a directory call ${Sample} and cp all gz files into that directory
-mkdir output
-mkdir output/jobstats
-cp ./*.txt.gz output
-cp ./*-jobstats.gz output/jobstats
-
-#Put all output files back where we started
-cp -r output ${SLURM_SUBMIT_DIR}
-rm -rf $tmp_dir
-
-```
-
-
-# USEARCH
-
-## Index jobs
+### Index jobs
 ```{bash generate job index}
 #!/bin/bash
 /usr/bin/ls -d $PWD/* | sed -e '1p' -e '/.fa.gz/!d' | sort -u > sequence_index.txt
@@ -1301,7 +889,7 @@ rm -rf $tmp_dir
 
 sbatch --array=1-807 usearch_distmat.slurm
 
-### Usearch distance matrix
+### Creat USEARCH distance matrix
 
 ```{bash usearch}
 #!/bin/bash
@@ -1394,7 +982,7 @@ rm -rf $tmp_dir
 From this distance matrix...
 Can calculate the probability of lowest common ancestor at different similarities
 
-## USEARCH MIXED
+## Get mixed clusters
 
 ```{r analyse uclust}
 # Summarise number of mixed clusters that contain pests at %
@@ -1490,9 +1078,85 @@ joint <- mixed_clusters %>%
   tidyr::separate(source, into=c("Fname", "Rname"), sep="_", extra="merge")
 vroom::vroom_write(joint, "primer_evaluation/amplicons/mixed_clusters_summary.csv", delim=",")
 
+
+## Plot
+
+
+# Count reads
+joint <- vroom::vroom("primer_evaluation/amplicons/mixed_clusters_summary.csv", delim=",") %>%
+  left_join(combos) %>% 
+  mutate(success =  (spp_amplified - mixed)/spp_amplified,
+         threshold = 1-dist) %>%
+  dplyr::select(Fname,Rname, dist, threshold, mixed,type,seqs_amplified,spp_amplified,amplicon,combos,success) 
+
+# Look at log ratio to the folmer region
+ref <- joint %>% 
+  dplyr::filter(Fname == "LCO1490"&  Rname=="HCO2198") %>% 
+              select(ref_success = success,
+                     dist, threshold, type)
+
+id_success <- joint %>% 
+  dplyr::filter(threshold %in% c(0.97,0.98,0.99, 1))%>%
+  left_join(ref) %>%
+  mutate(success_alr = log(success/ref_success),
+         highlight = case_when(
+           combos %in% c("fwhF2_fwhR2n", "fwhF2_HexCOIR4") ~ TRUE,
+           TRUE ~ FALSE
+         ))
+
+gg.id <- id_success %>%
+  ggplot(aes(x=amplicon, y=success_alr, colour=combos))+
+  geom_jitter(width = 5, height=0, alpha=0.5)+
+  geom_smooth(colour="black")+
+  geom_vline(xintercept = 220, colour="grey80") +
+  geom_vline(xintercept = 420, colour="grey80")+
+  geom_hline(yintercept=0, colour="grey80")+
+  base_theme +
+  geom_rangeframe(colour="black") + 
+  facet_grid(threshold~type) +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        legend.position = "none") + 
+  labs(x="Amplicon length",
+       y="Log(sucessful ID / LCO-HCO)") 
+
+
+gg.id
+
+# Write out id
+pdf(file="fig/id_success.pdf", width = 8, height = 11 , paper="a4")
+  plot(gg.id)
+try(dev.off(), silent=TRUE)
+
+#library(plotly)
+ggplotly(gg.id)
+
+library(tidytext)
+
+# Barchart
+id_success %>%
+  filter(threshold=="0.97") %>%
+ # group_by(threshold,type) %>%
+  #top_frac(.1, success_alr) %>% 
+  #ungroup() %>%
+  ggplot(aes(x=tidytext::reorder_within(combos, success_alr, threshold), y=success_alr, fill=combos))+
+  geom_col() + 
+  facet_grid(threshold~type, drop=TRUE, scales="free") +
+  scale_x_reordered() +
+  coord_flip() +
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+        legend.position = "none")+
+  base_theme +
+  geom_rangeframe(colour="black")+
+  labs(x="Amplicon length",
+       y="Log(sucessful ID / LCO-HCO)")
+
+# Can i take the mean of the different threshold values?
+
+
 ```
 
-## USEARCH LCA PROBS
+## Get LCA Probabilities
+
 ```{r lca probs}
 ## Get LCA probs
 library(furrr)
@@ -1503,8 +1167,9 @@ ranks = c("kingdom",
     "genus", "species")
 
 lca_probs <- fs::dir_ls(path="primer_evaluation/amplicons/uclust_output/", glob = "*.txt.gz") %>%
-  #furrr::future_map(function(x){
-  purrr::map(function(x){
+  furrr::future_map(function(x){
+  #purrr::map(function(x){
+    print(x)
   df <- vroom::vroom(x, delim="\t", col_names = c("acc1", "acc2", "dist")) %>%
     dplyr::mutate(acc1 = acc1 %>%
                     str_remove(";$"),
@@ -1529,7 +1194,8 @@ lca_probs <- fs::dir_ls(path="primer_evaluation/amplicons/uclust_output/", glob 
           genus = case_when(genus_1 == genus_2 ~ TRUE, TRUE ~ FALSE),
           species = case_when(species_1 == species_2 ~ TRUE, TRUE ~ FALSE),
           ) %>%
-        dplyr::select(rev(ranks))
+        dplyr::select(rev(ranks)) %>%
+        as.data.frame()
         keepvec <- apply(logidf, 1, which.max)
         rows <- seq(as.data.frame(logidf)[, 1])
         selector <- matrix(ncol = 2, c(rows, keepvec))
@@ -1561,141 +1227,9 @@ lca_probs %>%
 
 ``` 
  
- # Clustering - need to write out results as RDS, or can i do it in a way that doesnt require masses of NA's
- Actually all the mixed should be in the cluster ID anyway?
- # Write out summaries as CSV?
-  
-  Only go from 1 to 0.95 as well?
-  
-  This function requires a bit of a rewrite before running again
-  Need an option to just return all mixed clusters, pivoting longer?
-  
-  Options: return = suggested, or return=all
-
-## Figure 4
-
-```{r figure 4}
-# Summarise number of mixed clusters that contain pests at %
-pestlist <- read_csv("primer_evaluation/pestlist.csv") 
-
-# Load primers
-primers <- read_csv("primer_evaluation/primer_candidates.csv") %>%
-  mutate(seq = str_replace_all(seq, "I","N")) 
-
-# Get all possible primer combinations
-combos <- expand_grid(primers %>% filter(strand=="F") %>% pull(seq),
-                      primers %>% filter(strand=="R") %>% pull(seq)
-                      ) %>%
-  mutate_if(is.factor, as.character)%>%
-  unique() %>%
-  magrittr::set_colnames(c("Fseq", "Rseq")) %>%
-  left_join(primers %>% filter(strand=="F") %>% rename_all(. %>% paste0("F",.)), by="Fseq") %>%
-  left_join(primers %>% filter(strand=="R") %>% rename_all(. %>% paste0("R",.)), by="Rseq") %>%
-  mutate(amplicon = Rstart - Fend) %>%
-  filter( amplicon > 100)
-
-# Check missing
-complete <- list.files(path="primer_evaluation/amplicons/output/", pattern = "clustering.csv") %>%
-  basename %>%
-  str_remove("_clustering.csv")
-
-setdiff(paste0(combos$Fname, "_",  combos$Rname), complete)
-
-# read in mixed clusters
-
-# need to summarise for species, and for seqs
-library(furrr)
-plan(multiprocess)
-mixed_clusters <- fs::dir_ls(path="primer_evaluation/amplicons/output/", glob = "*clustering.csv")%>%
-  furrr::future_map(function(x){
-  #purrr::map(function(x){
-    df <-  vroom::vroom(x, delim=",")
-    all <- df %>%
-      dplyr::group_by(threshold) %>% 
-      dplyr::summarise(mixed=n_distinct(tax_name)) %>%
-      dplyr::mutate(type="all")
-    pests <- df %>%
-      dplyr::group_by(threshold) %>% 
-      filter(tax_name %in% pestlist$Species) %>%
-      dplyr::summarise(mixed=n_distinct(tax_name)) %>%
-      dplyr::mutate(type="pest")
-    out <- bind_rows(all, pests)
-    return(out)
-    }) %>%  
-    #},.progress = TRUE) %>%
-  bind_rows(.id="source") %>%
-  mutate(source = str_remove(basename(source), "_clustering.csv"))
-
-amplified <- fs::dir_ls(path="primer_evaluation/amplicons/", glob = "*.fa.gz") %>%
-   #purrr::map(function(x){
-    furrr::future_map(function(x){
-     df <- fasta.index(x) %>%
-        mutate(species = desc %>% 
-                 str_remove("(?:[^;]*;){7}") %>% #match 7th ;
-                 str_remove(";$")) # match last ;
-     all <- df %>%
-      dplyr::group_by(filepath) %>%
-      dplyr::summarise(seqs_amplified = n(), spp_amplified = n_distinct(species)) %>%
-      dplyr::mutate(type="all")
-     pests <- df %>%
-      dplyr::group_by(filepath) %>%
-      dplyr::filter(species %in% pestlist$Species) %>%
-      dplyr::summarise(seqs_amplified = n(), spp_amplified = n_distinct(species)) %>%
-      dplyr::mutate(type="pest")
-     out <- bind_rows(all, pests)
-    return(out)
-   }) %>%
-  bind_rows() %>%
-  mutate(source = str_remove(basename(filepath), ".fa.gz")) %>%
-  dplyr::select(-filepath)
-
-joint <- mixed_clusters %>%
-  left_join(amplified) %>%
-  mutate(combos = source) %>% 
-  tidyr::separate(source, into=c("Fname", "Rname"), sep="_", extra="merge")
-vroom::vroom_write(joint, "primer_evaluation/amplicons/mixed_clusters_summary.csv", delim=",")
-
-
-#Test bad mixed
-df <- vroom::vroom("primer_evaluation/amplicons/output/LCO1490_230-R_clustering.csv") 
-
-#%>%
-      dplyr::group_by(threshold) %>% 
-      dplyr::summarise(mixed=n_distinct(tax_name)) %>%
-      dplyr::mutate(type="all")
-
-
-# Count reads
-joint <- vroom::vroom("primer_evaluation/amplicons/mixed_clusters_summary.csv", delim=",") %>%
-  left_join(combos) %>% 
-  mutate(success =  (spp_amplified - mixed)/spp_amplified) %>%
-  dplyr::select(Fname,Rname, threshold,mixed,type,seqs_amplified,spp_amplified,amplicon,combos,success)
-
-# Summarise identification sucess by length on 2d scatter
-gg.id <- joint %>% 
-  dplyr::filter(threshold %in% c(0.97, 1)) %>%
-  ggplot(aes(x=amplicon, y=success, colour=combos))+
-  geom_jitter(width = 5, height=0.025)+
-  #geom_smooth()+
-  #geom_text(aes(label=combos), check_overlap = TRUE) +
-  geom_vline(xintercept = 220) +
-  geom_vline(xintercept = 420)+
-  #annotate("text", x = 220, y = 1, label = "2x150 (NovaSeq)")+
-  #annotate("text", x = 420, y = 1, label = "2x250 (MiSeq)")+
-  #scale_color_gradient(low="firebrick", high="darkslateblue") +
-  facet_wrap(threshold~type, scales="free") +
-  theme(axis.text.x = element_text(angle=45, hjust=1),
-        legend.position = "none") + 
-  labs(x="Amplicon length", y="Proportion sucessfully identified")
-
-gg.id
-
-library(plotly)
-ggplotly(gg.id)
-```
-
 
 # Off-target amplification
+
 First identify all sequences that have homology to both forward and reverse primers, with the hit sequences placed so that they can actually form a PCR product. 
 First perform a blast search for each primer individually against NT database (or can you do a kmer search with BBDUK?)
 Get accession numbers, get taxonomy for accession numbers
