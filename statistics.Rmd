@@ -1,5 +1,8 @@
 ---
-title: "Statistics"
+title: "Drosophila Metabarcoding"
+title: "Statistical analysis"
+author: "Alexander Piper"
+date: "`r Sys.Date()`"
 output: html_notebook
 editor_options: 
   chunk_output_type: console
@@ -32,7 +35,6 @@ Part 3 - Comparison
                     "ggtree", 
                     "castor", 
                     "picante",
-                    "skimr",
                     "devtools")
 .bioc_packages <- c("dada2",
                     "phyloseq", 
@@ -70,174 +72,24 @@ library(metacal)
 
 #Source internal functions
 source('R/helper_functions.R')
-options(stringsAsFactors = FALSE)
-```
 
-
-## Define themes
-
-```{R theme}
+# Define themes
 library(ggthemes)
-base_theme <- theme_tufte() + 
+base_theme <- theme_minimal()+
     theme(
-        text = element_text(size=9, family = ""),
-        strip.text = element_text(size=9, family = ""),
-        # axis.text = element_text(size=8, family = ""),
-        legend.position = "none"
-        )
+      strip.background = element_blank(),
+      #strip.background = element_rect(colour = "black", fill = "lightgray"),
+      strip.text = element_text(size=9, family = ""),
+      axis.text.x=element_text(angle=45,hjust=1,vjust=1),
+      axis.title.x=element_blank(),
+      plot.background = element_blank(),
+      text = element_text(size=9, family = ""),
+      axis.text = element_text(size=8, family = ""),
+      legend.position = "none",
+      panel.border = element_rect(colour = "black", fill=NA, size=0.5),
+      panel.grid = element_line(size = rel(0.5))
+      )
 
-# Would be nice to modify the strip labels a bit more
-```
-## Make Phyloseq object
-
-```{r create PS, eval = FALSE}
-seqtab <- readRDS("output/rds/seqtab_final.rds")
-
-# Add FCID to run 1 samples
-rownames(seqtab)[!str_detect(rownames(seqtab), "Rep") ] <- paste0("CB3DR_", rownames(seqtab)[!str_detect(rownames(seqtab), "Rep") ])
-
-# Add FCID to run2 samples
-rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
-                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
-                   !str_detect(rownames(seqtab), "DL|CL")] <- paste0("CK3HD_", rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
-                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
-                   !str_detect(rownames(seqtab), "DL|CL")])
-
-	
-# Add FCID to run 3 samples
-rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
-                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
-                   str_detect(rownames(seqtab), "DL|CL")] <- paste0("CJKFJ_", rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
-                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
-                   str_detect(rownames(seqtab), "DL|CL")])
-
-#Reformat sample IDs
-rownames(seqtab)  <- rownames(seqtab) %>%
-  str_remove("\\..*$") %>%
-  str_replace("\\_S[0-9].*\\_...", replacement="_") %>%
-  str_replace("_$", "_1") %>%
-  str_replace("1in10", "1:10")
-
-tax <- readRDS("output/rds/tax_IdTaxaExact.rds") 
-seqs <- DNAStringSet(colnames(seqtab))
-names(seqs) <- seqs
-phy <- readRDS("output/rds/phytree.rds")$tree
-
-
-##### Rename problematic samples
-#Could do this with the new dplyr functionality
-rownames(seqtab)  <- rownames(seqtab) %>%
- str_replace_all("D250M1-", "D250M4REP-") %>% # Works
- str_replace_all("D250M4-", "D250M2REP-") %>% # Works
- str_replace_all("D250M5-", "D250M3REP-") %>% #FAILED library
- str_replace_all("D250M3-", "D250M1REP-") %>% #FP suzukii - low reads
- str_replace_all("D250M2-", "D250M5REP-") %>% #Works
- str_replace_all("D500M1-", "D500M4REP-") %>% #Works 
- str_replace_all("D500M4-", "D500M1REP-") %>% #FP Suzukii
- str_replace_all("D500M5-", "D500M2REP-") %>% #Works
- str_replace_all("D500M3-", "D500M3REP-") %>% #Works but low reads for Suz + Biarmipes 
- str_replace_all("D500M2-", "D500M5REP-") %>% #Works
- str_replace_all("D1000M1-", "D1000M3REP-") %>% #Works
- str_replace_all("D1000M4-", "D1000M1REP-") %>% #Works
- str_replace_all("D1000M5-", "D1000M2REP-") %>% #Works
- str_replace_all("D1000M3-", "D1000M5REP-") %>% #Works
- str_replace_all("D1000M2-", "D1000M4REP-") %>% #Works
- str_replace_all("CM10-", "CM9REP-") %>%
- str_replace_all("CM11-", "CM10REP-") %>%
- str_replace_all("CM9-", "CM11REP-") %>%
- str_replace_all("CML2-", "CML6REP-")%>%
- str_replace_all("CML3-", "CML2REP-")%>%
- str_replace_all("CML4-", "CML3REP-")%>%
- str_replace_all("CML5-", "CML4REP-")%>%
- str_replace_all("CML6-", "CML5REP-")%>%
- str_replace_all("CT5-", "CT4REP-")%>%
- str_replace_all("CT4-", "CT5REP-") %>%
-str_replace_all("REP", "")
-
-#Load sample information
-## ---- samdat ----
-samdf <- read.csv("sample_data/sample_info.csv", header=TRUE) %>% 
-  janitor::clean_names() %>%
-  mutate(sample_id = case_when(
-    fcid=="HLVKYDMXX" ~ paste0(sample_name, "_", replicate),
-    !fcid=="HLVKYDMXX" ~ paste0(fcid, "_", sample_name, "_", replicate)
-  ))  %>%
-  filter(!(index=="ATCGATCG" & index2=="ATCACACG"), #CT11-ex1 duplicated
-         !(index=="TCGCTGTT" & index2=="ACTCCATC") # CT12-ex1 duplicated
-         ) %>%
-  filter(!fcid=="CK3HD") %>%
-  mutate(type = case_when(
-    str_detect(sample_id, "D[0-9][0-9][0-9]M|D[0-9][0-9][0-9][0-9]M|DM[0-9]")  ~ "DrosMock",
-    str_detect(sample_id, "SPD")  ~ "SPD",
-    str_detect(sample_id, "ACV")  ~ "ACV",
-    str_detect(sample_id, "DC")  ~ "DC",
-    str_detect(sample_id, "Sach")  ~ "Sachet",
-    str_detect(sample_id, "FF")  ~ "FF",
-    str_detect(sample_id, "NTC")  ~ "NTC",
-    str_detect(sample_id, "DLarv")  ~ "DrosLarv",
-    str_detect(sample_id, "POS|SynMock")  ~ "POS",
-    str_detect(sample_id, "extblank|BLANK")  ~ "Extblank",
-    str_detect(sample_id, "pcrblank")  ~ "PCRblank",
-    str_detect(sample_id, "CT")  ~ "CarpTrap",
-    str_detect(sample_id, "CM[0-9]")  ~ "CarpMock",
-    str_detect(sample_id, "CML[0-9]")  ~ "CarpLarval"
-  )) %>%
-  mutate(target_subfragment = case_when(
-    str_detect(fprimer, "GGDACWGGWTGAACWGTWTAYCCHCC") & str_detect(rprimer, "GTRATWGCHCCDGCTARWACWGG") ~ "fwhF2-fwhR2n",
-    str_detect(fprimer, "ACWGGWTGRACWGTNTAYCC") & str_detect(rprimer, "ARYATDGTRATDGCHCCDGC") ~ "BF1-BR1",
-    str_detect(fprimer, "GGDRCWGGWTGAACWGTWTAYCCNCC") & str_detect(rprimer, "TATDGTRATDGCHCCNGC") ~ "SauronS878-HexCOIR4",
-    str_detect(fprimer, "GGDACWGGWTGAACWGTWTAYCCHCC") & str_detect(rprimer, "TATDGTRATDGCHCCNGC") ~ "fwhF2-HexCOIR4",
-  )) %>%
-  magrittr::set_rownames(.$sample_id)
-
-# Will probably need to rename the seqtabs and append the flowcell number onto the samples before they are merged
-
-## ---- phyloseq ----
-ps <- phyloseq(tax_table(tax), 
-               sample_data(samdf),
-               otu_table(seqtab, taxa_are_rows = FALSE),
-               phy_tree(phy),
-               refseq(seqs))
-
-if(nrow(seqtab) > nrow(sample_data(ps))){warning("Warning: All samples not included in phyloseq object, check sample names match the sample metadata")}
-
-rownames(samdf)[which(!rownames(sample_data(ps))  %in% rownames(samdf))]
-rownames(sample_data(ps))[which(!rownames(samdf)  %in% rownames(sample_data(ps)))]
-
-# Rename all taxa
-taxa_names(ps) <- paste0("SV", seq(ntaxa(ps)),"-",tax_table(ps)[,7])
-
-saveRDS(ps, "output/rds/ps_idtaxaExact.rds") 
-
-#Rename synthetic orders
-tax_table(ps)[,2][which(str_detect(tax_table(ps)[,7], "Synthetic"))] <- "Arthropoda"
-
-#Subset to Drosophila (Remove carpophilus)
-ps <- ps %>%
-  subset_samples(!str_detect(sample_name, "CM[0-9]|CT[0-9]|CML[0-9]")
-  ) %>%
-  subset_taxa(Phylum == "Arthropoda") %>%
-  filter_taxa( function(x) mean(x) > 0, TRUE) 
-dir.create("output/csv")
-dir.create("output/csv/unfiltered/")
-
-##Export raw csv
-export <- speedyseq::psmelt(ps) %>%
-  filter(Abundance > 0)
-write.csv(export, file = "output/csv/rawdata.csv")
-
-#Summary export
-seqateurs::summarise_taxa(ps, "Species", "sample_name") %>%
-  filter(!str_detect(sample_name, "NTC")) %>%
-  spread(key="sample_name", value="totalRA") %>%
-  write.csv(file = "output/csv/unfiltered/spp_sum.csv")
-
-seqateurs::summarise_taxa(ps, "Genus", "sample_name") %>%
-  spread(key="sample_name", value="totalRA") %>%
-  write.csv(file = "output/csv/unfiltered/gen_sum.csv")
-
-##Output fasta of all ASV's - Name each one by abundance + taxonomic assignment
-seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta")
 ```
 
 
@@ -335,12 +187,14 @@ gg.prev <- prevdf %>%
   ggplot(aes(x=abundance, y=prevalence / nsamples(ps), colour=Genus)) +
   geom_point(size = 3, alpha = 0.7) +
   scale_x_log10() +
-  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
   facet_wrap(~Order) +
   base_theme+
-  geom_rangeframe(colour="black")+
   theme(legend.position="none") +
-  ggtitle("Phylum Prevalence in All Samples\nColored by Order")
+  labs(
+    x = "Total Abundance",
+    y = "Prevalence [Frac. Samples]",
+    title = "Prevalence of orders across dataset",
+    subtitle = "Colored by Genus")
 
 gg.prev
 
@@ -348,26 +202,6 @@ pdf(file="fig/prevalence.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.prev)
 try(dev.off(), silent=TRUE)
 ```
-
-## Taxon filtering
-
-```{R taxon filt}
-get_taxa_unique(ps, "Order")
-
-ps # Check the number of taxa prior to removal
-ps0 <- ps %>%
-  subset_taxa(
-    Phylum == "Arthropoda" & 
-    Class %in% c("Insecta", "Arachnida", "Collembola")
-  )
-ps # Confirm that the taxa were removed
-get_taxa_unique(ps0, "Phylum")
-get_taxa_unique(ps0, "Class")
-get_taxa_unique(ps0, "Order")
-```
-
-# Filter index switching
-
 
 # Comparison of 4 primers for detection and bias
 
@@ -507,7 +341,6 @@ gg.pca
 
 ## Effect of primer on bias
 
-
 ```{r Drosophila bias}
 # Merge replicates
 ps.merged <- ps0 %>%
@@ -515,6 +348,7 @@ ps.merged <- ps0 %>%
 
 #This loses the sample metadata - Need to add it agian
 sample_data(ps.merged) <- sample_data(ps0) %>%
+  as("data.frame") %>%
   filter(!duplicated(sample_name)) %>%
   magrittr::set_rownames(.$sample_name)
 
@@ -673,7 +507,8 @@ preds %>%
 How do the primers affect its probability of detection (presence/absence). We used a generalized linear mixed effects model of presence/absense as a function of primer
 primer. To account for the paired design (where both types of samples were derived from the samen community), we defined Sample ID as a random effect.
 Since the response was binomial, we assumed a logit‐link and binomially distributed error
-```{r}
+
+```{r detection probability}
 # Use joint to get a table of expected/absent
 det_table <- joint %>% 
   filter(material_type=="DrosMock") %>%
@@ -729,89 +564,6 @@ Run 2 - see the differences in bias between replicates
 ```{R run2}
 
 
-```
-
-# Overlap between replicates
-
-Venn diagrams? - Heatmap of presence absense
-
-Species accumulation curve- adding more extraction reps, pcr reps, biological samples, sequence depth
-
-Want to show - Different extraction replicates adds more - but this is probably due to contamination
-PCR replicates doesnt add more
-
-# Merge technical replicates
-
-```{r merge replicates}
-# Merge replicates
-ps.merged <- ps0 %>%
-    merge_samples(group = "Sample_Name", fun="sum")
-
-#This loses the sample metadata - Need to add it agian
-sample_data(ps.merged) <- sample_data(ps0) %>%
-  filter(!duplicated(Sample_Name)) %>%
-  magrittr::set_rownames(.$Sample_Name)
-
-ps1 <- ps.merged
-```
-
-# Minimum read filtering
-
-```{r minimum reads}
-### Remove positive controls
-##check mocks
-ps1 <- subset_samples(ps1, !str_detect(sample_names(ps1), "POS"))
-#message((nsamples(ps1) - nsamples(ps1)), " outlier samples dropped")
-
-ps1 <- prune_samples(sample_sums(ps1) >0 , ps1)
-
-#Plot rarefaction curve
-out <- rarecurve(otu_table(ps1), step=10000)
-
-rare <- lapply(out, function(x){
-  b <- as.data.frame(x)
-  b <- data.frame(OTU = b[,1], count = rownames(b))
-  b$count <- as.numeric(gsub("N", "",  b$count))
-  return(b)
-})
-names(rare) <- sample_names(ps1)
-
-rare <- map_dfr(rare, function(x){
-  z <- data.frame(x)
-  return(z)
-}, .id = "sample")
-
-# threshold for read removal
-threshold = 1000
-
-gg.rare <- ggplot(data = rare)+
-  geom_line(aes(x = count, y = OTU, group=sample), alpha=0.5)+
-  geom_point(data = rare %>% 
-               group_by(sample) %>% 
-               top_n(1, count),
-             aes(x = count, y = OTU, colour=(count > threshold))) +
-  geom_label(data = rare %>% 
-               group_by(sample) %>% 
-               top_n(1, count),
-             aes(x = count, y = OTU,label=sample, colour=(count > threshold)),
-             hjust=-0.05)+
-  scale_x_continuous(labels =  scales::scientific_format()) +
-  geom_vline(xintercept=threshold, linetype="dashed") +
-  labs(colour = "Sample kept?") +
-  xlab("Sequence reads") +
-  ylab("Observed ASV's")
-
-gg.rare
-
-#Write out figure
-pdf(file="fig/rarefaction.pdf", width = 11, height = 8 , paper="a4r")
-  plot(gg.rare)
-try(dev.off(), silent=TRUE)
-
-#Remove all samples under the minimum read threshold 
-ps2 <- prune_samples(sample_sums(ps1)>=threshold, ps1) 
-ps2 <- filter_taxa(ps2, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
-message(nsamples(ps1) - nsamples(ps2), " Samples and ", ntaxa(ps1) - ntaxa(ps2), " taxa under read threshold Dropped")
 ```
 
 
@@ -1498,77 +1250,20 @@ ps.merged %>%
 
 ```
 
+# Phylogeny of trap catches
 
-```{R extra}
-## Mclarens  naive approach
-otutab <- otu_table(ps_bias)
-
-#Impute zeroes for compositional distances
-otutab_n0 <- otu_table(zCompositions::cmultRepl(otutab, method="CZM", output="p-counts"), taxa_are_rows = FALSE)
-
-sam <- sample_data(ps_bias) %>% as("data.frame") %>% as_tibble(rownames = "Sample")
-
-otu.clr <- otutab_n0 %>% transform_sample_counts(clr)
-fit.clr <- lm(otu.clr ~ 0 + Sample_Name, sam) #Sample_Name*target_subfragment - should be able to account for all priemrs if we add this to the model
-tb.clr <- broom::tidy(fit.clr, conf.int = TRUE) %>%
-    dplyr::rename(OTU = response)
-
-library(ggstance)
-tb.clr %>%
-    ggplot(aes(x = estimate, y = OTU)) +
-    geom_vline(xintercept = 0) +
-  geom_point() +
-    #geom_pointrangeh(aes(xmin = conf.low, xmax = conf.high)) +
-    scale_color_brewer(type = "qual", palette = 6) +
-    labs(title = "LFC in differential efficiency")
-
-#Test plot bias
-
-p <- ggplot(bias0, aes(Taxon, y=Gm_mean-1,fill=Taxon)) +
-    geom_bar(stat="identity")+
-    geom_errorbar(aes(ymin = (Gm_mean-1) - (Gm_se-1), ymax = (Gm_mean-1) + (Gm_se-1), width=0.2)) +
-    geom_point(aes(y=Gm_mean-1)) +
-    scale_fill_brewer(palette="Spectral")+
-    scale_colour_brewer(palette="Spectral") + 
-  theme_bw() +
-  theme(axis.text.x = element_text(angle=90,hjust=1,vjust=0)) + 
-  ylab("Bias") +
-  ggtitle(primers[i]) +
-  expand_limits(y = c(-2, 4)) +
-  theme(legend.position = "none")
- 
-plist[[i]] = p
- 
-#Get pairwise bias
-bias.pw <- bias %>%
-    compute_ratios(group_vars = c()) %>%
-    mutate(Pair = paste(Taxon.x, Taxon.y, sep = ":"))
-
-#Get pairwise boostrap estimates
-bootreps.pw <- bootreps %>%
-    compute_ratios(group_vars = ".id")
-summary.pw <- bootreps.pw %>%
-    group_by(Taxon.x, Taxon.y) %>%
-    summarize(Gm_mean = gm_mean(Bhat), Gm_se = gm_sd(Bhat))
-bias.pw0 <- left_join(bias.pw, summary.pw, by = c("Taxon.x", "Taxon.y"))
-
-#Plot bias estimates
-ratios <- joint %>%
-    compute_ratios %>%
-    mutate(Pair = paste(Taxon.x, Taxon.y, sep = ":")) %>%
-    filter(!is.nan(Error), Taxon.x < Taxon.y)
-ratios.pred <- bias.pw0 %>%
-    mutate(Pair = paste(Taxon.x, Taxon.y, sep = ":")) %>%
-    filter(Taxon.x < Taxon.y)
-
-gg.bias <- ggplot(ratios, aes(Pair, Error, color = Sample)) +
-    geom_hline(yintercept = 1, color = "grey") +
-    geom_pointrange(data = ratios.pred, aes(y = Bhat, 
-            ymin = Bhat / Gm_se^2, ymax = Bhat * Gm_se^2), 
-        color = "black") +
-    geom_jitter(width = 0.2) +
-    scale_y_log10() +
-    coord_flip()
+```{r Phylogeny}
 
 
 ```
+
+# Reproducability Receipt
+
+```{details, echo = FALSE, details.summary = 'Reproducability receipt'}
+# datetime
+Sys.time()
+#repository
+git2r::repository()
+sessioninfo::session_info()
+```
+
