@@ -1,8 +1,7 @@
 ---
 title: "Drosophila Metabarcoding"
-title: "Bioinformatics"
-author: "Alexander Piper"
-date: "`r Sys.Date()`"
+author: "A.M. Piper"
+date: "2019/04/05"
 output:
   
   html_document:
@@ -18,15 +17,23 @@ output:
 editor_options: 
   chunk_output_type: console
 ---
-# Setup & Packages 
+
+
+```{r setup, include=FALSE}
+# Knitr global setup - change eval to true to run code
+
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE, eval=FALSE, message=FALSE,error=FALSE,fig.show = "hold", fig.keep = "all")
+opts_knit$set(root.dir = 'C:/Users/ap0y/Dropbox/workprojects/PHD/Metabarcoding/Dros_metabarcoding')
+setwd('C:/Users/ap0y/Dropbox/workprojects/PHD/Metabarcoding/Dros_metabarcoding')
+opts_chunk$set(dev = 'png')
+```
+
+# Install and setup directories 
 
 This pipeline requires various R packages to be installed prior to running. These are obtained from CRAN, Bioconductor and Github. The taxreturn and seqateurs packageR package also provide wrappers around other software packages for QC. For convenience we will download and install these software in a new folder called “bin”
 
-```{r setup, include=TRUE}
-# Knitr global setup - change eval to true to run code
-library(knitr)
-knitr::opts_chunk$set(echo = TRUE, eval=FALSE, message=FALSE,error=FALSE,fig.show = "hold", fig.keep = "all")
-
+```{r install & Load packages} 
 #Set required packages
 .cran_packages <- c("ggplot2",
                     "gridExtra",
@@ -86,10 +93,10 @@ if(!dir.exists("output/csv")){dir.create("output/csv", recursive = TRUE)}
 if(!dir.exists("output/rds")){dir.create("output/rds", recursive = TRUE)}
 ```
 
+# Calculate index switch rate
 
-# Demultiplex libraries
-
-```{bash demultiplex }
+BASH:
+```{bash demultiplex 1 mismatch}
 ###BASH###
 #load module
 module load bcl2fastq2/2.20.0-foss-2018b
@@ -97,25 +104,23 @@ module load bcl2fastq2/2.20.0-foss-2018b
 #raise amount of available file handles
 ulimit -n 4000
 
-#Miseq Run CB3DR - Primer testing
+#Miseq Run 1 - Testing Primers
 bcl2fastq -p 12 --runfolder-dir /group/sequencing/190331_M03633_0310_000000000-CB3DR  \
 --output-dir /group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/run1_CB3DR \
 --sample-sheet /group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/run1_CB3DR/SampleSheet.csv \
 --no-lane-splitting --barcode-mismatches 0
 
-#Miseq Run CK3HD - Testing replicate tagged primers & SynMock
+#Miseq Run 2 - Testing replicate tagged primers & SynMock
 bcl2fastq -p 12 --runfolder-dir /group/sequencing/190628_M03633_0331_000000000-CK3HD  \
 --output-dir /group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/run2_CK3HD \
 --sample-sheet /group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/run2_CK3HD/SampleSheet.csv \
 --no-lane-splitting --barcode-mismatches 0
 
-#Miseq Run CJKFJ - Ladder spike ins
+#Miseq Run 3 - Ladder spike ins
 bcl2fastq -p 12 --runfolder-dir /group/sequencing/190722_M03633_0336_000000000-CJKFJ/ \
 --output-dir /group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/run3_CJKFJ \
 --sample-sheet /group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/run3_CJKFJ/SampleSheet_CJKFJ.csv \
 --no-lane-splitting --barcode-mismatches 0
-
-#Novaseq Run HLVKYDMXX - Came already demultiplexed
 ```
 
 ## Set analysis parameters and create sample sheet
@@ -199,9 +204,7 @@ write_csv(samdf, "sample_data/Sample_info.csv")
 
 # Quality checks:
 
-We will conduct 2 quality checks here
-* Check of the entire sequence run quality
-* Sample level check using fastqc
+We will conduct 3 quality checks. Firstly a check of the entire sequence run, followed by a sample level quality check to identify potential issues with specific samples. And then a calculation of the index switching rate by summarising correctly assigned vs missasigned indices.
 
 ```{r QC}
 #Load sample sheet
@@ -261,7 +264,80 @@ for (i in 1:length(runs)){
   writeHtmlReport(qc.dir, overwrite = TRUE, gcType ="Genome",  quiet=FALSE) # requires PANDOC!
   #filesstrings::file.move(paste0(qc.dir, "ngsReports_Fastqc.html"), paste0("output/logs/", runs[i],"/"))
 }
+
+## Calculate index switching
+for (i in 1:length(runs)){
+  path <- paste0("data/", runs[i], "/")
+  qc.dir <- paste0("output/logs/", runs[i] )
+  run_data <- samdf %>%
+    filter(FCID == runs[i])
+
+  indices <- sort(list.files(path, pattern="_R1_", full.names = TRUE)) %>%
+    purrr::set_names() %>%
+    purrr::map(seqateurs::summarise_index) %>%
+    bind_rows(.id="Sample_Name")%>%
+    arrange(desc(Freq)) %>% 
+    dplyr::mutate(Sample_Name = Sample_Name %>% 
+                    str_replace(pattern = "^(.*)\\/", replacement="") %>%
+                    str_replace(pattern = "(?:.(?!_R1_))+$", replacement=""))
+
   
+  index <- indices %>% 
+  	filter(!str_detect(Sample_Name, "Undetermined")) %>%
+  	pull(index)
+  index2 <- indices %>% 
+  	filter(!str_detect(Sample_Name, "Undetermined")) %>%
+  	pull(index2)
+
+  ##Create mismatch, if demultiplexing was conducted with barcodemismatch
+  if(barcodemismatch > 0){
+    index <- purrr::map(index, create_mismatch, barcodemismatch) %>%
+      unlist()
+    index2 <- purrr::map(index2, create_mismatch, barcodemismatch) %>%
+      unlist()
+  } 
+  
+  #Create all possible switched combinations
+  combos <- unique(expand.grid(index, index2)) %>%
+    set_colnames(c("index", "index2"))
+
+  #get unused combinations resulting from index switching - NEED TO ENUMERATE MISMATCH
+  switched <- left_join(combos, indices, by=c("index", "index2")) %>%
+    drop_na()
+  
+  other_reads <- anti_join(indices,combos, by=c("index", "index2")) %>%
+    summarise(sum = sum(Freq)) %>%
+    pull(sum)
+  
+  ##Summary of index switching rate
+  exp_rate <- switched %>% 
+    filter(!str_detect(Sample_Name, "Undetermined"))
+  obs_rate <- switched %>% 
+    filter(str_detect(Sample_Name,"Undetermined"))
+  switch_rate <- (sum(obs_rate$Freq)/sum(exp_rate$Freq))
+    message(switch_rate)
+
+  #Plot switching
+  
+  gg.switch <- ggplot(data = switched, aes(x = index, y = index2), stat="identity") +
+    geom_tile(aes(fill = Freq),alpha=0.8)  + 
+    scale_fill_viridis_c(name="log10 Reads", begin=0.1, trans="log10")+
+    theme(axis.text.x = element_text(angle=90, hjust=1), 
+          plot.title=element_text(hjust = 0.5),
+          plot.subtitle =element_text(hjust = 0.5)#,
+          #legend.position = "none"
+          ) +
+    scale_x_discrete(limits=index)+
+    scale_y_discrete(limits=index2)+
+    labs(title= runs[i], subtitle = paste0(
+      "Total Reads: ", sum(indices$Freq),
+      ", Switch rate: ", sprintf("%1.4f%%", switch_rate*100),
+      ", other Reads: ", other_reads)) 
+  pdf(file=paste(qc.dir, "/", runs[i], "_switchrate.pdf", sep=""), width = 11, height = 8 , paper="a4r")
+      plot(gg.switch)
+  try(dev.off(), silent=TRUE)
+  
+  }
 ```
 
 
@@ -269,7 +345,7 @@ for (i in 1:length(runs)){
 
 DADA2 requires Non-biological nucleotides i.e. primers, adapters, linkers, etc to be removed. Prior to begining this workflow, samples were demultiplexed and illumina adapters were removed by the MiSeq software, however primer sequences still remain in the reads and must be removed prior to use with the DADA2 algorithm.
 
-In this study there were 2 amplicons of different size, and 3 differently tagged versions of these to indicate PCR replicates. To demultiplex these extra tags and trim these primers we will use the wrapper functions for the BBTools software contained in the seqateurs package
+In this study there were 2 amplicons of different size, and 3 different replicate primers of each. For this workflow we will be using the Kmer based adapter trimming software BBDuk (Part of BBTools package https://jgi.doe.gov/data-and-tools/bbtools/) to trim the primers from our raw data files.
 
 ## fwhF2-fwhR2n amplicon:
 
@@ -897,9 +973,64 @@ write.tree(fitGTR$tree, file="output/tree.nwk")
 ```
 
 
-# Output fate of reads through pipeline
+## Make phyloseq object
 
-```{r read fate}
+```{r make phyloseq}
+seqtab.final <- readRDS("output/rds/seqtab_final.rds")
+
+#Extract start of sequence names
+rownames(seqtab.final) <- str_replace(rownames(seqtab.final), pattern="_S.*$", replacement="")
+
+tax <- readRDS("output/rds/tax_IdTaxa.rds") 
+
+phy <- readRDS("output/rds/phytree.rds")$tree
+
+#Load sample information
+## ---- samdat ----
+samdf <- read.csv("sample_data/Sample_info.csv", header=TRUE) %>%
+  filter(!duplicated(Sample_ID)) %>%
+  magrittr::set_rownames(.$Sample_ID) 
+
+#Display samDF
+head(samdf)
+
+## ---- phyloseq ----
+ps <- phyloseq(tax_table(tax), sample_data(samdf),
+               otu_table(seqtab.final, taxa_are_rows = FALSE), phy_tree(phy))
+
+if(nrow(seqtab.final) > nrow(sample_data(ps))){
+  message("Warning: the following samples were not included in phyloseq object, check sample names match the sample metadata")
+  message(rownames(seqtab.final)[!rownames(seqtab.final) %in% sample_names(ps)])
+}
+
+saveRDS(ps, "output/rds/ps.rds") 
+
+dir.create("output/csv")
+dir.create("output/csv/unfiltered/")
+
+#Export raw csv
+export <- speedyseq::psmelt(ps) %>%
+  filter(Abundance > 0)
+write.csv(export, file = "output/csv/rawdata.csv")
+
+#Summary export
+library(data.table)
+summarise_taxa(ps, "Species", "Sample_ID") %>%
+  spread(key="Sample_ID", value="totalRA") %>%
+  write.csv(file = "output/csv/unfiltered/spp_sum.csv")
+
+summarise_taxa(ps, "Genus", "Sample_ID") %>%
+  spread(key="Sample_ID", value="totalRA") %>%
+  write.csv(file = "output/csv/unfiltered/gen_sum.csv")
+
+#Output fasta of all ASV's
+seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta", rank="Species")
+```
+
+
+# Output fate of reads
+
+```{r fate}
 #Fraction of reads assigned to each taxonomic rank
 sum_reads <- speedyseq::psmelt(ps) %>%
   gather("Rank","Name", rank_names(ps)) %>%
@@ -941,279 +1072,4 @@ pdf(paste0("output/logs/read_tracker.pdf"), width = 11, height = 8 , paper="a4r"
   gg.readtracker
 try(dev.off(), silent=TRUE)
 
-```
-
-## Make Phyloseq object
-
-```{r create PS, eval = FALSE}
-seqtab <- readRDS("output/rds/seqtab_final.rds")
-
-# Add FCID to run 1 samples
-rownames(seqtab)[!str_detect(rownames(seqtab), "Rep") ] <- paste0("CB3DR_", rownames(seqtab)[!str_detect(rownames(seqtab), "Rep") ])
-
-# Add FCID to run2 samples
-rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
-                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
-                   !str_detect(rownames(seqtab), "DL|CL")] <- paste0("CK3HD_", rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
-                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
-                   !str_detect(rownames(seqtab), "DL|CL")])
-
-	
-# Add FCID to run 3 samples
-rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
-                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
-                   str_detect(rownames(seqtab), "DL|CL")] <- paste0("CJKFJ_", rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
-                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
-                   str_detect(rownames(seqtab), "DL|CL")])
-
-#Reformat sample IDs
-rownames(seqtab)  <- rownames(seqtab) %>%
-  str_remove("\\..*$") %>%
-  str_replace("\\_S[0-9].*\\_...", replacement="_") %>%
-  str_replace("_$", "_1") %>%
-  str_replace("1in10", "1:10")
-
-tax <- readRDS("output/rds/tax_IdTaxaExact.rds") 
-seqs <- DNAStringSet(colnames(seqtab))
-names(seqs) <- seqs
-phy <- readRDS("output/rds/phytree.rds")$tree
-
-
-##### Rename problematic samples
-#Could do this with the new dplyr functionality
-rownames(seqtab)  <- rownames(seqtab) %>%
- str_replace_all("D250M1-", "D250M4REP-") %>% # Works
- str_replace_all("D250M4-", "D250M2REP-") %>% # Works
- str_replace_all("D250M5-", "D250M3REP-") %>% #FAILED library
- str_replace_all("D250M3-", "D250M1REP-") %>% #FP suzukii - low reads
- str_replace_all("D250M2-", "D250M5REP-") %>% #Works
- str_replace_all("D500M1-", "D500M4REP-") %>% #Works 
- str_replace_all("D500M4-", "D500M1REP-") %>% #FP Suzukii
- str_replace_all("D500M5-", "D500M2REP-") %>% #Works
- str_replace_all("D500M3-", "D500M3REP-") %>% #Works but low reads for Suz + Biarmipes 
- str_replace_all("D500M2-", "D500M5REP-") %>% #Works
- str_replace_all("D1000M1-", "D1000M3REP-") %>% #Works
- str_replace_all("D1000M4-", "D1000M1REP-") %>% #Works
- str_replace_all("D1000M5-", "D1000M2REP-") %>% #Works
- str_replace_all("D1000M3-", "D1000M5REP-") %>% #Works
- str_replace_all("D1000M2-", "D1000M4REP-") %>% #Works
- str_replace_all("CM10-", "CM9REP-") %>%
- str_replace_all("CM11-", "CM10REP-") %>%
- str_replace_all("CM9-", "CM11REP-") %>%
- str_replace_all("CML2-", "CML6REP-")%>%
- str_replace_all("CML3-", "CML2REP-")%>%
- str_replace_all("CML4-", "CML3REP-")%>%
- str_replace_all("CML5-", "CML4REP-")%>%
- str_replace_all("CML6-", "CML5REP-")%>%
- str_replace_all("CT5-", "CT4REP-")%>%
- str_replace_all("CT4-", "CT5REP-") %>%
-str_replace_all("REP", "")
-
-#Load sample information
-## ---- samdat ----
-samdf <- read.csv("sample_data/sample_info.csv", header=TRUE) %>% 
-  janitor::clean_names() %>%
-  mutate(sample_id = case_when(
-    fcid=="HLVKYDMXX" ~ paste0(sample_name, "_", replicate),
-    !fcid=="HLVKYDMXX" ~ paste0(fcid, "_", sample_name, "_", replicate)
-  ))  %>%
-  filter(!(index=="ATCGATCG" & index2=="ATCACACG"), #CT11-ex1 duplicated
-         !(index=="TCGCTGTT" & index2=="ACTCCATC") # CT12-ex1 duplicated
-         ) %>%
-  filter(!fcid=="CK3HD") %>%
-  mutate(type = case_when(
-    str_detect(sample_id, "D[0-9][0-9][0-9]M|D[0-9][0-9][0-9][0-9]M|DM[0-9]")  ~ "DrosMock",
-    str_detect(sample_id, "SPD")  ~ "SPD",
-    str_detect(sample_id, "ACV")  ~ "ACV",
-    str_detect(sample_id, "DC")  ~ "DC",
-    str_detect(sample_id, "Sach")  ~ "Sachet",
-    str_detect(sample_id, "FF")  ~ "FF",
-    str_detect(sample_id, "NTC")  ~ "NTC",
-    str_detect(sample_id, "DLarv")  ~ "DrosLarv",
-    str_detect(sample_id, "POS|SynMock")  ~ "POS",
-    str_detect(sample_id, "extblank|BLANK")  ~ "Extblank",
-    str_detect(sample_id, "pcrblank")  ~ "PCRblank",
-    str_detect(sample_id, "CT")  ~ "CarpTrap",
-    str_detect(sample_id, "CM[0-9]")  ~ "CarpMock",
-    str_detect(sample_id, "CML[0-9]")  ~ "CarpLarval"
-  )) %>%
-  mutate(target_subfragment = case_when(
-    str_detect(fprimer, "GGDACWGGWTGAACWGTWTAYCCHCC") & str_detect(rprimer, "GTRATWGCHCCDGCTARWACWGG") ~ "fwhF2-fwhR2n",
-    str_detect(fprimer, "ACWGGWTGRACWGTNTAYCC") & str_detect(rprimer, "ARYATDGTRATDGCHCCDGC") ~ "BF1-BR1",
-    str_detect(fprimer, "GGDRCWGGWTGAACWGTWTAYCCNCC") & str_detect(rprimer, "TATDGTRATDGCHCCNGC") ~ "SauronS878-HexCOIR4",
-    str_detect(fprimer, "GGDACWGGWTGAACWGTWTAYCCHCC") & str_detect(rprimer, "TATDGTRATDGCHCCNGC") ~ "fwhF2-HexCOIR4",
-  )) %>%
-  magrittr::set_rownames(.$sample_id)
-
-# Will probably need to rename the seqtabs and append the flowcell number onto the samples before they are merged
-
-## ---- phyloseq ----
-ps <- phyloseq(tax_table(tax), 
-               sample_data(samdf),
-               otu_table(seqtab, taxa_are_rows = FALSE),
-               phy_tree(phy),
-               refseq(seqs))
-
-if(nrow(seqtab) > nrow(sample_data(ps))){warning("Warning: All samples not included in phyloseq object, check sample names match the sample metadata")}
-
-rownames(samdf)[which(!rownames(sample_data(ps))  %in% rownames(samdf))]
-rownames(sample_data(ps))[which(!rownames(samdf)  %in% rownames(sample_data(ps)))]
-
-# Rename all taxa
-taxa_names(ps) <- paste0("SV", seq(ntaxa(ps)),"-",tax_table(ps)[,7])
-
-saveRDS(ps, "output/rds/ps_idtaxaExact.rds") 
-
-#Rename synthetic orders
-tax_table(ps)[,2][which(str_detect(tax_table(ps)[,7], "Synthetic"))] <- "Arthropoda"
-
-#Subset to Drosophila (Remove carpophilus)
-ps <- ps %>%
-  subset_samples(!str_detect(sample_name, "CM[0-9]|CT[0-9]|CML[0-9]")
-  ) %>%
-  subset_taxa(Phylum == "Arthropoda") %>%
-  filter_taxa( function(x) mean(x) > 0, TRUE) 
-dir.create("output/csv")
-dir.create("output/csv/unfiltered/")
-
-##Export raw csv
-export <- speedyseq::psmelt(ps) %>%
-  filter(Abundance > 0)
-write.csv(export, file = "output/csv/rawdata.csv")
-
-#Summary export
-seqateurs::summarise_taxa(ps, "Species", "sample_name") %>%
-  filter(!str_detect(sample_name, "NTC")) %>%
-  spread(key="sample_name", value="totalRA") %>%
-  write.csv(file = "output/csv/unfiltered/spp_sum.csv")
-
-seqateurs::summarise_taxa(ps, "Genus", "sample_name") %>%
-  spread(key="sample_name", value="totalRA") %>%
-  write.csv(file = "output/csv/unfiltered/gen_sum.csv")
-
-##Output fasta of all ASV's - Name each one by abundance + taxonomic assignment
-seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta")
-```
-
-
-## Taxon filtering
-
-```{R taxon filt}
-get_taxa_unique(ps, "Order")
-
-ps # Check the number of taxa prior to removal
-ps0 <- ps %>%
-  subset_taxa(
-    Phylum == "Arthropoda" & 
-    Class %in% c("Insecta", "Arachnida", "Collembola")
-  )
-ps # Confirm that the taxa were removed
-get_taxa_unique(ps0, "Phylum")
-get_taxa_unique(ps0, "Class")
-get_taxa_unique(ps0, "Order")
-```
-
-# Filter index switching
-
-
-
-# Overlap between replicates
-
-Venn diagrams? - Heatmap of presence absense
-
-Species accumulation curve- adding more extraction reps, pcr reps, biological samples, sequence depth
-
-Want to show - Different extraction replicates adds more - but this is probably due to contamination
-PCR replicates doesnt add more
-
-# Merge technical replicates & Write out
-
-```{r merge replicates}
-# Merge replicates
-ps.merged <- ps0 %>%
-    merge_samples(group = "Sample_Name", fun="sum")
-
-#This loses the sample metadata - Need to add it agian
-sample_data(ps.merged) <- sample_data(ps0) %>%
-  filter(!duplicated(Sample_Name)) %>%
-  magrittr::set_rownames(.$Sample_Name)
-
-ps1 <- ps.merged
-
-```
-
-
-# Minimum read filtering
-
-```{r minimum reads}
-### Remove positive controls
-##check mocks
-ps1 <- subset_samples(ps1, !str_detect(sample_names(ps1), "POS"))
-#message((nsamples(ps1) - nsamples(ps1)), " outlier samples dropped")
-
-ps1 <- prune_samples(sample_sums(ps1) >0 , ps1)
-
-#Plot rarefaction curve
-out <- rarecurve(otu_table(ps1), step=10000)
-
-rare <- lapply(out, function(x){
-  b <- as.data.frame(x)
-  b <- data.frame(OTU = b[,1], count = rownames(b))
-  b$count <- as.numeric(gsub("N", "",  b$count))
-  return(b)
-})
-names(rare) <- sample_names(ps1)
-
-rare <- map_dfr(rare, function(x){
-  z <- data.frame(x)
-  return(z)
-}, .id = "sample")
-
-# threshold for read removal
-threshold = 1000
-
-gg.rare <- ggplot(data = rare)+
-  geom_line(aes(x = count, y = OTU, group=sample), alpha=0.5)+
-  geom_point(data = rare %>% 
-               group_by(sample) %>% 
-               top_n(1, count),
-             aes(x = count, y = OTU, colour=(count > threshold))) +
-  geom_label(data = rare %>% 
-               group_by(sample) %>% 
-               top_n(1, count),
-             aes(x = count, y = OTU,label=sample, colour=(count > threshold)),
-             hjust=-0.05)+
-  scale_x_continuous(labels =  scales::scientific_format()) +
-  geom_vline(xintercept=threshold, linetype="dashed") +
-  labs(colour = "Sample kept?") +
-  xlab("Sequence reads") +
-  ylab("Observed ASV's")
-
-gg.rare
-
-#Write out figure
-pdf(file="fig/rarefaction.pdf", width = 11, height = 8 , paper="a4r")
-  plot(gg.rare)
-try(dev.off(), silent=TRUE)
-
-#Remove all samples under the minimum read threshold 
-ps2 <- prune_samples(sample_sums(ps1)>=threshold, ps1) 
-ps2 <- filter_taxa(ps2, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
-message(nsamples(ps1) - nsamples(ps2), " Samples and ", ntaxa(ps1) - ntaxa(ps2), " taxa under read threshold Dropped")
-```
-
-# Write out final phyloseq
-```{r save final ps}
-saveRDS(ps2, "output/rds/ps2.rds")
-```
-
-
-# Reproducability Receipt
-
-```{details, echo = FALSE, details.summary = 'Reproducability receipt'}
-# datetime
-Sys.time()
-#repository
-git2r::repository()
-sessioninfo::session_info()
 ```
