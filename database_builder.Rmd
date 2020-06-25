@@ -5,8 +5,13 @@ editor_options:
   chunk_output_type: console
 ---
 
-## Load packages
+# Setup & Packages 
+
 ```{r setup}
+# Knitr global setup - change eval to true to run code
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE, eval=FALSE, message=FALSE,error=FALSE,fig.show = "hold", fig.keep = "all")
+
 #Set required packages
 .cran_packages <- c("usethis",
                     "tidyverse",
@@ -519,6 +524,10 @@ write.tree(res$phy, "reference/ultrametric_insecta_tree.nwk")
 
 # Rooting with castor?
 #find_root
+
+# Check tree
+tree <- read.tree("reference/ultrametric_insecta_tree.nwk")
+
 ```
 
 # Sessioninfo

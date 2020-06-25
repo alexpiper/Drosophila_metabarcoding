@@ -1192,6 +1192,8 @@ for this we will analyse just the LCO HCO data. Will need to take in the raw amp
 
 Arrange this on the tree and see how much phylogenetic signal there is
 
+The phylogenetic autocorrelation function (ACF) of known 16S GCNs across the SILVA-derived tree (Fig. 1a) was calculated using the castor function get_trait_acf based on 108 tip pairs (options “Npairs=1e8, Nbins=100”), chosen randomly among tips with known GCN. The function get_trait_acf randomly picks OTU pairs on the tree, bins them into one of many intervals of phylogenetic distance, and calculates the Pearson autocorrelation between GCNs of the OTU pairs within each bin. Note that this analysis does not assume that GCNs scale linearly with phylogenetic distance. Instead, the ACF merely measures the statistical correlation between GCNs on distinct tips, conditional upon the tips being within a certain phylogenetic distance from each other.
+
 ```{r ID success on tree}
 # Arrange on tree
 library(castor)
@@ -1320,6 +1322,48 @@ p2 <- p1 %<+% weights_p1 + geom_tippoint(aes(colour=values)) +
   scale_y_continuous(expand=c(0,0))+ 
   scale_x_discrete(expand=c(0,0)) 
 
+
+###################################
+# AUTOCORRELATION FUNCTION OF TRAIT
+
+if(INCLUDE_ACF){
+	cat(sprintf("Calculating ACF and MRD of trait '%s'..\n",trait_name))
+	acf_results = castor::get_trait_acf(known_tree, known_tip_states, Npairs=1e8, Nbins=100)
+
+	# save stats to file
+	cat(sprintf("Saving autocorrelation function to TSV file..\n"))
+	output_path = sprintf("output/ACF.tsv")
+	check_output_file(output_path,TRUE,TRUE,"  ");						
+	cat(sprintf("# Phylogenetic autocorrelation function (ACF) and mean absolute difference (MAD), of '%s' across tips\n# ACF(x) = correlation between the states of two random tips at distance x from each other\n# distance\tautocorrelation\tmean_absolute_deviation\tmean_relative_deviation\tNpairs\n",trait_name), file=output_path, append=FALSE);
+	write.table(x=data.frame(acf_results$distances, acf_results$autocorrelations, acf_results$mean_abs_differences, acf_results$mean_rel_differences, acf_results$Npairs_per_distance), file=output_path, append=TRUE, sep="\t", row.names=FALSE, col.names=FALSE, quote = FALSE);
+
+	# plot ACF
+	cat(sprintf("Plotting ACF..\n"))
+	plot_file=sprintf("output/ACF.pdf")
+	check_output_file(plot_file,TRUE,TRUE,"  ")
+	pdf(file=plot_file, width=DEFAULT_PLOT_WIDTH, height=DEFAULT_PLOT_HEIGHT);
+	par(las=1);
+	plot(x=100*acf_results$distances, y=acf_results$autocorrelations, type="l", col="black", pch=1, cex=0.6, las=1, lwd=1.5, xlab="phylogenetic distance (% substitutions per site)", ylab="autocorrelation", xlim=c(0,80), ylim=c(-0.1,max(acf_results$autocorrelations[acf_results$distances<=1],na.rm=TRUE)));
+	invisible(dev.off());
+
+	# plot MAD
+	cat(sprintf("Plotting MAD..\n"))
+	plot_file=sprintf("output/mean_abs_differences.pdf")
+	check_output_file(plot_file,TRUE,TRUE,"  ")
+	pdf(file=plot_file, width=DEFAULT_PLOT_WIDTH, height=DEFAULT_PLOT_HEIGHT);
+	par(las=1);
+	plot(x=100*acf_results$distances, y=acf_results$mean_abs_differences, type="l", col="black", pch=1, cex=0.6, las=1, lwd=1.5, xlab="phylogenetic distance (% substitutions per site)", ylab="mean abs difference", xlim=c(0,80), ylim=c(-0.1,max(acf_results$mean_abs_differences[acf_results$distances<=1],na.rm=TRUE)));
+	invisible(dev.off());
+	
+	# plot MRD
+	cat(sprintf("Plotting MRD..\n"))
+	plot_file=sprintf("output/mean_rel_differences.pdf")
+	check_output_file(plot_file,TRUE,TRUE,"  ")
+	pdf(file=plot_file, width=DEFAULT_PLOT_WIDTH, height=DEFAULT_PLOT_HEIGHT);
+	par(las=1);
+	plot(x=100*acf_results$distances, y=acf_results$mean_rel_differences, type="l", col="black", pch=1, cex=0.6, las=1, lwd=1.5, xlab="phylogenetic distance (% substitutions per site)", ylab="mean rel difference", xlim=c(0,80), ylim=c(-0.1,max(acf_results$mean_rel_differences[acf_results$distances<=1],na.rm=TRUE)));
+	invisible(dev.off());
+}
 ```
 
 
