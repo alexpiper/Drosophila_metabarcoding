@@ -1279,8 +1279,12 @@ ps_model <- ps1
 #%>%
  # subset_taxa(!str_detect(taxa_names(ps0), "__"))
 
+# Check Drosophila_suzukii in sample D500M1 - these are definitely misplaced and ruinign the modelling
+
 #Rename taxa to match expected
 tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Drosophila_albomicans")] <-
+"Drosophila_immigrans"
+tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Drosophila_nasuta")] <-
 "Drosophila_immigrans"
 tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Drosophila_sulfurigaster")] <-
 "Drosophila_immigrans"
@@ -1315,7 +1319,9 @@ sam <- speedyseq::psmelt(ps_model) %>%
   dplyr::select(otu, sample_name, sample_id, taxon, abundance, target_subfragment, fcid, material_type = type) %>%
   mutate(sample_name = sample_name %>%
            str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
-           str_remove("HLVKYDMXX_")) 
+           str_remove("HLVKYDMXX_")) %>%
+  mutate(extract_id = sample_name) %>%
+  mutate(sample_name = str_remove(sample_name, "-exp*.$"))
 
 #Create a mocks table to train the model on
 mock_train <- sam %>%
@@ -1330,15 +1336,15 @@ mock_train <- sam %>%
     #abundance == 0 & expected > 0 ~ "FN",
     TRUE ~ as.character(NA)
   )) %>%
-  #dplyr::filter(!is.na(type))  %>%
+  mutate(outcome = case_when(
+    outcome == "FP" & abundance > 10000 ~ as.character(NA), #Deal with obvious misannotated expecteds
+    TRUE ~ outcome
+  )) %>%
   group_by(sample_id, target_subfragment) %>%
   dplyr::mutate(abundance_clr = abundance) %>%
   mutate_at(vars(abundance_clr ), ~metacal::clr(. + 0.5) ) %>%
   ungroup() %>%
-  dplyr::select(fcid, sample_id, sample_name, otu, taxon, abundance, abundance_clr, outcome) #%>%
- #filter(!fcid=="CJKFJ")
-  #group_by(fcid) %>%
-  #add_count(outcome)
+  dplyr::select(fcid, sample_id, sample_name, otu, taxon, abundance, abundance_clr, outcome) 
 
 # Create modelling recipe
 switch_recipe <- recipe(outcome ~ ., data = mock_train) %>%
@@ -1357,7 +1363,6 @@ rec_prepped <- prep(switch_recipe)
 
 rec_prepped 
 
-test <- bake(rec_prepped, new_data =  mock_train)
 # Define model
 logit_spec <- logistic_reg(mode = "classification") %>%
   set_engine(engine = "glm") 
@@ -1386,34 +1391,30 @@ predictions_glm %>%
   geom_text(aes(label = n), colour = "white", alpha = 1, size = 8)
 
 # Calculate metrics
-tibble(
-  "precision" = 
-    precision(predictions_glm, outcome, .pred_class) %>%
-    dplyr::select(.estimate),
-  "recall" = 
-    recall(predictions_glm, outcome, .pred_class) %>%
-    dplyr::select(.estimate),
-  "accuracy" =  metrics(predictions_glm, outcome, .pred_class) %>%
-    filter(.metric == "accuracy") %>%
-    dplyr::select(.estimate),
-  "F1_score" = f_meas(predictions_glm, outcome, .pred_class) %>%
-    dplyr::select(.estimate)
-) %>%
-  unnest(cols = everything()) 
+multimetric <- metric_set(accuracy, bal_accuracy, sens, yardstick::spec, precision, recall, ppv, npv)
+multimetric(predictions_glm, truth = outcome, estimate = .pred_class)  
 
-#Check all were predicted
-table(!is.na(predictions_glm$.pred_class))
+# Make an ROC curve
+## get probabilities on test set
+predictions_prob <- logistic_glm %>%
+  predict(new_data = mock_train, type="prob") %>%
+  bind_cols(bake(rec_prepped, new_data =  mock_train))
 
-# Check the different ones
+# plot curve
+roc_data <- roc_curve(predictions_prob, truth = outcome, .pred_FP) 
+roc_data %>%  
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) + 
+  coord_equal()
+
+#Get area under curve
+roc_auc(predictions_prob, truth = outcome, .pred_FP) 
+
+# Check for disagreements within mock
 test <- predictions_glm %>%
+  dplyr::select(.pred_class,abundance, abundance_clr, sample_id,  otu, outcome)  %>%
   mutate(diff = !.pred_class == outcome)
-
-## Plot the logistic regression predictios, abundance and curve!
-
-#Number of false positives
-table(test$.pred_class)
-#Problems:
-#Drosophila_nasuta
 
 # Filter predicted switching
 keeptab <- predictions_glm %>%
@@ -1438,6 +1439,18 @@ otutab <- otu_table(ps_model) %>%
 #Replace taxa predicted as False positives
 ps2 <- ps_model
 otu_table(ps2) <- otu_table(otutab * keeptab, taxa_are_rows = FALSE)
+
+# Check staxa that were dropped
+dropped <- taxa_sums(ps2) %>%
+  as_tibble(rownames = "OTU") %>%
+  left_join(taxa_sums(ps1) %>%
+  as_tibble(rownames = "OTU") %>%
+    dplyr::rename(pre_filt = value)) %>%
+  filter(value == 0) 
+
+# Remove zero taxa
+ps2 <- filter_taxa(ps2, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
+message(nsamples(ps_model) - nsamples(ps2), " Samples and ", ntaxa(ps_model) - ntaxa(ps2), " taxa under read threshold Dropped")
 ```
 
 
