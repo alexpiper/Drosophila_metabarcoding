@@ -915,52 +915,6 @@ write.tree(fitGTR$tree, file="output/tree.nwk")
 ```
 
 
-## Output fate of reads through pipeline
-
-```{r read fate}
-#Fraction of reads assigned to each taxonomic rank
-sum_reads <- speedyseq::psmelt(ps) %>%
-  gather("Rank","Name", rank_names(ps)) %>%
-  group_by(Rank, Sample_ID) %>% 
-  mutate(Name = replace(Name, str_detect(Name, "__"),NA)) %>% # This line turns the "__" we added to lower ranks back to NA's
-  summarize(Reads_classified = sum(Abundance * !is.na(Name))) %>% 
-  pivot_wider(names_from = "Rank",
-              values_from = "Reads_classified")
-
-read_tracker <- read_csv("output/logs/read_tracker.csv") %>% 
-  left_join(sum_reads, by="Sample_ID")
-write_csv(read_tracker, "output/logs/read_tracker.csv")
-
-
-gg.readtracker <- read_tracker %>%
-  dplyr::rename(trimmed_reads = output_reads) %>%
-  dplyr::mutate(input_reads = input_reads / 2,
-                trimmed_reads = trimmed_reads / 2) %>%
-  pivot_longer(3:tail(colnames(.), 1),
-               names_to = "type",
-               values_to = "value") %>%
-  mutate(stage= case_when(
-    type %in% c("input_reads","input_bases", "ktrimmed_bases", "ktrimmed_reads", "trimmed_reads", "output_bases") ~ "BBDuk",
-    type %in% c("filter_input","filter_output") ~ "FilterAndTrim",
-    type %in% c("dadaFs","dadaRs", "merged") ~ "DADA",
-    type %in% c("seqtab","chimera_filt", "size_filt", "seqtab_final") ~ "Seqtab",
-    type %in% c("Root", "Kingdom", "Phylum", "Class","Order", "Family", "Genus", "Species") ~ "taxonomy",
-  )) %>%
-  ggplot(aes(x=type, y=value, fill=stage)) +
-  geom_bar(stat="identity") +
-  scale_x_discrete(limits = c("input_reads", "trimmed_reads", "filter_input", "filter_output",
-                              "dadaFs", "dadaRs", "merged","seqtab", "chimera_filt", "size_filt", "seqtab_final",
-                              "Kingdom", "Phylum", "Class","Order", "Family", "Genus", "Species")) +
-  facet_wrap(~Sample_ID) +
-  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust=0.5)) +
-  scale_fill_brewer(palette="Spectral")
-  
-pdf(paste0("output/logs/read_tracker.pdf"), width = 11, height = 8 , paper="a4r")
-  gg.readtracker
-try(dev.off(), silent=TRUE)
-
-```
-
 # Make Phyloseq object
 
 ```{r create PS, eval = FALSE}
@@ -1082,16 +1036,69 @@ seqateurs::summarise_taxa(ps, "Genus", "sample_name") %>%
 seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta")
 ```
 
+
+## Output fate of reads through pipeline
+
+```{r read fate}
+#Fraction of reads assigned to each taxonomic rank
+sum_reads <- speedyseq::psmelt(ps) %>%
+  dplyr::select(sample_id, rank_names(ps), Abundance) %>%
+  pivot_longer(rank_names(ps),
+               names_to="rank",
+               values_to="name") %>%
+  group_by(sample_id, rank) %>% 
+  mutate(name = replace(name, str_detect(name, "__"), NA)) %>% 
+  dplyr::summarise(reads_classified = sum(Abundance * !is.na(name))) %>%
+  pivot_wider(names_from = "rank",
+              values_from = "reads_classified")
+
+# plot just the taxonomic assignment
+
+read_tracker <- read_csv("output/logs/read_tracker.csv") %>% 
+  janitor::clean_names() %>%
+  left_join(sum_reads, by="sample_id")
+write_csv(read_tracker, "output/logs/read_tracker.csv")
+
+gg.readtracker <- read_tracker %>%
+  dplyr::rename(trimmed_reads = output_reads) %>%
+  dplyr::mutate(input_reads = input_reads / 2,
+                trimmed_reads = trimmed_reads / 2) %>%
+  pivot_longer(3:tail(colnames(.), 1),
+               names_to = "type",
+               values_to = "value") %>%
+  mutate(stage= case_when(
+    type %in% c("input_reads","input_bases", "ktrimmed_bases", "ktrimmed_reads", "trimmed_reads", "output_bases") ~ "BBDuk",
+    type %in% c("filter_input","filter_output") ~ "FilterAndTrim",
+    type %in% c("dadaFs","dadaRs", "merged") ~ "DADA",
+    type %in% c("seqtab","chimera_filt", "size_filt", "seqtab_final") ~ "Seqtab",
+    type %in% c("Root", "Kingdom", "Phylum", "Class","Order", "Family", "Genus", "Species") ~ "taxonomy",
+  )) %>%
+  ggplot(aes(x=type, y=value, fill=stage)) +
+  geom_bar(stat="identity") +
+  scale_x_discrete(limits = c("input_reads", "trimmed_reads", "filter_input", "filter_output",
+                              "dadaFs", "dadaRs", "merged","seqtab", "chimera_filt", "size_filt", "seqtab_final",
+                              "Kingdom", "Phylum", "Class","Order", "Family", "Genus", "Species")) +
+  facet_wrap(~Sample_ID) +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust=0.5)) +
+  scale_fill_brewer(palette="Spectral")
+  
+pdf(paste0("output/logs/read_tracker.pdf"), width = 11, height = 8 , paper="a4r")
+  gg.readtracker
+try(dev.off(), silent=TRUE)
+
+```
+
+
 ### Summary statistics
 
 ```{r summarise taxa}
 # N unique species and samples
 speedyseq::psmelt(ps) %>%
-  summarise(n_extracts = n_distinct(sample_name), n_samples = n_distinct(sample_id))
+  summarise(n_extracts = n_distinct(extract_id), n_samples = n_distinct(sample_id))
 
 # Spread of reads
 speedyseq::psmelt(ps) %>%
-  group_by(sample_name) %>%
+  group_by(extract_id) %>%
   summarise(Abundance = sum(Abundance)) %>%
   ungroup() %>%
   summarise(mean = mean(Abundance), 
@@ -1101,7 +1108,7 @@ speedyseq::psmelt(ps) %>%
 
 # Spread of ASVs
 speedyseq::psmelt(ps) %>%
-  group_by(sample_name) %>%
+  group_by(extract_id) %>%
   dplyr::filter(Abundance > 0) %>%
   summarise(counts = n_distinct(OTU)) %>%
   ungroup() %>%
@@ -1269,15 +1276,201 @@ ps1 <- filter_taxa(ps1, function(x) mean(x) > 0, TRUE) #Drop missing taxa from t
 message(nsamples(ps0) - nsamples(ps1), " Samples and ", ntaxa(ps0) - ntaxa(ps1), " taxa under read threshold Dropped")
 ```
 
+## Overlap between replicates
+
+Venn diagrams? - Heatmap of presence absense
+
+Species accumulation curve- adding more extraction reps, pcr reps, biological samples, sequence depth
+
+Want to show - Different extraction replicates adds more - but this is probably due to contamination
+PCR replicates doesnt add more
+
+Visualise overlap, then merge choosing a majority rules approach
+
+```{r overlap between replicates}
+
+# Mean pairwise distance between PCR replicates
+mpd_pcr <- ps1 %>%
+  otu_table() %>%
+  as("matrix") %>%
+  as_tibble(rownames = "sample_id") %>%
+  left_join(sample_data(ps1) %>%
+              as("data.frame") %>%
+              dplyr::select(sample_id, extract_id, type, fcid)) %>%
+  group_by(extract_id) %>%
+  add_tally()  %>%
+  filter(n > 1,
+         fcid=="HLVKYDMXX",
+         !str_detect(extract_id, "BLANK|SynMock|POS")) %>%
+  group_modify(~ {
+      .x %>% 
+        dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "type", "fcid"))) %>%
+        as.matrix() %>%
+        vegdist(method="jac", binary = T) %>%
+        as.matrix() %>%
+        as_tibble()%>%
+        pivot_longer(everything(),
+                     names_to = "sample",
+                     values_to = "dist")%>%
+        dplyr::filter(dist > 0) %>%
+        summarise(dist = mean(dist)) 
+    })
+
+# Mean pairwise distance between extraction replicates
+mpd_extraction <- ps1 %>%
+   merge_samples(group = "extract_id", fun="sum") %>%
+  otu_table() %>%
+  as("matrix") %>%
+  as_tibble(rownames = "extract_id") %>%
+  left_join(sample_data(ps1) %>%
+              as("data.frame") %>%
+              as_tibble()%>%
+              dplyr::select(sample_id, sample_name, extract_id, type, fcid)) %>%
+  group_by(sample_name) %>%
+  add_tally() %>%
+  filter(n > 1,
+         fcid=="HLVKYDMXX",
+         !str_detect(extract_id, "BLANK|SynMock|POS")) %>%
+  group_modify(~ {
+      .x %>% 
+        dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "type", "fcid"))) %>%
+        as.matrix() %>%
+        vegdist(method="jac", binary = T) %>%
+        as.matrix() %>%
+        as_tibble()%>%
+        pivot_longer(everything(),
+                     names_to = "sample",
+                     values_to = "dist")%>%
+        dplyr::filter(dist > 0) %>%
+        summarise(dist = mean(dist)) 
+    })
+
+# This shoudl be trap types instead
+mpd_traps <- ps1 %>%
+   merge_samples(group = "sample_name", fun="sum") %>%
+  otu_table() %>%
+  as("matrix") %>%
+  as_tibble(rownames = "sample_name") %>%
+  left_join(sample_data(ps1) %>%
+              as("data.frame") %>%
+              as_tibble()%>%
+              dplyr::select(sample_id, sample_name, extract_id, type, fcid)) %>%
+  group_by(type) %>%
+  add_tally() %>%
+  filter(n > 1,
+         fcid=="HLVKYDMXX",
+         !str_detect(extract_id, "BLANK|SynMock|POS")) %>%
+  group_modify(~ {
+      .x %>% 
+        dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "type", "fcid"))) %>%
+        as.matrix() %>%
+        vegdist(method="jac", binary = T) %>%
+        as.matrix() %>%
+        as_tibble()%>%
+        pivot_longer(everything(),
+                     names_to = "sample",
+                     values_to = "dist")%>%
+        dplyr::filter(dist > 0)  %>%
+        summarise(dist = mean(dist, na.rm=TRUE)) 
+    })
+
+
+# Mean pairwise distance between all samples
+mpd_samples <- ps1 %>%
+   merge_samples(group = "sample_name", fun="sum") %>%
+  otu_table() %>%
+  as("matrix") %>%
+  as_tibble(rownames = "sample_name") %>%
+  left_join(sample_data(ps1) %>%
+              as("data.frame") %>%
+              as_tibble()%>%
+              dplyr::select(sample_name, extract_id, type, fcid) %>%
+              filter(fcid=="HLVKYDMXX"))%>%
+    filter(!str_detect(extract_id, "BLANK|SynMock|POS"),
+         fcid=="HLVKYDMXX") %>%
+  dplyr::select(-any_of(c("sample_id", "extract_id", "type", "fcid"))) %>%
+  distinct() %>%
+  column_to_rownames("sample_name") %>%
+  as.matrix() %>%
+  vegdist(method="jac", binary = T) %>%
+  as.matrix() %>%
+  as_tibble()%>%
+  pivot_longer(everything(),
+              names_to = "sample",
+              values_to = "dist")%>%
+  dplyr::filter(dist > 0)
+
+# Plot together:
+gg.mpd <- do.call("list", mget(grep("mpd_",names(.GlobalEnv),value=TRUE))) %>%
+  bind_rows(.id="type") %>%
+  ungroup %>%
+  select(type, dist) %>%
+  mutate(type = type %>% 
+           str_remove("^.+_") %>%
+           factor(levels = c("samples", "traps", "extraction", "pcr"))) %>%
+  ggplot(aes(x = type, y = dist, fill=type)) + 
+  geom_boxplot() +
+  base_theme + 
+  scale_fill_brewer(palette= "Paired") +
+  labs(x = "Type",
+       y = "Jaccard dissimilarity")
+
+gg.mpd 
+
+pdf(file="fig/mean_pairwise.pdf", width = 8, height = 11 , paper="a4")
+  plot(gg.mpd)
+try(dev.off(), silent=TRUE)
+```
+
+## Abundance counts for different replicates
+```{r}
+# Heatmap of abundance of pcr replicates
+gg.repmap <- ps1 %>% 
+  speedyseq::psmelt() %>%
+  filter(fcid=="HLVKYDMXX", Abundance > 0) %>%
+  mutate(extrep = extract_id %>% str_extract("ex.*$")) %>%
+  ggplot(aes(x = replicate, y = sample_name, fill = log10(Abundance))) +
+  geom_tile()+
+  scale_fill_viridis_c()+
+  facet_grid(~extrep)+
+  base_theme+
+  labs(x = "PCR Replicate",
+       y = "Sample Name")
+
+gg.repmap
+
+pdf(file="fig/replicate_abundances.pdf", width = 8, height = 11 , paper="a4")
+  plot(gg.repmap)
+try(dev.off(), silent=TRUE)
+```
+
+
+## Merge technical replicates
+
+```{r merge replicates}
+# Merge replicates
+ps.merged <- ps1 %>%
+    merge_samples(group = "sample_name", fun="sum")
+
+#This loses the sample metadata - Need to add it agian
+sample_data(ps.merged) <- sample_data(ps1) %>%
+  as("data.frame")  %>%
+  mutate(sample_id = sample_name) %>%
+  mutate(sample_name = sample_name %>%
+           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
+           str_remove("HLVKYDMXX_")) %>%
+  dplyr::filter(!duplicated(sample_id)) %>%
+  magrittr::set_rownames(.$sample_id)
+```
+
+
 ## Filter index switching
 
 We will filter index switching using a logistic regression model trained on the mocks
 
 ```{r index switch removal}
 # Subset to mocks
-ps_model <- ps1 
-#%>%
- # subset_taxa(!str_detect(taxa_names(ps0), "__"))
+ps_model <- ps.merged
 
 # Check Drosophila_suzukii in sample D500M1 - these are definitely misplaced and ruinign the modelling
 
@@ -1317,9 +1510,9 @@ sam <- speedyseq::psmelt(ps_model) %>%
   mutate(taxon = species) %>%
   #filter(!str_detect(taxon, "__")) %>%#Remove unclassified
   dplyr::select(otu, sample_name, sample_id, taxon, abundance, target_subfragment, fcid, material_type = type) %>%
-  mutate(sample_name = sample_name %>%
-           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
-           str_remove("HLVKYDMXX_")) %>%
+  #mutate(sample_name = sample_name %>%
+  #         str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
+  #         str_remove("HLVKYDMXX_")) %>%
   mutate(extract_id = sample_name) %>%
   mutate(sample_name = str_remove(sample_name, "-exp*.$"))
 
@@ -1327,7 +1520,7 @@ sam <- speedyseq::psmelt(ps_model) %>%
 mock_train <- sam %>%
   filter(abundance > 0) %>%
   mutate(type = case_when( 
-         (sample_name %in% exp$sample_name) & (material_type == "DrosMock") & !str_detect(taxon, "__") ~ "train", #& (taxon %in% exp$taxon)
+         (sample_name %in% exp$sample_name) & (material_type == "DrosMock") & !str_detect(taxon, "__") ~ "train",
          TRUE ~ "test")) %>%
   left_join(exp, by = c("sample_name","taxon"))  %>%
   mutate(outcome = case_when(
@@ -1340,15 +1533,15 @@ mock_train <- sam %>%
     outcome == "FP" & abundance > 10000 ~ as.character(NA), #Deal with obvious misannotated expecteds
     TRUE ~ outcome
   )) %>%
-  group_by(sample_id, target_subfragment) %>%
+  group_by(extract_id,fcid, target_subfragment) %>%
   dplyr::mutate(abundance_clr = abundance) %>%
   mutate_at(vars(abundance_clr ), ~metacal::clr(. + 0.5) ) %>%
   ungroup() %>%
-  dplyr::select(fcid, sample_id, sample_name, otu, taxon, abundance, abundance_clr, outcome) 
+  dplyr::select(fcid, sample_id, extract_id, sample_name, otu, taxon, abundance, abundance_clr, outcome) 
 
 # Create modelling recipe
 switch_recipe <- recipe(outcome ~ ., data = mock_train) %>%
-  update_role(sample_id, sample_name, otu, taxon, abundance, new_role = "ID") %>%
+  update_role(sample_id, sample_name, extract_id, otu, taxon, abundance, new_role = "ID") %>%
   #step_string2factor(all_nominal(), -all_outcomes(), -has_role("ID")) %>%
   step_dummy(fcid) %>%
   #step_other(all_predictors(), -all_numeric(), threshold = 1, other = "other") %>%
@@ -1376,7 +1569,7 @@ logit_wf <- workflow() %>%
 logistic_glm <- logit_wf  %>%
   fit(mock_train)
 
-# See how it went on the trainign dataset
+# See how it went on the trainigng dataset
 predictions_glm <- logistic_glm %>%
   predict(new_data = mock_train) %>%
   bind_cols(bake(rec_prepped, new_data =  mock_train))
@@ -1454,35 +1647,9 @@ message(nsamples(ps_model) - nsamples(ps2), " Samples and ", ntaxa(ps_model) - n
 ```
 
 
-## Overlap between replicates
-
-Venn diagrams? - Heatmap of presence absense
-
-Species accumulation curve- adding more extraction reps, pcr reps, biological samples, sequence depth
-
-Want to show - Different extraction replicates adds more - but this is probably due to contamination
-PCR replicates doesnt add more
-
-## Merge technical replicates
-
-```{r merge replicates}
-# Merge replicates
-ps.merged <- ps2 %>%
-    merge_samples(group = "sample_name", fun="sum")
-
-#This loses the sample metadata - Need to add it agian
-sample_data(ps.merged) <- sample_data(ps2) %>%
-  as("data.frame") %>%
-  dplyr::filter(!duplicated(sample_name)) %>%
-  magrittr::set_rownames(.$sample_name)
-
-ps3 <- ps.merged
-```
-
-
 ## Write out final phyloseq
 ```{r save final ps}
-saveRDS(ps3, "output/rds/ps_filtered.rds")
+saveRDS(ps2, "output/rds/ps_filtered.rds")
 ```
 
 # Reproducability Receipt

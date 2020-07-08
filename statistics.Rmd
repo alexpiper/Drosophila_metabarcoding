@@ -35,6 +35,7 @@ Part 3 - Comparison
                     "ggtree", 
                     "castor", 
                     "picante",
+                    "ggrepel",
                     "devtools")
 .bioc_packages <- c("dada2",
                     "phyloseq", 
@@ -83,9 +84,9 @@ source('R/themes.R')
 ps2 <- readRDS("output/rds/ps_filtered.rds")
 ```
 
-# Comparison of 4 primers for detection and bias
+# Run 1 - primer comparison
 
-# Overview of run 1
+## Overview of run 1
 
 ```{r run 1 overview}
 ps_run1 <- ps2 %>%
@@ -147,11 +148,35 @@ otutab_n0 <- as.matrix(zCompositions::cmultRepl(otutab, method="CZM", output="p-
 #Root phylogenetic tree
 phy_tree(ps_run1) <- multi2di(phy_tree(ps_run1))
 # Get philr distance
-ps2.philr <- philr::philr(otutab_n0, phy_tree(ps_run1),
+ps_run1.philr <- philr::philr(otutab_n0, phy_tree(ps_run1),
                      part.weights='enorm.x.gm.counts', 
                      ilr.weights='blw.sqrt')
+
+# Add extract id
+sample_data(ps_run1) <- sample_data(ps_run1) %>%
+  as("data.frame") %>%
+  mutate(extract_id = sample_name %>%
+           str_remove_all("BF1-BR1-|fwhF2-fwhR2n-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-")) %>%
+  magrittr::set_rownames(.$sample_id)
+
+
+#Philr PCOA
+philr.dist <- dist(ps_run1.philr, method="euclidean")
+philr.pcoa <- ordinate(ps_run1, 'PCoA', distance=philr.dist)
+gg.run1pca <- plot_ordination(ps_run1, philr.pcoa, color = "extract_id", shape = "target_subfragment") +
+  geom_point(size=3, alpha=0.8) +
+  geom_line(aes(group=extract_id), alpha=0.8) +
+  geom_hline(yintercept = 0, linetype=2, alpha=0.5) +  
+  geom_vline(xintercept = 0, linetype=2, alpha=0.5) +
+  base_theme +
+  scale_colour_brewer(palette="Paired") +
+  theme(legend.position = "bottom") +
+  coord_fixed()
+
+gg.run1pca
+
 #PCA 
-pca <- prcomp(ps2.philr)
+pca <- prcomp(ps_run1.philr)
 
 # Plot PCA 
 
@@ -246,12 +271,11 @@ tibble(
   theme(axis.text.x = element_text(angle=0))
 
 ```
-# Heatmap of jaccard simiarity to show all are detected in all samples??
 
-## Effect of primer on bias
+## Bias
 
 ```{r Drosophila bias}
-ps_bias <- ps2
+ps_bias <- ps_run1
 
 exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
   dplyr::rename(sample_name = Sample) %>%
@@ -345,7 +369,6 @@ bias <- joint %>%
    dplyr::select(target_subfragment, material_type, taxon, estimate) 
 
 # See how well bias estiamte fits data
-library(plotly)
 
 preds <- joint %>%
   left_join(bias) %>%
@@ -355,40 +378,125 @@ preds <- joint %>%
   filter(expected > 0) %>%
   filter(observed > 0)
 
+# Get RMSE
+errors <- preds %>%
+  group_by(target_subfragment) %>%
+  rmse(truth = logit(observed), estimate = logit(predicted)) %>%
+  dplyr::select(target_subfragment, rmse = .estimate)
 
-ggplot(preds,  aes(x=logit(predicted), y=logit(observed), color = taxon))+
+gg.bias_fits <- preds %>%
+  mutate(taxon = str_replace(taxon, "_", " ")) %>%
+  left_join(errors) %>%
+  mutate(rmse = paste0("logit(RMSE) = ",round(rmse, 2))) %>%
+  ggplot(aes(x=logit(predicted), y=logit(observed), color = taxon))+
   geom_abline(intercept = 0, slope = 1, color = "grey") +
-    geom_jitter(width = 0.1, height = 0, alpha=0.7) +
-  facet_grid(fcid~target_subfragment)+
-    labs(x = "log-odds(Predicted proportion)", 
-        y = "log-odds(Observed proportion)",
-        colour = "Taxon",
-        title="Bias model fits") +
+    geom_jitter(width = 0.1, height = 0, alpha=0.7, size=2) +
+  geom_text(aes(x=-7, y=-1, label=rmse), check_overlap = TRUE, inherit.aes = FALSE)+
+  facet_wrap(~target_subfragment)+
   coord_fixed()+
+  scale_color_brewer(palette = "Paired")+
   base_theme +
   theme(
         panel.spacing.x = unit(1, "lines"),
         legend.position = "bottom",
-    )
+        legend.text = element_text(face = "italic", size=10)
+    ) +
+   labs(x = "log-odds(Predicted proportion)", 
+     y = "log-odds(Observed proportion)",
+     colour = "Taxon") 
+
+
+gg.bias_fits
+
+# Write out bias explained for supplementary 
+pdf(file="fig/bias_model_fit.pdf", width = 11, height = 8 , paper="a4r")
+  plot(gg.bias_fits)
+try(dev.off(), silent=TRUE)
+  
+# Add RMSE to plot
 
 # Plot bias estimates
-preds %>%
+gg.bias <- preds %>%
   distinct() %>%
-  ggplot(aes(x=taxon, y=estimate-1, fill=target_subfragment)) +
-    geom_col()+
-    facet_grid(target_subfragment~material_type) +
+  mutate(taxon = str_replace(taxon, "^.*_", "D. ")) %>%
+  ggplot(aes(x=target_subfragment, y=estimate-1, fill=target_subfragment)) +
+  geom_col()+
   coord_flip() +
-  geom_rangeframe() +
+  facet_grid(taxon~.) +
   base_theme+
   scale_fill_brewer(palette="Paired") +
   labs(
-    x="Taxon",
-    y= "Bias / Geometric mean")
+    x = NULL,
+    y = "Efficiency / Geometric mean") +
+  theme(axis.text.y = element_blank(),
+        strip.text = element_text(face = "italic"))
 
+gg.bias
+
+# Bias is missing some taxa for some primers? check
 ```
 
+## Off-target reads
 
-## Effect of primer on detection probability
+The ratio of root assigned reads to those under species level can be used as a proxy for taxonomic assignment
+```{r, run 1 tax summary}
+# Subset to run 1
+ps <- readRDS("output/rds/ps_idtaxaExact.rds")%>%
+  subset_samples(fcid %in% c("CB3DR")) 
+
+tax_summary <- speedyseq::psmelt(ps) %>%
+  dplyr::select(target_subfragment, sample_id, rank_names(ps), Abundance) %>%
+  pivot_longer(rank_names(ps),
+               names_to="rank",
+               values_to="name") %>%
+  group_by(target_subfragment, rank) %>% 
+  mutate(name = replace(name, str_detect(name, "__"), NA),
+         rank = str_replace(rank, "Kingdom", "Root")) %>% 
+    mutate(detection = case_when(
+    Abundance > 0 ~ 1,
+    Abundance == 0 ~ 0
+  )) %>%
+  #dplyr::filter(!is.na(name)) %>%
+  dplyr::summarise(reads_classified = sum(Abundance * !is.na(name)),
+                   asvs_classified = sum(detection * !is.na(name)))
+
+# Lineplot
+tax_plot_data <- tax_summary %>%
+  ungroup %>%
+  filter(!rank=="Root") %>%
+  left_join(tax_summary %>% 
+              filter(rank=="Root") %>%
+              dplyr::select(target_subfragment, root_reads = reads_classified, root_asv = asvs_classified)) %>%
+  mutate(read_prop = reads_classified / root_reads,
+         asv_prop = asvs_classified / root_asv)%>% 
+  dplyr::select(target_subfragment, rank, contains("prop"))  %>%
+  pivot_longer(contains("prop"),
+               names_to="type",
+               values_to = "value") %>%
+  mutate(type = type %>% 
+           str_replace("asv_prop", "ASVs classified") %>%
+           str_replace("read_prop", "Sequences classified")) %>%
+  mutate(rank = factor(rank, levels = rank_names(ps)[2:length(rank_names(ps))]))
+
+gg.reads_classified <- tax_plot_data  %>%
+  ggplot(aes(x=rank, y=value, colour = target_subfragment, group=target_subfragment)) +
+  geom_line() +
+  geom_text_repel(data= tax_plot_data %>%
+              filter(rank=="Species"),
+            #aes(label = percent(read_prop, accuracy = 0.1)),
+            aes(label = target_subfragment),
+            direction = "y", hjust=-1, segment.alpha = 0)+
+  base_theme +
+  facet_grid(type~., scales="free_y") +
+  scale_colour_brewer(palette="Paired") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Taxonomic Rank",
+       y=NULL) 
+
+gg.reads_classified
+```
+
+## Detection probability
 How do the primers affect its probability of detection (presence/absence). We used a generalized linear mixed effects model of presence/absense as a function of primer
 primer. To account for the paired design (where both types of samples were derived from the samen community), we defined Sample ID as a random effect.
 Since the response was binomial, we assumed a logit‐link and binomially distributed error
@@ -402,12 +510,11 @@ det_table <- joint %>%
     expected > 0 & observed == 0 ~ 0,
     TRUE ~ as.numeric(NA)
     )) %>%
+  filter(!is.na(detected)) %>% #Still some false positives remeaining!
   mutate(extract_id = sample_name %>%
            str_remove_all("BF1-BR1-|fwhF2-fwhR2n-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-"))
 
-# Estimate detection efficiency of all taxa - problem is all are detected and none are failed!
-# Need to filter for index switching
-# 
+# Estimate detection efficiency of all taxa - Better done within tidymodels?
 library(lme4)
 detmodel <- det_table %>%
   filter(fcid=="CB3DR") %>%
@@ -422,13 +529,13 @@ detmodel <- det_table %>%
   dplyr::select(-fit) %>%
   unnest(tidied) 
 
-# Estimate detection efficiency of targets
+# Estimate detection efficiency of targets - Doesnt work because they were pretty much all detected!
 library(lme4)
-det_suzukii <- ps_qual %>%
+det_suzukii <- det_table %>%
   filter(fcid=="CB3DR") %>%
-  group_by(Species) %>%
+  group_by(taxon) %>%
   nest() %>%
-  mutate(fit = map(data, ~glmer(detection ~ target_subfragment + (1|extract_id), family=binomial, data = .)), 
+  mutate(fit = map(data, ~glmer(detected ~ target_subfragment + (1|extract_id), family=binomial, data = .)), 
            tidied = map(fit, broom::tidy),
            aug = map(fit, broom::augment)
 
@@ -440,9 +547,31 @@ det_suzukii
 ```
 
 
-#FIGURE 1  Comparison of primers for detection, bias, and PCA of overlap  
+## Multifig1
+
+Comparison of primers for bias, off-target amp, and PCA of overlap  
+
+```{r run 1 multifig}
+# PCA, off target, and bias
+
+fig1a <- gg.reads_classified / gg.run1pca + plot_layout(heights = c(1,2))
+ 
+fig1 <- fig1a - gg.bias + plot_layout(widths = c(2,1)) + plot_annotation(tag_levels = 'A')
+  
+fig1
+
+# Write out figure 1
+pdf(file="fig/run1_multifig.pdf", width = 11, height = 8 , paper="a4r")
+  plot(fig1)
+try(dev.off(), silent=TRUE)
+
+# Problems to fix -  how does the PCA change with the filtered vs unfiltered data?
+# look at level of off-target amp
+```
 
 # Supplementary Comparison of primer replicates for detection and bias
+
+# Run 2 - comparison between replicate primers
 
 Run 2 - see the differences in bias between replicates
 
@@ -451,17 +580,27 @@ Run 2 - see the differences in bias between replicates
 
 ```
 
-## Run 3
+# Run 3 - full dataset
 
 ## Alpha diversity metrics
 
 ```{r alpha div}
 dir.create("output/alpha")
+
+# Get a histogram of taxon sums
+taxa_sums(ps2) %>%
+  as_tibble(rownames = "OTU") %>%
+  filter(value > 0) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram()
+  scale_x_log10()
+
 # Get richness measures
 richness <- phyloseq::estimate_richness(ps2, measures=c("Chao1", "Shannon", "Simpson")) %>% #
   rownames_to_column("sample_name") %>%
   mutate(sample_name = str_replace(sample_name, "\\.", "-"))
 
+#Richness is giving a warning because its acting on the trimemd dataset
 
 #Set number of randomisations for calculating significance
 # Calculate Faith's PD-index & Species richness - with Standard errors
@@ -730,6 +869,60 @@ ggtree(tree) + geom_tippoint(color="steelblue", size=2, alpha=.8)
 
 ```
 
+# Phylofactorisation
+
+Need to decide if i want to associate abundance on the phylogeny,
+
+or presence absense, which isnt gaussian distributed and therefore requires use of theh 'geeneralised phylofactorisation'
+
+```{r phylofactor}
+devtools::install_github('reptalex/phylofactor')
+library(phylofactor)
+# Example data
+data("FTmicrobiome")
+
+
+# Get OTU table
+OTUTable <- FTmicrobiome$OTUTable   #Our OTU table. Rows are OTUs and columns are samples
+OTUTable[1:5,1:5]
+#Note doesnt seem to have column names - is this necessaty
+
+# get independant variables - for me this will be abundance and presence absence
+body.site <- FTmicrobiome$X       
+
+ncol(OTUTable) #same length - refers to column
+length(body.site)
+
+#Get phylogenetic tree
+tree <- FTmicrobiome$tree           #Our phylogeny
+tree
+
+#plot tree
+ggtree(tree)
+
+# Get taxonomy - needs to be in qiime format? - may need to convert
+taxonomy <- FTmicrobiome$taxonomy   #Our taxonomy
+taxonomy[1:3,]
+
+# Filter to common OTUS - may not be necessary for me if i glom at species and am filtering using the logit already
+common.otus <- which(rowSums(OTUTable>0)>10)
+
+OTUTable <- OTUTable[common.otus,]                        
+tree <- ape::drop.tip(tree,setdiff(tree$tip.label,rownames(OTUTable)))  #trim our tree accordingly
+
+#Optional - replace zeroes with my own method as phylofactor just automatically uses a pseudocount 
+
+#Phylofactor
+PF <- PhyloFactor(OTUTable,tree,body.site,nfactors=3)
+class(PF)
+
+# Plto phylo heatmap
+library(phytools)
+clr <- function(Matrix) apply(Matrix,MARGIN=2,FUN=function(x) log(x)-mean(log(x)))
+
+par(mfrow=c(1,1))
+phylo.heatmap(tree,clr(PF$Data))
+```
 
 
 ## Occupancy modelling
