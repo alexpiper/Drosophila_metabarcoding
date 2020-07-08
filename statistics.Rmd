@@ -498,7 +498,7 @@ gg.reads_classified
 
 ## Detection probability
 How do the primers affect its probability of detection (presence/absence). We used a generalized linear mixed effects model of presence/absense as a function of primer
-primer. To account for the paired design (where both types of samples were derived from the samen community), we defined Sample ID as a random effect.
+primer. To account for the paired design (where both types of samples were derived from the same community), we defined Sample ID as a random effect.
 Since the response was binomial, we assumed a logit‐link and binomially distributed error
 
 ```{r detection probability}

@@ -1,0 +1,530 @@
+---
+title: "Drosophila Metabarcoding"
+title: "index_switching"
+author: "Alexander Piper"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Load packages
+```{r setup}
+#Set required packages
+.cran_packages <- c("tidyverse",
+                    "tidymodels",
+                    "patchwork", 
+                    "vegan", 
+                    "seqinr",
+                    "ape", 
+                    "RColorBrewer",
+                    "ggtree", 
+                    "castor", 
+                    "picante",
+                    "devtools")
+.bioc_packages <- c("dada2",
+                    "phyloseq", 
+                    "DECIPHER",
+                    "Biostrings",
+                    "ShortRead", 
+                    "philr",
+                    "ALDEx2")
+
+.inst <- .cran_packages %in% installed.packages()
+if(any(!.inst)) {
+   install.packages(.cran_packages[!.inst])
+}
+.inst <- .bioc_packages %in% installed.packages()
+if(any(!.inst)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+  BiocManager::install(.bioc_packages[!.inst], ask = F)
+}
+
+sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
+
+# Github packages
+devtools::install_github("alexpiper/seqateurs")
+devtools::install_github("mikemc/speedyseq")
+devtools::install_github('ggloor/CoDaSeq/CoDaSeq')
+devtools::install_github("mikemc/metacal")
+
+library(speedyseq)
+library(seqateurs)
+library(CoDaSeq)
+library(metacal)
+
+#Source internal functions
+source('R/helper_functions.R')
+
+# Define themes
+library(ggthemes)
+base_theme <- theme_minimal()+
+    theme(
+      strip.background = element_blank(),
+      #strip.background = element_rect(colour = "black", fill = "lightgray"),
+      strip.text = element_text(size=9, family = ""),
+      axis.text.x=element_text(angle=45,hjust=1,vjust=1),
+      axis.title.x=element_blank(),
+      plot.background = element_blank(),
+      text = element_text(size=9, family = ""),
+      axis.text = element_text(size=8, family = ""),
+      legend.position = "none",
+      panel.border = element_rect(colour = "black", fill=NA, size=0.5),
+      panel.grid = element_line(size = rel(0.5))
+      )
+```
+
+
+# Determine index switching rate
+
+We will use 3 different methods to estimate the cross contamination rate:
+
+* Firstly we will use the synthetic mock community positive control
+* Secondly we will use the estimate from the number of expected vs unapplied index combinations
+* Thirdly, we will use ROC analysis of false positives and false negatives for all taxa in the mocks.
+
+# Calculate from missasigned indexes
+
+```{R switching missasigned}
+files <- "/Volumes/TOSHIBA EXT/BASC/dros_metabarcoding/data"
+runs <- dir(files)
+## Calculate index switching
+i=1
+
+# Make output list 
+outlist <- vector("list", length=length(runs))
+for (i in 1:length(runs)){
+  path <- paste0(files,"/", runs[i])
+
+  indices <- sort(list.files(path, pattern="_R1_", full.names = TRUE)) %>%
+    purrr::set_names() %>%
+    purrr::map(seqateurs::summarise_index) %>%
+    bind_rows(.id="Sample_Name")%>%
+    arrange(desc(Freq)) %>% 
+    dplyr::mutate(Sample_Name = Sample_Name %>% 
+                    str_remove(pattern = "^(.*)\\/") %>%
+                    str_remove(pattern = "(?:.(?!_S))+$"))
+
+  
+  if(!any(str_detect(indices$Sample_Name, "Undetermined"))){
+    stop("Error, an Undetermined reads fastq must be present to calculate index switching")
+    }
+  
+  outlist[[i]] <- indices %>%
+    mutate(fcid = runs[i])
+}
+
+indices <- outlist %>%
+  bind_rows()
+
+write_rds(indices, "output/indices.rds")
+#test <- indices
+
+indices <- read_rds("output/indices.rds")
+# Get all possible combinations
+combos <- indices %>% 
+  dplyr::filter(!str_detect(Sample_Name, "Undetermined")) %>%
+  dplyr::select(index, index2, fcid) %>%
+  group_by(fcid) %>%
+  tidyr::expand(index, index2) %>%
+  mutate(other=FALSE)
+
+#get unused combinations resulting from index switching
+switched <- indices %>%
+  left_join(combos, by=c("index", "index2", "fcid")) %>%
+  as_tibble() %>%
+  mutate(other = replace_na(other, TRUE),
+         type = case_when(
+    str_detect(Sample_Name,"Undetermined") & other == FALSE ~ "switched",
+    !str_detect(Sample_Name,"Undetermined") & other == FALSE ~ "correct",
+    other==TRUE ~ "other"
+  )) %>%
+  dplyr::select(-other)
+
+switch_summary <- switched %>%
+  group_by(fcid, type) %>%
+  summarise(reads = sum(Freq))%>% 
+  pivot_wider(names_from = type,
+              values_from = reads) %>%
+  mutate(switchrate = switched/correct)
+
+#Plot switching
+gg.switch <- switched %>%
+  filter(!type=="other") %>%
+  mutate(index = factor(index, levels = unique(index)),
+         index2 = factor(index2, levels= unique(index2))) %>%
+  ggplot(aes(x = index, y = index2), stat="identity") +
+  geom_tile(aes(fill = Freq),alpha=0.8)  + 
+  scale_fill_viridis_c(name="log10 Reads", begin=0.1, trans="log10", na.value="gray")+
+  base_theme + 
+  facet_wrap(~fcid, scales="free", drop=TRUE)
+
+gg.switch
+
+pdf(file="fig/switching.pdf", width = 11, height = 8 , paper="a4r")
+  plot(gg.switch)
+try(dev.off(), silent=TRUE)
+```
+
+# Estimate cross contamination using synthetic positive control
+
+```{r switch syns}
+ps2 <- readRDS("output/rds/ps_filtered.rds")
+
+# plot synthetic positive controls
+Syn_taxa <- c("Synthetic_Acrididae", "Synthetic_Aphididae", "Synthetic_Apidae", "Synthetic_Cerambycidae", "Synthetic_Crambidae", "Synthetic_Culicidae","Synthetic_Drosophilidae","Synthetic_Nitidulidae","Synthetic_Siricidae","Synthetic_Tephritidae", "Synthetic_Thripidae", "Synthetic_Tortricidae", "Synthetic_Triozidae")
+
+
+#Check for presence of all synthetic taxa
+
+gg.syn <- ps2 %>%
+  subset_samples(type=="POS") %>%
+  subset_taxa(Species %in% Syn_taxa) %>%
+  filter_taxa(function(x) mean(x) > 0, TRUE) %>%
+  speedyseq::psmelt()%>%
+  dplyr::filter(fcid=="HLVKYDMXX") %>%
+  group_by(sample_id) %>%
+  mutate_at(vars(Abundance), ~ . / sum(.) ) %>% #Convert to proportions
+    ggplot(aes(x=sample_name, y=Abundance, fill=Species)) +
+  geom_col(position="stack") + 
+  facet_grid(target_subfragment~type, scales="free") +
+  scale_y_continuous(labels = scales::percent) +
+  coord_flip()+
+  base_theme+
+  scale_fill_brewer(palette="Spectral")  +
+  theme(legend.position = "bottom") +
+  labs(x = "Sample Name",
+       y= "Relative abundance",
+       fill="Species",
+       title = "Run 1 - Primer testing")
+
+gg.syn
+
+# Calculate index switching from syns
+pos_switchrate <- ps2 %>%
+  subset_taxa(Species %in% Syn_taxa) %>%
+  speedyseq::psmelt() %>%
+  mutate(type = case_when(
+    type == "POS" ~ "TP",
+    !type == "POS" ~ "FP"
+  )) %>%
+  group_by(type) %>%
+  summarise(Abundance = sum(Abundance)) %>%
+  ungroup() %>%
+  mutate(total = sum(Abundance)) %>%
+  dplyr::filter(type == "FP") %>%
+  mutate(switchrate = Abundance / total)
+  
+pos_switchrate
+
+# NOTE some syn taxa are missing? where are they?
+```
+
+# Estimate rate using known exp vs observed in mocks
+
+From the use of the mock community we can see that the majority cross contamination must have come from DNA extraction and prior processes. Therefore we will also get an estimate 
+
+```{r switch mocks}
+# Subset to mocks
+ps_mocks <- ps2
+
+#Fix unexpected taxa
+tax_table(ps_mocks)[,7][which(tax_table(ps_mocks)[,7]=="Drosophila_albomicans")] <-
+"Drosophila_immigrans"
+tax_table(ps_mocks)[,7][which(tax_table(ps_mocks)[,7]=="Drosophila_sulfurigaster")] <-
+"Drosophila_immigrans"
+tax_table(ps_mocks)[,7][which(tax_table(ps_mocks)[,7]=="Drosophila_mauritiana/simulans")] <-
+"Drosophila_simulans"
+tax_table(ps_mocks)[,7][which(tax_table(ps_mocks)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <-
+"Carpophilus_nr.dimidiatus"
+tax_table(ps_mocks)[,7][which(tax_table(ps_mocks)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
+tax_table(ps_mocks)[,7][which(tax_table(ps_mocks)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
+
+ps_mocks <- ps_mocks %>%
+  speedyseq::tax_glom(taxrank = "Species") %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE) 
+
+exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
+  dplyr::rename(sample_name = Sample) %>%
+  pivot_longer(-sample_name,
+               names_to= "taxon",
+               values_to= "expected") %>%
+  mutate(taxon = str_replace(taxon, pattern=" ",replacement="_"),
+         sample_name = str_remove(sample_name, "-exp*.$")) %>%
+  dplyr::filter(!is.na(sample_name),
+  !str_detect(sample_name, "CM[0-9]|CT[0-9]|CML[0-9]|Syn"),
+  expected > 0) %>%
+  distinct()
+
+#Get observed
+sam <- speedyseq::psmelt(ps_mocks) %>%
+  janitor::clean_names() %>%
+  mutate(taxon = species) %>%
+  filter(!str_detect(taxon, "__")) %>%#Remove unclassified
+  dplyr::select(sample_name, taxon, abundance, target_subfragment, fcid, material_type = type) %>%
+  mutate(sample_name = sample_name %>%
+           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
+           str_remove("HLVKYDMXX_"),
+         sample_id = paste0(fcid, "_", sample_name),
+         sample_name = sample_name %>%
+           str_remove("-ex[0-9]")) 
+
+#Join tables 
+mocks <- sam %>%
+  filter(sample_name %in% exp$sample_name,
+         material_type =="DrosMock") %>%
+  left_join(exp, by = c("sample_name","taxon")) %>%
+  mutate(type = case_when(
+    abundance > 0 & is.na(expected) ~ "FP",
+    abundance > 0 & !is.na(expected) ~ "TP",
+    abundance == 0 & expected > 0 ~ "FN"
+  )) %>%
+  filter(!is.na(type))
+
+#Make a heatmap
+#Run CB3DR
+group.colors <- c(TP = "#abdda4", FP = "#d7191c", FN ="#2b83ba")
+mocks %>%
+  filter(fcid=="CB3DR") %>%
+  group_by(sample_id, target_subfragment) %>%
+  mutate_at(vars(abundance), ~ . / sum(.) ) %>% #Convert to proportions
+  mutate(label = percent(abundance %>% round(2)) %>%
+          str_replace("^0.00%|^0.0%", "< 0.0%")) %>%
+  ungroup()  %>%
+  ggplot(aes(x=sample_id, y=taxon)) + 
+  geom_tile(aes(fill = type), alpha=0.8) +
+  geom_text(aes(label = label)) +
+  base_theme +
+  scale_fill_manual(values=group.colors)+ 
+  facet_grid(fcid~target_subfragment, scales="free", drop=TRUE) +
+  labs(x = "Sample",
+       y = "Taxon",
+       title = "CB3DR") +
+  theme(legend.position = "bottom")
+
+#Run HLVKYDMXX
+mocks %>%
+  filter(fcid=="HLVKYDMXX") %>%
+  group_by(sample_id, target_subfragment) %>%
+  mutate_at(vars(abundance), ~ . / sum(.) ) %>% #Convert to proportions
+  mutate(label = percent(abundance %>% round(2)) %>%
+           str_replace("^0.00%|^0.0%", "< 0.0%")) %>%
+  ungroup()  %>%
+  ggplot(aes(x=sample_id, y=taxon)) + 
+  geom_tile(aes(fill = type), alpha=0.8) +
+  geom_text(aes(label = label)) +
+  base_theme +
+  scale_fill_manual(values=group.colors)+
+  labs(x = "Sample",
+       y = "Taxon",
+       title = "HLVKYDMXX") +
+  theme(legend.position = "bottom")
+
+#Calculate switchrate
+mock_switchrate <- mocks %>%
+  group_by(fcid, type) %>%
+  summarise(reads = sum(abundance))%>% 
+  pivot_wider(names_from = type,
+              values_from = reads) %>%
+  mutate(switchrate = FP/TP) %>%
+  dplyr::select(-FN)
+
+mock_switchrate 
+```
+
+# Predict index switching using logistic regression
+
+Predicting if a taxa is real or an artefact of index swithcing is a logistic regression problem
+it can be parameterized on:
+* Amount of reads
+* Overall switch rate (from exp vs observed in fastq) (flexible parameter that changes per run)
+* index sequence hamming distance
+* Presence of taxa in high abundance in another sample on the run - Ie there needs to be a high abundance taxa somewhere else for the switching to come from, otherwise its probably real or lab contamination
+
+```{r logistic regression}
+# Create model dataset
+mock_dat <- mocks %>%
+  group_by(sample_id, target_subfragment) %>%
+  dplyr::mutate(abundance_RA = abundance, 
+                abundance_clr = abundance) %>%
+  mutate_at(vars(abundance_RA), ~ . / sum(.) ) %>%
+  mutate_at(vars(abundance_clr ), ~metacal::clr(. + 0.5) ) %>%
+  ungroup() %>%
+  dplyr::select(fcid, sample_id, sample_name, taxon, abundance_counts = abundance, abundance_RA, abundance_clr, outcome = type) %>% 
+  filter(outcome %in% c("TP", "FP"))
+  
+# Check for difference in distribution
+mock_dat %>%
+  pivot_longer(starts_with("abundance_"),
+               names_to = "type",
+               names_prefix = "abundance_",
+               values_to = "abundance"
+               ) %>%
+  mutate(abundance = case_when(
+    type %in% c("counts", "RA") ~ log10(abundance),
+    TRUE ~ abundance
+  )) %>%
+  ggplot(aes(x = abundance, fill = outcome)) +
+  geom_histogram(position = "identity", alpha = 0.7) +
+  labs(
+    x = "log10(Abundance)",
+    y = "Number of occurances",
+    fill = NULL
+  )+
+  facet_grid(fcid~type, scales="free")
+#Looks like there is enough separation to predict it
+
+# Look at overall numbers of events
+mock_dat %>%
+  group_by(fcid, outcome) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = outcome, y=count, fill=outcome)) +
+  geom_col() + 
+  facet_grid(~fcid) +
+  base_theme  
+
+# Create dataset split
+set.seed(seed = 606) 
+
+mock_split <- initial_split(mock_dat, strata = fcid, prop=0.8)
+mock_train <- training(mock_split)
+mock_test <- testing(mock_split)
+
+# Create modelling recipe
+switch_recipe <- recipe(outcome ~ ., data = mock_train) %>%
+  update_role(sample_id, sample_name, new_role = "ID") %>%
+  #step_downsample(outcome) %>% #Maybe not necessary?
+  step_string2factor(all_nominal(), -all_outcomes(), -has_role("ID")) %>%
+  #step_dummy(all_nominal(), -all_outcomes(), -has_role("ID")) %>%
+  step_zv(all_numeric()) %>%
+  #step_normalize(all_numeric(), -abundance_clr) %>%
+  step_naomit(all_predictors())
+
+#Prep a recipe
+rec_prepped <- prep(switch_recipe)
+rec_prepped 
+
+# Define model
+logit_spec <- logistic_reg(mode = "classification") %>%
+  set_engine(engine = "glm") 
+
+# Create workflow
+logit_wf <- workflow() %>%
+  add_model(logit_spec) %>%
+  add_recipe(switch_recipe)
+
+# Fit workflow
+logistic_glm <- logit_wf  %>%
+  fit(mock_train)
+
+# Get importance of predictors
+logistic_glm  %>%
+  pull_workflow_fit()%>%
+  vip::vi() %>%
+  group_by(Sign) %>%
+  top_n(20, wt = abs(Importance)) %>%
+  ungroup() %>%
+  mutate(
+    Importance = abs(Importance),
+    Variable = fct_reorder(Variable, Importance)
+  ) %>%
+  ggplot(aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col(show.legend = FALSE) +
+  labs(y = NULL)
+
+#Predict test dataset
+predictions_glm <- logistic_glm %>%
+  predict(new_data = mock_test) %>%
+  bind_cols(bake(rec_prepped, new_data =  mock_test))
+
+# Confusion matrix
+predictions_glm %>%
+  conf_mat(outcome, .pred_class) %>%
+  pluck(1) %>%
+  as_tibble() %>%
+  ggplot(aes(Prediction, Truth, alpha = n)) +
+  geom_tile(show.legend = FALSE) +
+  geom_text(aes(label = n), colour = "white", alpha = 1, size = 8)
+
+# Calculate metrics
+multimetric <- metric_set(accuracy, bal_accuracy, sens, yardstick::spec, precision, recall, ppv, npv)
+multimetric(predictions_glm, truth = outcome, estimate = .pred_class)  
+
+# Make an ROC curve
+## get probabilities on test set
+predictions_prob <- logistic_glm %>%
+  predict(new_data = mock_test, type="prob") %>%
+  bind_cols(bake(rec_prepped, new_data =  mock_test))
+
+# plot curve
+roc_data <- roc_curve(predictions_prob, truth = outcome, .pred_FP) 
+roc_data %>%  
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path() +
+  geom_abline(lty = 3) + 
+  coord_equal()
+```
+Would it be useful to add ASV into the model?
+
+# How well does it clean a real dataset?
+
+```{R comparison}
+# Apply missasigned esitamte to filter
+predictions_filt  <- bake(rec_prepped, mock_test) %>% 
+  dplyr::select(-abundance_counts, -abundance_clr) %>%
+  left_join(
+    switch_summary %>%
+    dplyr::select(fcid, rate_misasigned = switchrate) 
+  ) %>% 
+  bind_cols(
+    pos_switchrate %>%
+    dplyr::select(rate_pos = switchrate) 
+  ) %>%
+  left_join(
+    mock_switchrate%>%
+    dplyr::select(fcid, rate_mock = switchrate) 
+  ) %>% 
+  mutate(rate_0.01 = 0.0001) %>% #Blanket 0.01% filter rate
+  pivot_longer(starts_with("rate_"),
+               names_to ="est_type",
+               names_prefix = "rate_",
+               values_to = "estimate")%>%
+  mutate(filtered = abundance_RA - estimate) %>%
+    bind_rows(bake(rec_prepped, mock_test) %>% 
+              left_join(predictions_glm)  %>%
+              mutate(est_type = "logit",
+                     filtered = case_when(
+                       .pred_class == "TP" ~ abundance_RA,
+                       .pred_class == "FP" ~ 0)
+                     ) %>%
+              dplyr::select(-abundance_counts, -abundance_clr,
+                            -.pred_class, filtered)) %>%
+  left_join(exp) %>%
+  mutate(outcome_post= case_when(
+    filtered > 0 & is.na(expected) ~ "FP",
+    filtered > 0 & !is.na(expected) ~ "TP",
+    filtered <= 0 & expected > 0 ~ "FN",
+    filtered <= 0 & is.na(expected) ~ "TN"
+  ))  %>%
+  dplyr::rename(outcome_pre = outcome) %>%
+  pivot_longer(starts_with("outcome_"),
+               names_prefix = "outcome_",
+               names_to="stage",
+               values_to="outcome") %>%
+  group_by(est_type, stage, outcome, fcid) %>%
+  summarise(count = n()) 
+
+group.colors <- c(TP = "#abdda4", FP = "#d7191c", FN ="#2b83ba", TN ="#cccccc")
+
+predictions_filt %>%
+  mutate(stage = factor(stage, levels=c("pre", "post"))) %>%
+  ggplot(aes(x=stage, y=count, fill=outcome)) + 
+  geom_col(position="stack", alpha = 0.8) +
+  base_theme+
+  facet_grid(fcid~est_type) +
+  #scale_fill_brewer(palette="Spectral")+
+  scale_fill_manual(values=group.colors) + 
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle=0))
+```
