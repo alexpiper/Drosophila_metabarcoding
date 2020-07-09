@@ -915,6 +915,59 @@ write.tree(fitGTR$tree, file="output/tree.nwk")
 ```
 
 
+## Output fate of reads through pipeline
+
+```{r read fate}
+#Fraction of reads assigned to each taxonomic rank
+sum_reads <- speedyseq::psmelt(ps) %>%
+  dplyr::select(sample_id, rank_names(ps), Abundance) %>%
+  pivot_longer(rank_names(ps),
+               names_to="rank",
+               values_to="name") %>%
+  group_by(sample_id, rank) %>% 
+  mutate(name = replace(name, str_detect(name, "__"), NA)) %>% 
+  dplyr::summarise(reads_classified = sum(Abundance * !is.na(name))) %>%
+  pivot_wider(names_from = "rank",
+              values_from = "reads_classified")
+
+# plot just the taxonomic assignment
+
+read_tracker <- read_csv("output/logs/read_tracker.csv") %>% 
+  janitor::clean_names() %>%
+  left_join(sum_reads, by="sample_id")
+write_csv(read_tracker, "output/logs/read_tracker.csv")
+
+gg.readtracker <- read_tracker %>%
+  dplyr::rename(trimmed_reads = output_reads) %>%
+  dplyr::mutate(input_reads = input_reads / 2,
+                trimmed_reads = trimmed_reads / 2) %>%
+  pivot_longer(3:tail(colnames(.), 1),
+               names_to = "type",
+               values_to = "value") %>%
+  mutate(stage= case_when(
+    type %in% c("input_reads","input_bases", "ktrimmed_bases", "ktrimmed_reads", "trimmed_reads", "output_bases") ~ "BBDuk",
+    type %in% c("filter_input","filter_output") ~ "FilterAndTrim",
+    type %in% c("dadaFs","dadaRs", "merged") ~ "DADA",
+    type %in% c("seqtab","chimera_filt", "size_filt", "seqtab_final") ~ "Seqtab",
+    type %in% c("Root", "Kingdom", "Phylum", "Class","Order", "Family", "Genus", "Species") ~ "taxonomy",
+  )) %>%
+  ggplot(aes(x=type, y=value, fill=stage)) +
+  geom_bar(stat="identity") +
+  scale_x_discrete(limits = c("input_reads", "trimmed_reads", "filter_input", "filter_output",
+                              "dadaFs", "dadaRs", "merged","seqtab", "chimera_filt", "size_filt", "seqtab_final",
+                              "Kingdom", "Phylum", "Class","Order", "Family", "Genus", "Species")) +
+  facet_wrap(~sample_id) +
+  base_theme+ 
+  scale_fill_brewer(palette="Paired")
+
+gg.readtracker
+  
+pdf(paste0("output/logs/read_tracker.pdf"), width = 11, height = 8 , paper="a4r")
+  gg.readtracker
+try(dev.off(), silent=TRUE)
+
+```
+
 # Make Phyloseq object
 
 ```{r create PS, eval = FALSE}
@@ -1037,70 +1090,21 @@ seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta")
 ```
 
 
-## Output fate of reads through pipeline
-
-```{r read fate}
-#Fraction of reads assigned to each taxonomic rank
-sum_reads <- speedyseq::psmelt(ps) %>%
-  dplyr::select(sample_id, rank_names(ps), Abundance) %>%
-  pivot_longer(rank_names(ps),
-               names_to="rank",
-               values_to="name") %>%
-  group_by(sample_id, rank) %>% 
-  mutate(name = replace(name, str_detect(name, "__"), NA)) %>% 
-  dplyr::summarise(reads_classified = sum(Abundance * !is.na(name))) %>%
-  pivot_wider(names_from = "rank",
-              values_from = "reads_classified")
-
-# plot just the taxonomic assignment
-
-read_tracker <- read_csv("output/logs/read_tracker.csv") %>% 
-  janitor::clean_names() %>%
-  left_join(sum_reads, by="sample_id")
-write_csv(read_tracker, "output/logs/read_tracker.csv")
-
-gg.readtracker <- read_tracker %>%
-  dplyr::rename(trimmed_reads = output_reads) %>%
-  dplyr::mutate(input_reads = input_reads / 2,
-                trimmed_reads = trimmed_reads / 2) %>%
-  pivot_longer(3:tail(colnames(.), 1),
-               names_to = "type",
-               values_to = "value") %>%
-  mutate(stage= case_when(
-    type %in% c("input_reads","input_bases", "ktrimmed_bases", "ktrimmed_reads", "trimmed_reads", "output_bases") ~ "BBDuk",
-    type %in% c("filter_input","filter_output") ~ "FilterAndTrim",
-    type %in% c("dadaFs","dadaRs", "merged") ~ "DADA",
-    type %in% c("seqtab","chimera_filt", "size_filt", "seqtab_final") ~ "Seqtab",
-    type %in% c("Root", "Kingdom", "Phylum", "Class","Order", "Family", "Genus", "Species") ~ "taxonomy",
-  )) %>%
-  ggplot(aes(x=type, y=value, fill=stage)) +
-  geom_bar(stat="identity") +
-  scale_x_discrete(limits = c("input_reads", "trimmed_reads", "filter_input", "filter_output",
-                              "dadaFs", "dadaRs", "merged","seqtab", "chimera_filt", "size_filt", "seqtab_final",
-                              "Kingdom", "Phylum", "Class","Order", "Family", "Genus", "Species")) +
-  facet_wrap(~Sample_ID) +
-  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust=0.5)) +
-  scale_fill_brewer(palette="Spectral")
-  
-pdf(paste0("output/logs/read_tracker.pdf"), width = 11, height = 8 , paper="a4r")
-  gg.readtracker
-try(dev.off(), silent=TRUE)
-
-```
-
 
 ### Summary statistics
 
 ```{r summarise taxa}
 # N unique species and samples
 speedyseq::psmelt(ps) %>%
+  group_by(fcid) %>%
   summarise(n_extracts = n_distinct(extract_id), n_samples = n_distinct(sample_id))
 
 # Spread of reads
 speedyseq::psmelt(ps) %>%
-  group_by(extract_id) %>%
+  group_by(extract_id, fcid) %>%
   summarise(Abundance = sum(Abundance)) %>%
   ungroup() %>%
+  group_by(fcid) %>%
   summarise(mean = mean(Abundance), 
             se = sd(Abundance)/sqrt(length(Abundance)),
             max = max(Abundance),
@@ -1108,10 +1112,11 @@ speedyseq::psmelt(ps) %>%
 
 # Spread of ASVs
 speedyseq::psmelt(ps) %>%
-  group_by(extract_id) %>%
+  group_by(extract_id, fcid) %>%
   dplyr::filter(Abundance > 0) %>%
   summarise(counts = n_distinct(OTU)) %>%
   ungroup() %>%
+  group_by(fcid) %>%
   summarise(mean = mean(counts), 
             se = sd(counts)/sqrt(length(counts)),
             max = max(counts),
@@ -1274,6 +1279,9 @@ try(dev.off(), silent=TRUE)
 ps1 <- prune_samples(sample_sums(ps0)>=threshold, ps0) 
 ps1 <- filter_taxa(ps1, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
 message(nsamples(ps0) - nsamples(ps1), " Samples and ", ntaxa(ps0) - ntaxa(ps1), " taxa under read threshold Dropped")
+
+# Check which were dropped
+setdiff(sample_names(ps0), sample_names(ps1))
 ```
 
 ## Overlap between replicates
@@ -1288,7 +1296,6 @@ PCR replicates doesnt add more
 Visualise overlap, then merge choosing a majority rules approach
 
 ```{r overlap between replicates}
-
 # Mean pairwise distance between PCR replicates
 mpd_pcr <- ps1 %>%
   otu_table() %>%
@@ -1423,7 +1430,7 @@ try(dev.off(), silent=TRUE)
 ```
 
 ## Abundance counts for different replicates
-```{r}
+```{r Heatmap replicate abundance}
 # Heatmap of abundance of pcr replicates
 gg.repmap <- ps1 %>% 
   speedyseq::psmelt() %>%
@@ -1513,8 +1520,11 @@ sam <- speedyseq::psmelt(ps_model) %>%
   #mutate(sample_name = sample_name %>%
   #         str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
   #         str_remove("HLVKYDMXX_")) %>%
-  mutate(extract_id = sample_name) %>%
-  mutate(sample_name = str_remove(sample_name, "-exp*.$"))
+  mutate(extract_id = sample_name %>%
+           str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_")) %>%
+  mutate(sample_name = sample_name %>%
+           str_remove("-exp*.$")%>%
+           str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_"))
 
 #Create a mocks table to train the model on
 mock_train <- sam %>%

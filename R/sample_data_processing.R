@@ -9,10 +9,14 @@ samdf <- read.csv("sample_data/sample_info.csv", header=TRUE) %>%
   )) %>%
   mutate(extract_id = sample_name) %>%
   mutate(sample_name = str_remove(sample_name, "-exp*.$")) %>%
+  mutate(sample_name = case_when(
+    fcid=="HLVKYDMXX" ~ sample_name,
+    !fcid=="HLVKYDMXX" ~ paste0(fcid, "_", sample_name)
+  )) %>%
   filter(!(index=="ATCGATCG" & index2=="ATCACACG"), #CT11-ex1 duplicated
          !(index=="TCGCTGTT" & index2=="ACTCCATC") # CT12-ex1 duplicated
   ) %>%
-  filter(!fcid=="CK3HD") %>%
+  #filter(!fcid=="CK3HD") %>% #WHY?
   mutate(type = case_when(
     str_detect(sample_id, "D[0-9][0-9][0-9]M|D[0-9][0-9][0-9][0-9]M|DM[0-9]")  ~ "DrosMock",
     str_detect(sample_id, "SPD")  ~ "SPD",

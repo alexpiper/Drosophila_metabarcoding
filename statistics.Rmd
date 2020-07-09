@@ -95,11 +95,6 @@ ps_run1 <- ps_run1 %>%
   subset_samples(!str_detect(sample_names(ps_run1),"blank")) %>%
   filter_taxa( function(x) mean(x) > 0, TRUE) 
 
-tax_table(ps_run1)[,7][which(tax_table(ps_run1)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <- "Carpophilus_nr.dimidiatus"
-tax_table(ps_run1)[,7][which(tax_table(ps_run1)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
-tax_table(ps_run1)[,7][which(tax_table(ps_run1)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
-ps_run1 <- speedyseq::tax_glom(ps_run1, taxrank="Species")
-
 ps_run1 %>% 
   speedyseq::psmelt() %>%
   group_by(sample_id) %>%
@@ -169,107 +164,13 @@ gg.run1pca <- plot_ordination(ps_run1, philr.pcoa, color = "extract_id", shape =
   geom_hline(yintercept = 0, linetype=2, alpha=0.5) +  
   geom_vline(xintercept = 0, linetype=2, alpha=0.5) +
   base_theme +
+  #coord_fixed() +
   scale_colour_brewer(palette="Paired") +
-  theme(legend.position = "bottom") +
-  coord_fixed()
+  theme(legend.position = "bottom", legend.margin=margin()) +
+  labs(shape = "Primer pair",
+       colour = "Sample")
 
 gg.run1pca
-
-#PCA 
-pca <- prcomp(ps_run1.philr)
-
-# Plot PCA 
-
-# Get pca data
-pca_data <- pca$x %>%
-  as_tibble(rownames = "sample_name") %>%
-  dplyr::select(1:6)%>%
-  left_join(sample_data(ps_run1) %>%
-              as("data.frame") %>%
-    dplyr::select(sample_name, type, target_subfragment) %>%
-    distinct()) %>%
-  mutate(extract_id = sample_name %>%
-           str_remove_all("BF1-BR1-|fwhF2-fwhR2n-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-"))
-
-#Get PCA loadings
-pca_loadings <- data.frame(OTU = rownames(pca$rotation), pca$rotation[, 1:2])
-mult <- min(
-    (max(pca_data$PC1) - min(pca_data$PC1)/(max(pca_loadings$PC1)-min(pca_loadings$PC1))),
-    (max(pca_data$PC2) - min(pca_data$PC2)/(max(pca_loadings$PC2)-min(pca_loadings$PC2)))
-    )
-pca_loadings <- transform(pca_loadings,
-        v1 = .7 * mult * (pca_loadings$PC1),
-        v2 = .7 * mult * (pca_loadings$PC1)
-        )
-
-# calculate percent variance explained for the axis labels
-pc1 <- round(pca$sdev[1]^2/sum(pca$sdev^2),2)
-pc2 <- round(pca$sdev[2]^2/sum(pca$sdev^2),2)
-pc_ylab <- paste("PC1: ", pc1, sep="")
-pc_xlab <- paste("PC2: ", pc2, sep="")
-
-# Plot PCA
-gg.pca <- ggplot(data=pca_data, aes(x=PC2, y=PC3)) + 
-  geom_point(aes(colour = extract_id, shape = target_subfragment), alpha=0.8, size=3) +
-  scale_colour_brewer(palette="Paired") +
-  geom_hline(yintercept = 0, linetype=2, alpha=0.5) +  
-  geom_vline(xintercept = 0, linetype=2, alpha=0.5) +
-  xlab(pc_xlab) + 
-  ylab(pc_ylab) +
-  #Add loadings
-  geom_text(data=pca_loadings, aes(x=v1, y=v2, label=OTU), 
-            size = 5, vjust=1,hjust=1, color="red", check_overlap = TRUE,
-            alpha=0.5)+
-  geom_segment(data=pca_loadings, aes(x=0, y=0, xend=v1, yend=v2),
-               arrow=arrow(length=unit(0.2,"cm")), alpha=0.5, color="red") +
-  base_theme+
-  theme(legend.position = "bottom") +
-coord_fixed(ratio=pc1/pc2) # Scale plot by variance explained
-
-gg.pca
-
-# Plot Loading contribution
-tidied_pca <- broom::tidy(pca, matrix="rotation") %>%
-  magrittr::set_colnames(c("term", "component", "value"))
-
-library(tidytext)
-tidied_pca %>%
-  dplyr::filter(component < 5) %>%
-  group_by(component) %>%
-  #top_n(6, abs(value)) %>%
-  ungroup() %>%
-  mutate(term = reorder_within(term, abs(value), component)) %>%
-  dplyr::mutate(component = factor(paste0("PC",component))) %>%
-  ggplot(aes(x=abs(value), y=term, fill = value > 0)) +
-  geom_col(show.legend = FALSE) +
-  facet_wrap(~component, scales = "free", nrow=1) +
-  scale_y_reordered() +
-    labs(
-    x = "Absolute value of contribution",
-    y = NULL, 
-    fill = "Positive?"
-  ) +
-  base_theme +
-  theme(legend.position = "bottom")
-
-# Scree plot
-sdev <- pca$sdev
-percent_variation <- sdev^2 / sum(sdev^2)
-
-tibble(
-  component = unique(tidied_pca$component),
-  percent_var = percent_variation ## use cumsum() to find cumulative, if you prefer
-) %>%
-  dplyr::filter(component < 11) %>%
-  mutate(component = factor(component)) %>%
-  mutate(component = fct_inorder(component)) %>%
-  ggplot(aes(component, percent_var)) +
-  geom_col() +
-  scale_y_continuous(labels = scales::percent_format()) +
-  labs(x = NULL, y = "Percent variance explained by each PCA component") +
-  base_theme +
-  theme(axis.text.x = element_text(angle=0))
-
 ```
 
 ## Bias
@@ -317,7 +218,7 @@ sam <- speedyseq::psmelt(ps_bias) %>%
            str_remove("HLVKYDMXX_"),
          sample_id = paste0(fcid, "_", sample_name),
          sample_name = sample_name %>%
-           str_remove("-ex[0-9]")) 
+           str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_")) 
 
 #Join tables 
 joint <- sam %>%
@@ -368,10 +269,25 @@ bias <- joint %>%
   mutate(taxon = str_remove(term, "taxon")) %>%
    dplyr::select(target_subfragment, material_type, taxon, estimate) 
 
+# Bootstrap estimation
+set.seed(606)
+boot_models <- joint %>%
+  filter(material_type=="DrosMock") %>%
+  filter(expected > 0) %>%
+  group_by(target_subfragment) %>%
+  group_modify(~{
+    bootstraps(.x, times=1000, apparant=TRUE)  %>%
+    mutate(fit = map(splits, ~lm(metacal::center_elts(observed0 /expected) ~ 0 + taxon , data = .)), 
+           coef = map(fit, broom::tidy)) %>%
+    int_pctl(coef) 
+    }) %>%
+  mutate(taxon = str_remove(term, "taxon")) %>%
+  dplyr::select(target_subfragment, taxon, lower = .lower, estimate = .estimate, upper = .upper)
+
 # See how well bias estiamte fits data
 
 preds <- joint %>%
-  left_join(bias) %>%
+  left_join(boot_models) %>%
   dplyr::mutate(predicted = expected * estimate) %>%
   group_by(sample_id) %>%
   mutate_at(vars(predicted), ~ . / sum(., na.rm=TRUE) ) %>%
@@ -391,7 +307,7 @@ gg.bias_fits <- preds %>%
   ggplot(aes(x=logit(predicted), y=logit(observed), color = taxon))+
   geom_abline(intercept = 0, slope = 1, color = "grey") +
     geom_jitter(width = 0.1, height = 0, alpha=0.7, size=2) +
-  geom_text(aes(x=-7, y=-1, label=rmse), check_overlap = TRUE, inherit.aes = FALSE)+
+  geom_text(aes(x=-6, y=-1, label=rmse), check_overlap = TRUE, inherit.aes = FALSE)+
   facet_wrap(~target_subfragment)+
   coord_fixed()+
   scale_color_brewer(palette = "Paired")+
@@ -412,31 +328,33 @@ gg.bias_fits
 pdf(file="fig/bias_model_fit.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.bias_fits)
 try(dev.off(), silent=TRUE)
-  
-# Add RMSE to plot
+
 
 # Plot bias estimates
 gg.bias <- preds %>%
-  distinct() %>%
+  ungroup() %>%
+  dplyr::select(taxon, estimate, upper, lower, target_subfragment) %>%
+  distinct()%>%
   mutate(taxon = str_replace(taxon, "^.*_", "D. ")) %>%
-  ggplot(aes(x=target_subfragment, y=estimate-1, fill=target_subfragment)) +
-  geom_col()+
+  ggplot(aes(x = taxon, y = estimate-1, colour = target_subfragment, group = target_subfragment)) +
+  geom_hline(yintercept = 0, alpha=0.5, colour = "grey20") +
+  geom_pointrange(aes(ymin = lower-1, ymax = upper-1), position=position_dodge(width=0.5))+
   coord_flip() +
-  facet_grid(taxon~.) +
+  #facet_grid(target_subfragment~.) +
   base_theme+
-  scale_fill_brewer(palette="Paired") +
+  scale_colour_brewer(palette="Paired") +
   labs(
     x = NULL,
     y = "Efficiency / Geometric mean") +
-  theme(axis.text.y = element_blank(),
-        strip.text = element_text(face = "italic"))
+  theme(axis.text.y = element_text(face = "italic"),
+        legend.position = "bottom")
 
 gg.bias
 
-# Bias is missing some taxa for some primers? check
+#bias is missing for BF1 biarmipes because it was low reads
 ```
 
-## Off-target reads
+## Classification summary
 
 The ratio of root assigned reads to those under species level can be used as a proxy for taxonomic assignment
 ```{r, run 1 tax summary}
@@ -484,13 +402,14 @@ gg.reads_classified <- tax_plot_data  %>%
   geom_text_repel(data= tax_plot_data %>%
               filter(rank=="Species"),
             #aes(label = percent(read_prop, accuracy = 0.1)),
-            aes(label = target_subfragment),
-            direction = "y", hjust=-1, segment.alpha = 0)+
+            aes(label = target_subfragment), nudge_x = 1, hjust=1,
+            direction = "y", segment.alpha = 0)+
   base_theme +
-  facet_grid(type~., scales="free_y") +
+  facet_wrap(~type, scales = "free_y", nrow = 2)+
+  #facet_grid(~type, cols=1, rows=2) +
   scale_colour_brewer(palette="Paired") +
   scale_y_continuous(labels = scales::percent) +
-  labs(x = "Taxonomic Rank",
+  labs(x = NULL,
        y=NULL) 
 
 gg.reads_classified
@@ -553,12 +472,11 @@ Comparison of primers for bias, off-target amp, and PCA of overlap
 
 ```{r run 1 multifig}
 # PCA, off target, and bias
-
-fig1a <- gg.reads_classified / gg.run1pca + plot_layout(heights = c(1,2))
+fig1a <- gg.reads_classified / gg.run1pca 
  
-fig1 <- fig1a - gg.bias + plot_layout(widths = c(2,1)) + plot_annotation(tag_levels = 'A')
+fig1 <- fig1a - gg.bias + plot_layout(widths = c(2,1)) + plot_annotation(tag_levels = 'A') & theme(plot.margin = unit(c(1,1,1,1), "mm"))
   
-fig1
+fig1 
 
 # Write out figure 1
 pdf(file="fig/run1_multifig.pdf", width = 11, height = 8 , paper="a4r")
@@ -576,27 +494,128 @@ try(dev.off(), silent=TRUE)
 Run 2 - see the differences in bias between replicates
 
 ```{R run2}
+# RUN 2
+ps_run2 <- readRDS("output/rds/ps_idtaxaExact.rds") %>%
+  subset_samples(fcid %in% c("CK3HD")) %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE) %>%
+  speedyseq::tax_glom(taxrank="Species")
 
+exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
+  dplyr::rename(sample_name = Sample) %>%
+  pivot_longer(-sample_name,
+               names_to= "taxon",
+               values_to= "expected") %>%
+  mutate(taxon = str_replace(taxon, pattern=" ",replacement="_"),
+         sample_name = str_remove(sample_name, "-exp*.$")) %>%
+  dplyr::filter(!is.na(sample_name),
+  !str_detect(sample_name, "CM[0-9]|CT[0-9]|CML[0-9]|Syn"),
+  expected > 0) %>%
+  distinct()
 
+#Get observed
+
+sam <- ps_run2%>%
+  speedyseq::psmelt() %>%
+  janitor::clean_names() %>%
+  mutate(taxon = species) %>%
+  filter(!str_detect(genus, "__")) %>%#Remove unclassified
+  dplyr::select(sample_name, sample_id, replicate, taxon, abundance, target_subfragment, fcid, material_type = type) %>%
+  mutate(sample_name = sample_name %>%
+           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
+           str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_")) 
+
+#Join tables 
+joint <- sam %>%
+  filter(taxon %in% exp$taxon,
+         sample_name %in% exp$sample_name) %>%
+  left_join(exp, by = c("sample_name","taxon")) %>%
+  dplyr::rename(observed = abundance) %>%
+  mutate(expected = replace_na(expected, 0),
+         observed0 = (observed + 0.5) * (expected > 0),
+         error = observed0 / expected) %>%
+  distinct() %>%
+  group_by(sample_id) %>%
+  mutate_at(vars(observed, expected), ~ . / sum(.) ) %>% #Convert to proportions
+  ungroup()
+
+# Bootstrap estimation
+set.seed(606)
+boot_models <- joint %>%
+  filter(material_type=="DrosMock") %>%
+  filter(expected > 0) %>%
+  group_by(target_subfragment, replicate) %>%
+  group_modify(~{
+    bootstraps(.x, times=1000, apparant=TRUE)  %>%
+    mutate(fit = map(splits, ~lm(metacal::center_elts(observed0 /expected, na.rm = TRUE) ~ 0 + taxon , data = .)), 
+           coef = map(fit, broom::tidy)) %>%
+    int_pctl(coef) 
+    }) %>%
+  mutate(taxon = str_remove(term, "taxon")) %>%
+  dplyr::select(target_subfragment, replicate, taxon, lower = .lower, estimate = .estimate, upper = .upper)
+
+# See how well bias estiamte fits data
+
+preds <- joint %>%
+  left_join(boot_models) %>%
+  dplyr::mutate(predicted = expected * estimate) %>%
+  group_by(sample_id) %>%
+  mutate_at(vars(predicted), ~ . / sum(., na.rm=TRUE) ) %>%
+  filter(expected > 0) %>%
+  filter(observed > 0)
+
+# Plot bias estimates for the 3 separate primers
+gg.biasreps <- preds %>%
+  ungroup() %>%
+  dplyr::select(taxon, estimate, upper, lower, target_subfragment, replicate) %>%
+  distinct()%>%
+  mutate(replicate = factor(replicate, levels = c("1","2","3"))) %>%
+  mutate(taxon = str_replace(taxon, "^.*_", "D. ")) %>%
+  ggplot(aes(x = taxon, y = estimate-1, colour = replicate, group =replicate)) +
+  geom_hline(yintercept = 0, alpha=0.5, colour = "grey20") +
+  geom_pointrange(aes(ymin = lower-1, ymax = upper-1), position=position_dodge(width=0.5))+
+  facet_grid(~target_subfragment) +
+  coord_flip() +
+  base_theme+
+  scale_colour_brewer(palette="Paired") +
+  labs(
+    x = NULL,
+    y = "Efficiency / Geometric mean",
+    colour = "Tagged PCR primer") +
+  theme(axis.text.y = element_text(face = "italic"),
+        legend.position = "bottom")
+
+gg.biasreps
+
+# Write supplementary figure
+pdf(file="fig/run2_biasreps.pdf", width = 11, height = 8 , paper="a4r")
+  plot(gg.biasreps)
+try(dev.off(), silent=TRUE)
 ```
 
 # Run 3 - full dataset
 
+## Subset to just run 3
+```{r}
+ps_run3 <- ps2 %>%
+  subset_samples(fcid %in% c("HLVKYDMXX")) %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE) %>%
+  speedyseq::tax_glom(taxrank="Species")
+
+```
 ## Alpha diversity metrics
 
 ```{r alpha div}
 dir.create("output/alpha")
 
 # Get a histogram of taxon sums
-taxa_sums(ps2) %>%
+taxa_sums(ps_run3) %>%
   as_tibble(rownames = "OTU") %>%
   filter(value > 0) %>%
   ggplot(aes(x = value)) +
-  geom_histogram()
-  scale_x_log10()
+  geom_histogram() 
 
 # Get richness measures
-richness <- phyloseq::estimate_richness(ps2, measures=c("Chao1", "Shannon", "Simpson")) %>% #
+richness <- phyloseq::estimate_richness(ps_run3, measures=c("Chao1", "Shannon", "Simpson")) %>% #
   rownames_to_column("sample_name") %>%
   mutate(sample_name = str_replace(sample_name, "\\.", "-"))
 
@@ -604,7 +623,7 @@ richness <- phyloseq::estimate_richness(ps2, measures=c("Chao1", "Shannon", "Sim
 
 #Set number of randomisations for calculating significance
 # Calculate Faith's PD-index & Species richness - with Standard errors
-sespd <- picante::ses.pd(as(phyloseq::otu_table(ps2), "matrix"),  phyloseq::phy_tree(ps2), null.model = "taxa.labels", include.root = F, runs = 9)
+sespd <- picante::ses.pd(as(phyloseq::otu_table(ps_run3), "matrix"),  phyloseq::phy_tree(ps_run3), null.model = "taxa.labels", include.root = F, runs = 9)
 
 # Join together
 div_table <- sespd %>%
@@ -612,10 +631,10 @@ div_table <- sespd %>%
   dplyr::select(sample_name, ntaxa, pd.obs) %>%
   dplyr::rename(pd = pd.obs, alpha = ntaxa) %>%
   left_join(richness, by="sample_name") %>%
-  left_join(sample_data(ps2) %>% 
+  left_join(sample_data(ps_run3) %>% 
               as("data.frame") %>%
-              filter(!duplicated(sample_name)) %>%
-              dplyr::select(replicate, sample_name, type),
+              filter(!duplicated(sample_id)) %>%
+              dplyr::select(replicate, sample_name = sample_id, type),
             by = "sample_name") 
 
 # Summarise means
@@ -636,13 +655,13 @@ report::report(aov(pd ~type, data=div_table))
 ## Beta diversity metrics
 
 ```{r Distances}
-ps2_dist <- ps2
+ps_run3_dist <- ps_run3
 # Get OTU tables
-otutab <- otu_table(ps2_dist)
+otutab <- otu_table(ps_run3_dist)
 #Impute zeroes for compositional distances
 otutab_n0 <- as.matrix(zCompositions::cmultRepl(otutab, method="CZM", output="p-counts"))
 #Root phylogenetic tree
-phy_tree(ps2_dist) <- multi2di(phy_tree(ps2_dist))
+phy_tree(ps_run3_dist) <- multi2di(phy_tree(ps_run3_dist))
 
 #Calculate different distance metrics
 metrics <- c("Bray", "Jaccard", "Aitchison", "Philr", "Unifrac", "WUnifrac")
@@ -652,18 +671,19 @@ names(distlist) <- metrics
 distlist$Jaccard <- as.matrix(vegdist(otutab, method="jac",binary = T))
 distlist$Bray <- as.matrix(vegdist(otutab, method="bray"))
 distlist$Aitchison <- as.matrix(vegdist(CoDaSeq::codaSeq.clr(otutab_n0), method="euclidean"))
-distlist$Philr <- as.matrix(vegdist(philr::philr(otutab_n0, phy_tree(ps2),
+distlist$Philr <- as.matrix(vegdist(philr::philr(otutab_n0, phy_tree(ps_run3),
                                                 part.weights='enorm.x.gm.counts',
                                                 ilr.weights='blw.sqrt'), method="euclidean"))
-distlist$Unifrac <- as.matrix(phyloseq::UniFrac(ps2_dist, weighted=FALSE, parallel = TRUE))
-distlist$WUnifrac <- as.matrix(phyloseq::UniFrac(ps2_dist, weighted=TRUE, parallel = TRUE))
+distlist$Unifrac <- as.matrix(phyloseq::UniFrac(ps_run3_dist, weighted=FALSE, parallel = TRUE))
+distlist$WUnifrac <- as.matrix(phyloseq::UniFrac(ps_run3_dist, weighted=TRUE, parallel = TRUE))
 
+# Probably only need to use philr dist
 ```
 
 # Adonis and betadisper
 ```{r betatest}
 # Adonis test
-metadata <- sample_data(ps2_dist) %>%
+metadata <- sample_data(ps_run3_dist) %>%
   as("data.frame")
 
 # Test difference by community type
@@ -678,7 +698,7 @@ adonis_results <- distlist %>%
 # Check homogeneity
 betadisper_results <- distlist %>%
   purrr::map(function(x) {
-    y <- as.dist(x[metadata$sample_name, metadata$sample_name])
+    y <- as.dist(x[metadata$sample_id, metadata$sample_id])
   bind_rows(
     as.data.frame(permutest(vegan::betadisper(y, metadata$type))$tab) %>%
       dplyr::slice(1) %>% 
@@ -695,78 +715,41 @@ write_csv(betadisper_results, "output/beta/adonis.csv")
 # PCA plots
 
 ```{r pca plots}
-phy_tree(ps2) <- multi2di(phy_tree(ps2))
-phy_tree(ps2) <- makeNodeLabel(phy_tree(ps2), method="number", prefix='n')
+phy_tree(ps_run3) <- multi2di(phy_tree(ps_run3))
+phy_tree(ps_run3) <- makeNodeLabel(phy_tree(ps_run3), method="number", prefix='n')
 
 # Get philr distance
-ps2.philr <- philr::philr(otutab_n0, phy_tree(ps2),
+ps_run3.philr <- philr::philr(otutab_n0, phy_tree(ps_run3),
                      part.weights='enorm.x.gm.counts', 
                      ilr.weights='blw.sqrt')
-#PCA 
-pca <- prcomp(ps2.philr)
 
-#Name balances
-pcnames <-  sapply(rownames(pca$rotation), function(x) name.balance(phy_tree(ps2), tax_table(ps2), x))
-pcnames <- make.unique(pcnames, sep = ".")
-rownames(pca$rotation) <- pcnames
+#Philr PCOA
 
-# Get pca data
-pca_data <- pca$x %>%
-  as_tibble(rownames = "sample_name") %>%
-  dplyr::select(1:6)%>%
-  left_join(sample_data(ps_run1) %>%
-              as("data.frame") %>%
-    dplyr::select(sample_name, type, target_subfragment) %>%
-    distinct()) %>%
-  mutate(extract_id = sample_name %>%
-           str_remove_all("BF1-BR1-|fwhF2-fwhR2n-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-"))
+philr.dist <- dist(ps_run3.philr , method="euclidean")
+philr.pcoa <- ordinate(ps_run3, 'PCoA', distance=philr.dist)
 
-#Get PCA loadings
-pca_loadings <- data.frame(OTU = rownames(pca$rotation), pca$rotation[, 1:2])
-mult <- min(
-    (max(pca_data$PC1) - min(pca_data$PC1)/(max(pca_loadings$PC1)-min(pca_loadings$PC1))),
-    (max(pca_data$PC2) - min(pca_data$PC2)/(max(pca_loadings$PC2)-min(pca_loadings$PC2)))
-    )
-pca_loadings <- transform(pca_loadings,
-        v1 = .7 * mult * (pca_loadings$PC1),
-        v2 = .7 * mult * (pca_loadings$PC1)
-        )
-
-# calculate percent variance explained for the axis labels
-pc1 <- round(pca$sdev[1]^2/sum(pca$sdev^2),2)
-pc2 <- round(pca$sdev[2]^2/sum(pca$sdev^2),2)
-pc_ylab <- paste("PC1: ", pc1, sep="")
-pc_xlab <- paste("PC2: ", pc2, sep="")
-
-# Plot PCA
-gg.pca <- ggplot(data=pca_data, aes(x=PC2, y=PC3)) + 
-  geom_point(aes(fill = extract_id),alpha=0.8, size=3,shape=21, colour="black") +
-  scale_colour_brewer(palette="Paired") +
+gg.pca <- plot_ordination(ps_run3, philr.pcoa, color = "type") +
+  geom_point(size=3, alpha=0.8) +
   geom_hline(yintercept = 0, linetype=2, alpha=0.5) +  
   geom_vline(xintercept = 0, linetype=2, alpha=0.5) +
-  xlab(pc_xlab) + 
-  ylab(pc_ylab) +
-  #Add loadings
-  geom_text(data=pca_loadings, aes(x=v1, y=v2, label=OTU), 
-            size = 5, vjust=1,hjust=1, color="red", check_overlap = TRUE,
-            alpha=0.5)+
-  geom_segment(data=pca_loadings, aes(x=0, y=0, xend=v1, yend=v2),
-               arrow=arrow(length=unit(0.2,"cm")), alpha=0.5, color="red") +
   base_theme +
-coord_fixed(ratio=pc1/pc2) # Scale plot by variance explained
+  #coord_fixed() +
+  scale_colour_brewer(palette="Paired") +
+  theme(legend.position = "bottom") +
+  labs(colour = "Sample Type")
 
 gg.pca
 
 # Heirarchial clustering
-dend <- hclust(vegdist(ps2.philr, method="euclidean"), method="average")
+dend <- hclust(philr.dist, method="average")
 
 p3 <- ggtree(as.phylo(dend) ) + 
   theme_tree2()
 
 colours_p3 <- p3$data %>%
-  left_join(as_data_frame(sample_data(ps2)) %>%
-              dplyr::select(sample_name, type) %>%
-  dplyr::rename(label = sample_name)
+  left_join(as_data_frame(sample_data(ps_run3)) %>%
+              dplyr::select(sample_id, type) %>%
+  dplyr::rename(label = sample_id)
     )
 
 p3 <- p3 %<+% colours_p3  + 
@@ -778,45 +761,6 @@ p3 <- p3 %<+% colours_p3  +
 
 # Plot together
 p3 + gg.pca
-
-tidied_pca <- broom::tidy(pca, matrix="rotation") %>%
-  magrittr::set_colnames(c("term", "component", "value"))
-
-library(tidytext)
-tidied_pca %>%
-  dplyr::filter(component < 5) %>%
-  group_by(component) %>%
-  top_n(6, abs(value)) %>%
-  ungroup() %>%
-  mutate(term = reorder_within(term, abs(value), component)) %>%
-  dplyr::mutate(component = factor(paste0("PC",component))) %>%
-  ggplot(aes(x=abs(value), y=term, fill = value > 0)) +
-  geom_col(show.legend = FALSE) +
-  facet_wrap(~component, scales = "free") +
-  scale_y_reordered() +
-    labs(
-    x = "Absolute value of contribution",
-    y = NULL, 
-    fill = "Positive?"
-  ) +
-  theme_classic() 
-
-# Scree plot
-sdev <- pca$sdev
-percent_variation <- sdev^2 / sum(sdev^2)
-
-tibble(
-  component = unique(tidied_pca$component),
-  percent_var = percent_variation ## use cumsum() to find cumulative, if you prefer
-) %>%
-  dplyr::filter(component < 11) %>%
-  mutate(component = factor(component)) %>%
-  mutate(component = fct_inorder(component)) %>%
-  ggplot(aes(component, percent_var)) +
-  geom_col() +
-  scale_y_continuous(labels = scales::percent_format()) +
-  labs(x = NULL, y = "Percent variance explained by each PCA component") +
-  theme_classic()
 ```
 
 # Fit GLMnet
