@@ -1,5 +1,4 @@
 # Define themes
-library(ggthemes)
 base_theme <- theme_minimal()+
   theme(
     strip.background = element_blank(),

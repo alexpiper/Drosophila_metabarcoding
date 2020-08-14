@@ -32,13 +32,14 @@ Part 3 - Comparison
                     "seqinr",
                     "ape", 
                     "RColorBrewer",
-                    "ggtree", 
                     "castor", 
                     "picante",
+                    "phytools",
                     "ggrepel",
                     "devtools")
 .bioc_packages <- c("dada2",
                     "phyloseq", 
+                    "ggtree",
                     "DECIPHER",
                     "Biostrings",
                     "ShortRead", 
@@ -115,25 +116,6 @@ ps_run1 %>%
        fill="Species",
        title = "Run 1 - Primer testing")
 
-# Plot as heatmap
-ps_run1 %>%
-  speedyseq::psmelt() %>%
-  #filter(Genus=="Drosophila") %>%
-  group_by(sample_id) %>%
-  mutate_at(vars(Abundance), ~ . / sum(.) ) %>%
-  mutate(extract_id = str_remove(sample_name, "^.*-D")) %>%
-    ggplot(aes(x=extract_id, y=Species, fill=Abundance)) +
-    geom_tile() +
-    facet_grid(~target_subfragment, scales="free") +
-  base_theme+
-  theme(axis.text.x = element_text(angle=45, hjust=1),
-          legend.position = "bottom") +
-    scale_fill_viridis_c(labels = scales::percent) +
-    labs(x="Sample",
-         y="Taxon",
-         fill="Relative abundance",
-         title="Run 1 - Primer testing")
-
 
 #Compositional PCA using PhilR
 # Get OTU tables
@@ -171,6 +153,50 @@ gg.run1pca <- plot_ordination(ps_run1, philr.pcoa, color = "extract_id", shape =
        colour = "Sample")
 
 gg.run1pca
+
+
+# Heirarchial clustering
+dend <- hclust(philr.dist, method="ward.D2")
+
+p3 <- ggtree(as.phylo(dend) ) + 
+  theme_void()
+
+colours_p3 <- p3$data %>%
+  left_join(as_data_frame(sample_data(ps_run1)) %>%
+              dplyr::select(sample_id, sample_name,  target_subfragment) %>%
+  dplyr::rename(label = sample_id)
+    )
+
+p3 <- p3 %<+% colours_p3  + 
+  geom_tippoint(aes(colour=target_subfragment, shape = target_subfragment), size=2)  + 
+  geom_tiplab(aes(colour=target_subfragment, label=sample_name %>% str_remove("^.*_")), angle=90, hjust=1)+
+  scale_colour_brewer(palette="Paired") +
+    scale_x_reverse(expand=c(0, 20)) +
+  theme(legend.position = "none") + coord_flip()
+
+p3
+# Plot as heatmap - Arrange by 
+gg.run1_heatmap <- ps_run1 %>%
+  speedyseq::psmelt() %>%
+  dplyr::select(sample_id, Abundance, target_subfragment, Species) %>%
+  #filter(Genus=="Drosophila") %>%
+  group_by(sample_id) %>%
+  mutate_at(vars(Abundance), ~ . / sum(.) ) %>%
+  #mutate(Abundance = replace(Abundance, Abundance==0, 0.5)) %>%
+ # mutate(Abundance = metacal::clr(Abundance, na.rm = TRUE)) %>%
+  left_join(p3$data %>% dplyr::select(sample_id = label, y)) %>%
+    ggplot(aes(x=fct_reorder(sample_id,y), y=Species, fill=Abundance)) +
+    geom_tile() +
+  base_theme+
+  theme(axis.text.x = element_blank(),
+          legend.position = "bottom") +
+    scale_fill_viridis_c(labels = scales::percent) +
+    labs(x="Sample",
+         y="Taxon",
+         fill="Relative abundance")
+
+gg.run1_heatmap
+
 ```
 
 ## Bias
@@ -260,9 +286,9 @@ bias <- joint %>%
   filter(expected > 0) %>%
   group_by(target_subfragment, material_type)  %>%
     nest() %>%
-    mutate(fit = map(data, ~lm(metacal::center_elts(observed0 /expected) ~ 0 + taxon , data = .)), 
-           tidied = map(fit, broom::tidy),
-           aug = map(fit, broom::augment)
+    mutate(fit = purrr::map(data, ~lm(metacal::center_elts(observed0 /expected) ~ 0 + taxon , data = .)), 
+           tidied =  purrr::map(fit, broom::tidy),
+           aug =  purrr::map(fit, broom::augment)
     ) %>%
   dplyr::select(-fit) %>%
   unnest(tidied) %>%
@@ -277,14 +303,14 @@ boot_models <- joint %>%
   group_by(target_subfragment) %>%
   group_modify(~{
     bootstraps(.x, times=1000, apparant=TRUE)  %>%
-    mutate(fit = map(splits, ~lm(metacal::center_elts(observed0 /expected) ~ 0 + taxon , data = .)), 
-           coef = map(fit, broom::tidy)) %>%
+    mutate(fit =  purrr::map(splits, ~lm(metacal::center_elts(observed0 /expected) ~ 0 + taxon , data = .)), 
+           coef =  purrr::map(fit, broom::tidy)) %>%
     int_pctl(coef) 
     }) %>%
   mutate(taxon = str_remove(term, "taxon")) %>%
   dplyr::select(target_subfragment, taxon, lower = .lower, estimate = .estimate, upper = .upper)
 
-# See how well bias estiamte fits data
+# See how well bias esitmate fits data
 
 preds <- joint %>%
   left_join(boot_models) %>%
@@ -325,7 +351,7 @@ gg.bias_fits <- preds %>%
 gg.bias_fits
 
 # Write out bias explained for supplementary 
-pdf(file="fig/bias_model_fit.pdf", width = 11, height = 8 , paper="a4r")
+pdf(file="fig/supplementary/bias_model_fit.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.bias_fits)
 try(dev.off(), silent=TRUE)
 
@@ -338,7 +364,7 @@ gg.bias <- preds %>%
   mutate(taxon = str_replace(taxon, "^.*_", "D. ")) %>%
   ggplot(aes(x = taxon, y = estimate-1, colour = target_subfragment, group = target_subfragment)) +
   geom_hline(yintercept = 0, alpha=0.5, colour = "grey20") +
-  geom_pointrange(aes(ymin = lower-1, ymax = upper-1), position=position_dodge(width=0.5))+
+  geom_pointrange(aes(ymin = lower-1, ymax = upper-1), position=position_dodge(width=0.6))+
   coord_flip() +
   #facet_grid(target_subfragment~.) +
   base_theme+
@@ -367,13 +393,14 @@ tax_summary <- speedyseq::psmelt(ps) %>%
   pivot_longer(rank_names(ps),
                names_to="rank",
                values_to="name") %>%
-  group_by(target_subfragment, rank) %>% 
+
   mutate(name = replace(name, str_detect(name, "__"), NA),
          rank = str_replace(rank, "Kingdom", "Root")) %>% 
     mutate(detection = case_when(
     Abundance > 0 ~ 1,
     Abundance == 0 ~ 0
   )) %>%
+  group_by(target_subfragment, rank) %>% 
   #dplyr::filter(!is.na(name)) %>%
   dplyr::summarise(reads_classified = sum(Abundance * !is.na(name)),
                    asvs_classified = sum(detection * !is.na(name)))
@@ -397,74 +424,21 @@ tax_plot_data <- tax_summary %>%
   mutate(rank = factor(rank, levels = rank_names(ps)[2:length(rank_names(ps))]))
 
 gg.reads_classified <- tax_plot_data  %>%
-  ggplot(aes(x=rank, y=value, colour = target_subfragment, group=target_subfragment)) +
-  geom_line() +
-  geom_text_repel(data= tax_plot_data %>%
-              filter(rank=="Species"),
-            #aes(label = percent(read_prop, accuracy = 0.1)),
-            aes(label = target_subfragment), nudge_x = 1, hjust=1,
-            direction = "y", segment.alpha = 0)+
+  ggplot(aes(x=rank, y=value, fill = target_subfragment, group=target_subfragment)) +
+  geom_col(width=0.7, position=position_dodge(width = 0.8)) +
+  #geom_text(aes(label = percent(value, accuracy = 0.1)),
+  #          position=position_dodge(width = 0.8), angle=270,hjust =-0.1, colour="white", size=4 )+
   base_theme +
-  facet_wrap(~type, scales = "free_y", nrow = 2)+
+  facet_wrap(~type, nrow = 2)+
   #facet_grid(~type, cols=1, rows=2) +
-  scale_colour_brewer(palette="Paired") +
+  scale_fill_brewer(palette="Paired") +
   scale_y_continuous(labels = scales::percent) +
   labs(x = NULL,
-       y=NULL) 
+       y=NULL)
+
 
 gg.reads_classified
 ```
-
-## Detection probability
-How do the primers affect its probability of detection (presence/absence). We used a generalized linear mixed effects model of presence/absense as a function of primer
-primer. To account for the paired design (where both types of samples were derived from the same community), we defined Sample ID as a random effect.
-Since the response was binomial, we assumed a logit‐link and binomially distributed error
-
-```{r detection probability}
-# Use joint to get a table of expected/absent
-det_table <- joint %>% 
-  filter(material_type=="DrosMock") %>%
-  mutate(detected = case_when(
-    expected > 0 & observed > 0 ~ 1,
-    expected > 0 & observed == 0 ~ 0,
-    TRUE ~ as.numeric(NA)
-    )) %>%
-  filter(!is.na(detected)) %>% #Still some false positives remeaining!
-  mutate(extract_id = sample_name %>%
-           str_remove_all("BF1-BR1-|fwhF2-fwhR2n-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-"))
-
-# Estimate detection efficiency of all taxa - Better done within tidymodels?
-library(lme4)
-detmodel <- det_table %>%
-  filter(fcid=="CB3DR") %>%
-  dplyr::select(sample_id, extract_id, taxon, detected, target_subfragment) %>%
-  #group_by(taxon) %>%
-  nest() %>%
-  mutate(fit = map(data, ~glmer(detected ~ target_subfragment + (1|extract_id), family=binomial, data = .)), 
-           tidied = map(fit, broom::tidy),
-           aug = map(fit, broom::augment)
-
-  ) %>%
-  dplyr::select(-fit) %>%
-  unnest(tidied) 
-
-# Estimate detection efficiency of targets - Doesnt work because they were pretty much all detected!
-library(lme4)
-det_suzukii <- det_table %>%
-  filter(fcid=="CB3DR") %>%
-  group_by(taxon) %>%
-  nest() %>%
-  mutate(fit = map(data, ~glmer(detected ~ target_subfragment + (1|extract_id), family=binomial, data = .)), 
-           tidied = map(fit, broom::tidy),
-           aug = map(fit, broom::augment)
-
-  ) %>%
-  dplyr::select(-fit) %>%
-  unnest(tidied) 
-
-det_suzukii
-```
-
 
 ## Multifig1
 
@@ -472,9 +446,11 @@ Comparison of primers for bias, off-target amp, and PCA of overlap
 
 ```{r run 1 multifig}
 # PCA, off target, and bias
-fig1a <- gg.reads_classified / gg.run1pca 
- 
-fig1 <- fig1a - gg.bias + plot_layout(widths = c(2,1)) + plot_annotation(tag_levels = 'A') & theme(plot.margin = unit(c(1,1,1,1), "mm"))
+fig1a <- p3 /gg.run1_heatmap + plot_layout(heights = c(1,2)) #/ (gg.run1pca+ theme(legend.position = "none"))
+#
+fig1b <- gg.reads_classified / gg.bias + plot_layout(heights = c(1,2))
+
+fig1 <- fig1a - fig1b + plot_layout(widths = c(3,1)) + plot_annotation(tag_levels = 'A') & theme(plot.margin = unit(c(1,1,1,1), "mm"))
   
 fig1 
 
@@ -546,8 +522,8 @@ boot_models <- joint %>%
   group_by(target_subfragment, replicate) %>%
   group_modify(~{
     bootstraps(.x, times=1000, apparant=TRUE)  %>%
-    mutate(fit = map(splits, ~lm(metacal::center_elts(observed0 /expected, na.rm = TRUE) ~ 0 + taxon , data = .)), 
-           coef = map(fit, broom::tidy)) %>%
+    mutate(fit =  purrr::map(splits, ~lm(metacal::center_elts(observed0 /expected, na.rm = TRUE) ~ 0 + taxon , data = .)), 
+           coef =  purrr::map(fit, broom::tidy)) %>%
     int_pctl(coef) 
     }) %>%
   mutate(taxon = str_remove(term, "taxon")) %>%
@@ -587,22 +563,85 @@ gg.biasreps <- preds %>%
 gg.biasreps
 
 # Write supplementary figure
-pdf(file="fig/run2_biasreps.pdf", width = 11, height = 8 , paper="a4r")
+pdf(file="fig/supplementary/run2_biasreps.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.biasreps)
 try(dev.off(), silent=TRUE)
 ```
 
-# Run 3 - full dataset
+# Trap catch analysis
 
-## Subset to just run 3
+## Insects trapped summary
+
 ```{r}
-ps_run3 <- ps2 %>%
-  subset_samples(fcid %in% c("HLVKYDMXX")) %>%
-  filter_taxa( function(x) mean(x) > 0, TRUE) %>%
-  speedyseq::tax_glom(taxrank="Species")
+trapdat <- read_csv("Fieldwork/trap_data_clean.csv") %>%
+  janitor::clean_names()%>%
+  mutate(orchard_type = case_when(
+         str_detect(fruit, "Peach") ~ "Stonefruit",
+         str_detect(fruit, "Nectarine") ~ "Stonefruit",
+         str_detect(fruit, "Cherries") ~ "Cherries",
+         TRUE ~ "Cherries"
+  )) %>%
+  dplyr::filter(!attractant=="Sachet") %>%
+  dplyr::select(-treatment)
+
+
+# Average catch
+trapdat %>%
+  group_by(week, attractant, orchard, orchard_type) %>%
+  dplyr::summarise(catch = sum(catch, na.rm=TRUE))
+  
+
+##Total catch by orchard and week
+trapdat %>% 
+  mutate(week = as.factor(week)) %>%
+  ggplot(aes(x=week, y=catch, colour=attractant, group=week))+
+  geom_jitter(size=3, alpha=0.6, width=0.2, height=0.2)+
+  geom_boxplot(fill=NA)+
+  facet_grid(attractant~orchard_type, scales="free") +
+  base_theme +
+  scale_colour_brewer(palette="Paired") 
+
+
+##Total catch by orchard and trap type
+trapdat %>% 
+  ggplot(aes(x=attractant, y=catch, colour=attractant))+
+  geom_jitter(size=3, alpha=0.6, width=0.2, height=0.2)+
+  geom_boxplot(fill=NA)+
+  facet_grid(~orchard_type) +
+  base_theme +
+  scale_colour_brewer(palette="Paired")  + 
+  labs(x = "Collection method",
+       y = "Estimated trap catch")
+
+
+ggplot(data=data)+
+  geom_bar(mapping = aes(x=Week, y=as.numeric(Catch), fill=Attractant),stat="identity",position="dodge",colour="black") +
+  facet_grid(Fruit~Orchard) + ylab("Total Catch") #
+
+##Average catch per 2 weeks
+ggplot(data=data)+
+  geom_bar(mapping = aes(x=Week, y=Catch, fill=Attractant), stat="summary") +
+  facet_grid(Attractant~Orchard) + ylab("Average catch for each 2 week period")
+
+
+
 
 ```
+
+
+## Subset to just run 3
+```{r subset}
+ps_run3 <- ps2 %>%
+  subset_samples(fcid %in% c("HLVKYDMXX")) %>%
+  #prune_taxa(!str_detect(Species, "Synthetic")) %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE)
+
+# Need to remove synthetics
+```
+
 ## Alpha diversity metrics
+
+No significant differences
 
 ```{r alpha div}
 dir.create("output/alpha")
@@ -662,6 +701,25 @@ broom::tidy(TukeyHSD(aov(pd ~type, data=div_table)))
 
 # SHould do on the original data without merging by spp
 
+# plot differences in alpha diversity
+gg.alpha <- div_table %>% 
+  pivot_longer(2:7,
+               names_to="metric",
+               values_to="value") %>%
+  filter(metric %in% c("alpha", "pd", "Shannon")) %>%
+  mutate(metric = metric %>% 
+           str_replace("alpha", "ASV Richness") %>%
+           str_replace("pd", "Phylogenetic Diversity") %>%
+           str_replace("Shannon", "Shannon Index")) %>%
+  ggplot(aes(x=type, y=value, colour=type)) +
+  geom_jitter(size=3, alpha=0.6, width=0.2, height=0)+
+  geom_boxplot(fill=NA)+
+  base_theme+
+  scale_colour_brewer(palette="Paired") +
+  facet_grid(~metric, scales="free_y")
+
+# This could be nice really small, under the total catch
+
 ```
 
 ## Beta diversity metrics
@@ -673,6 +731,8 @@ otutab <- otu_table(ps_run3)
 otutab_n0 <- as.matrix(zCompositions::cmultRepl(otutab, method="CZM", output="p-counts"))
 #Root phylogenetic tree
 phy_tree(ps_run3) <- multi2di(phy_tree(ps_run3))
+phy_tree(ps_run3) <- makeNodeLabel(phy_tree(ps_run3), method="number", prefix='n')
+name.balance(phy_tree(ps_run3), tax_table(ps_run3), 'n1') #Get root
 
 #Calculate different distance metrics
 metrics <- c("Bray", "Jaccard", "Aitchison", "Philr", "Unifrac", "WUnifrac")
@@ -685,8 +745,8 @@ distlist$Aitchison <- as.matrix(vegdist(CoDaSeq::codaSeq.clr(otutab_n0), method=
 distlist$Philr <- as.matrix(vegdist(philr::philr(otutab_n0, phy_tree(ps_run3),
                                                 part.weights='enorm.x.gm.counts',
                                                 ilr.weights='blw.sqrt'), method="euclidean"))
-distlist$Unifrac <- as.matrix(phyloseq::UniFrac(ps_run3_dist, weighted=FALSE, parallel = TRUE))
-distlist$WUnifrac <- as.matrix(phyloseq::UniFrac(ps_run3_dist, weighted=TRUE, parallel = TRUE))
+distlist$Unifrac <- as.matrix(phyloseq::UniFrac(ps_run3, weighted=FALSE, parallel = TRUE))
+distlist$WUnifrac <- as.matrix(phyloseq::UniFrac(ps_run3, weighted=TRUE, parallel = TRUE))
 
 # Probably only need to use philr dist
 ```
@@ -694,14 +754,14 @@ distlist$WUnifrac <- as.matrix(phyloseq::UniFrac(ps_run3_dist, weighted=TRUE, pa
 # Adonis and betadisper
 ```{r betatest}
 # Adonis test
-metadata <- sample_data(ps_run3_dist) %>%
+metadata <- sample_data(ps_run3) %>%
   as("data.frame")
 
 # Test difference by community type
 adonis_results <- distlist %>%
   purrr::map(function(x) {
     bind_rows(
-    broom::tidy(adonis(x~type, method="euclidean", data=metadata)$aov.tab) %>% dplyr::slice(1)
+    broom::tidy(adonis(x~type, method="euclidean", data=metadata)$aov.tab) #%>% dplyr::slice(1)
     )
 })  %>%
   bind_rows(.id="dist")
@@ -712,7 +772,7 @@ betadisper_results <- distlist %>%
     y <- as.dist(x[metadata$sample_id, metadata$sample_id])
   bind_rows(
     as.data.frame(permutest(vegan::betadisper(y, metadata$type))$tab) %>%
-      dplyr::slice(1) %>% 
+      #dplyr::slice(1) %>% 
       mutate(term="type")
   )
 })  %>%
@@ -726,17 +786,10 @@ write_csv(betadisper_results, "output/beta/adonis.csv")
 # PCA plots
 
 ```{r pca plots}
-phy_tree(ps_run3) <- multi2di(phy_tree(ps_run3))
-phy_tree(ps_run3) <- makeNodeLabel(phy_tree(ps_run3), method="number", prefix='n')
-
 # Get philr distance
-ps_run3.philr <- philr::philr(otutab_n0, phy_tree(ps_run3),
-                     part.weights='enorm.x.gm.counts', 
-                     ilr.weights='blw.sqrt')
+philr.dist <- as.dist(distlist$Philr)
 
 #Philr PCOA
-
-philr.dist <- dist(ps_run3.philr , method="euclidean")
 philr.pcoa <- ordinate(ps_run3, 'PCoA', distance=philr.dist)
 
 gg.pca <- plot_ordination(ps_run3, philr.pcoa, color = "type") +
@@ -768,18 +821,21 @@ p3 <- p3 %<+% colours_p3  +
   geom_tiplab(aes(colour=as.factor(type)))+
   scale_colour_brewer(palette="Paired") +
     scale_x_continuous(expand=c(0, 30)) +
-  theme(legend.position = "bottom")
+  theme(legend.position = "none")
 
 # Plot together
 p3 + gg.pca
 
-# Plot a heatmap
 
+```
+
+# Plot a heatmap of insect distances vs clustering of samp;les
+
+```{r Heatmap}
 #Prepare co-occurance matrix
 coocur <- ps_run3 %>%
     otu_table %>%
-    as.matrix()
-
+    as("matrix")
 
 # Sample tree 
 h_tree <- as.phylo(dend)
@@ -856,200 +912,122 @@ gg.heatmap <- psmelt(ps_run3) %>%
   
 (p3 + coord_flip() + scale_x_reverse()) / gg.heatmap
 
-gg.heatmap <- dd %>%
-  dplyr::rename(Sample_Name = label.x,
-                OTU = label.y,
-                pos_x = y.x,
-                pos_y = y.y) %>%
-  dplyr::select(Sample_Name, OTU, signif, pos_x, pos_y) %>%
-  dplyr::mutate(Sample_Name = factor(Sample_Name),
-                Sample_Name = fct_reorder(Sample_Name, pos_x),
-                OTU = factor(OTU),
-                OTU = fct_reorder(OTU, pos_y)) %>%
-   ggplot(aes(x=Sample_Name, y=OTU, fill=as.factor(signif))) +
-  geom_tile() +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle=45, hjust=1),
-        axis.title.x = element_blank(),
-        axis.text.y = element_blank(),
-        axis.ticks.y = element_blank(),
-        axis.title.y = element_blank(),
-        legend.position = "none") +
-  scale_y_discrete(position = "right")+
-  scale_fill_manual(values=c("steelblue","darkorange1"), na.translate=FALSE) 
-#Adjusted trees - Sca
-p3 <- p2 + 
-  geom_text2(aes(subset=!isTip, label=group %>% na_if(0)), hjust=1, check_overlap=TRUE)
-top <- wrap_elements(grid::textGrob('')) +(p1+ coord_flip() + scale_x_reverse(expand=c(0,0))+ scale_y_continuous(expand=c(0,0))) + plot_layout(widths=c(1,3)) 
-bottom <- p3+ scale_y_continuous(expand=c(0,0)) +gg.heatmap + plot_layout(widths=c(1,3))
-gg.treemap <- top / bottom + plot_layout(heights=c(1,3))                                                         
-gg.treemap
-pdf(file="figs/psyllid_microbiome_heatmap.pdf",  width = 8, height = 11, paper="a4")
-  plot(gg.treemap)
-try(dev.off(), silent=TRUE)
-
-
-
-
-```
-
-# Fit GLMnet
-
-from philr tutorial https://bioconductor.org/packages/devel/bioc/vignettes/philr/inst/doc/philr-intro.html
-```{r glmnet}
-library(glmnet)
-
-# Predict mock vs real
-sample_data(ps2)$mock <- factor(get_variable(ps2, "type") %in% c("Mock", "POS"))
-
-glmmod <- glmnet(ps2.philr, sample_data(ps2)$type, alpha=1, family="multinomial")
-
-# Get coords usign tidy insteaed
-tidied <- tidy(glmmod) %>% 
-  filter(!term == "(Intercept)",
-         !term == ""
-         )%>%
-  mutate(node = name.to.nn(phy_tree(ps2), term))
-
-ggplot(tidied, aes(step, estimate, group = term)) +
-  geom_line()
-
-#tc.colors <- c('#a6cee3', '#1f78b4')
-p <- ggtree(phy_tree(ps2), layout='fan') +
-  geom_balance(node=2843, alpha=0.6) # get node number from the tidied dev.node
-p <- annotate_balance(phy_tree(ps2), 'n16', p=p, labels = c('n16+', 'n16-'),
-                 offset.text=0.15, bar=FALSE)
-annotate_balance(tree, 'n730', p=p, labels = c('n730+', 'n730-'),
-                 offset.text=0.15, bar=FALSE)
 ```
 
 
 # Phylogeny of trap catches
 
 ```{r Phylogeny}
-
-# For presentation
-test <- ps2 %>% 
-  phyloseq::subset_samples(sample_name == "HLVKYDMXX_T10SPD-ex1") %>%
-    #filter_taxa( function(x) mean(x) > 0, TRUE) %>%
-  tax_glom("Species")
-
-tree <- phy_tree(test)
-
-ggtree(tree, layout="circular") + coord_polar(theta='y')+ scale_x_reverse(limits=c(4, 0)) + geom_tippoint(color="steelblue", size=2, alpha=.8)
-
-ggtree(tree) + geom_tippoint(color="steelblue", size=2, alpha=.8)
+tree <- phy_tree(ps_run3)
+circ <- ggtree(tree, layout = "circular", branch.length = 'none')
 
 
-```
+p1dat <- speedyseq::psmelt(ps_run3) %>%
+  dplyr::select(OTU, type, Abundance) %>%
+  dplyr::filter(type %in% c("ACV", "DC", "FF", "SPD")) %>%
+  group_by(OTU, type) %>%
+  summarise(Abundance = sum(Abundance)) %>%
+  distinct() %>%
+  pivot_wider(names_from = type,
+              values_from = Abundance,
+              values_fill = 0) %>%
+  column_to_rownames("OTU")
 
-# Phylofactorisation
+p1 <- gheatmap(circ, p1dat, offset=0, width=.4, color="gray20",
+               colnames_angle=95, colnames_offset_y = 0) +
+    scale_fill_viridis_c(option="D", name="Abundance", alpha=0.9, trans="log10") 
 
-Need to decide if i want to associate abundance on the phylogeny,
-
-or presence absense, which isnt gaussian distributed and therefore requires use of theh 'geeneralised phylofactorisation'
-
-```{r phylofactor}
-devtools::install_github('reptalex/phylofactor')
-library(phylofactor)
-# Example data
-data("FTmicrobiome")
-
-
-# Get OTU table
-OTUTable <- FTmicrobiome$OTUTable   #Our OTU table. Rows are OTUs and columns are samples
-OTUTable[1:5,1:5]
-#Note doesnt seem to have column names - is this necessaty
-
-# Get OTU tables
-otutab <- otu_table(ps_run3)
-#Impute zeroes for compositional distances
-otutab_n0 <- t(as.matrix(zCompositions::cmultRepl(otutab, method="CZM", output="p-counts")))
-#Root phylogenetic tree
-phy_tree(ps_run3) <- multi2di(phy_tree(ps_run3))
-
-# Get independant variable
-metadata <- sample_data(ps_run3) %>%
-  as("data.frame") %>%
-  dplyr::arrange(sample_id, colnames(otutab_n0)) %>%
-  mutate(type = factor(type))
-
-
-length(metadata) == length(colnames(otutab_n0))
-
-# get tree
-tree<- multi2di(phy_tree(ps_run3))
-#plot tree
-ggtree(tree)
-
-# Get taxonomy and convert format
-tax <- tax_table(ps_run3) %>%
-  as("matrix") %>%
-  as_tibble(rownames = "OTU") %>%
-  mutate(across(rank_names(ps_run3), ~replace(.x, str_detect(.x, "__"), ""))) %>%
-  pivot_longer(rank_names(ps_run3),
-               names_to="rank",
-               values_to="name") %>%
-  mutate(name = paste0(str_to_lower(str_extract(rank, ".")), "__", name)) %>%
-  pivot_wider(names_from = rank,
-              values_from = name) %>%
-  unite(taxonomy, rank_names(ps_run3), sep="; ") %>%
-  as.data.frame()
+# Also try add week? and orchard?
+library(ggnewscale)
+p2dat <- speedyseq::psmelt(ps_run3) %>%
+  mutate(orchard = case_when(
+    str_detect(sample_name,"^T") ~ "Stonefruit",
+    str_detect(sample_name,"^M") ~ "Cherries",
+    TRUE ~ as.character(NA)
+  )) %>%
+  dplyr::select(OTU, orchard, Abundance) %>%
+  drop_na() %>%
+  group_by(OTU, orchard) %>%
+  summarise(Abundance = sum(Abundance)) %>%
+  distinct() %>%
+  pivot_wider(names_from = orchard,
+              values_from = Abundance,
+              values_fill = 0) %>%
+  column_to_rownames("OTU")
   
-#Phylofactor
-trap_factor <- PhyloFactor(Data = otutab_n0,
-                           tree = tree,
-                           X = metadata, 
-                           frmla = type~Data,
-                           family=binomial,
-                           nfactors=NULL)
-trap_factor
-
-# Will need to integrate the sampling week into this model somehow!
-
-# Plto phylo heatmap
-cols <- viridis::viridis(3)
-pf.heatmap(tree=tree, Data=otutab_n0,color=NA)
+p2 <- p1 + new_scale_fill()
+gg.phylo <- gheatmap(p2, p2dat, offset=10, width=.2,
+         colnames_angle=90, colnames_offset_y = .25, color="gray20") +
+    scale_fill_viridis_c(option="A", name="Abundance", trans="log10")+ 
+    geom_tiplab(offset=17, align=FALSE, size=3) 
 
 
-library(phytools)
-clr <- function(Matrix) apply(Matrix,MARGIN=2,FUN=function(x) log(x)-mean(log(x)))
+gg.phylo
 
-par(mfrow=c(1,1))
-phylo.heatmap(tree, clr(trap_factor$Data))
+# Write out bias explained for supplementary 
+pdf(file="fig/phylogeny_occurance.pdf", width = 11, height = 8 , paper="a4r")
+  plot(gg.phylo)
+try(dev.off(), silent=TRUE)
+  
+# Colour tree by Order - should be able to do this with highlight clade
+# need to make the tree better though
 
-# Do a regular heatmap of the species most associated with clustering of samples. Then we can use the regression functions behind phylofactor?
+# Work out how to properly compositionall merge a sample
 
-# also do a circular heatmap with them
-
-
-# Get taxonomy - needs to be in qiime format? - may need to convert
-taxonomy <- FTmicrobiome$taxonomy   #Our taxonomy
-taxonomy[1:3,]
-test <- taxonomy %>% separate(taxonomy, sep=";", into = c("Kingdom", "phylum", "class", "order", "family","genus", "species"))
-
-# Filter to common OTUS - may not be necessary for me if i glom at species and am filtering using the logit already
-common.otus <- which(rowSums(OTUTable>0)>10)
-
-OTUTable <- OTUTable[common.otus,]                        
-tree <- ape::drop.tip(tree,setdiff(tree$tip.label,rownames(OTUTable)))  #trim our tree accordingly
-
-#Optional - replace zeroes with my own method as phylofactor just automatically uses a pseudocount 
-
-#Phylofactor
-PF <- PhyloFactor(OTUTable,tree,body.site,nfactors=3)
-class(PF)
-
-# Plto phylo heatmap
-library(phytools)
-clr <- function(Matrix) apply(Matrix,MARGIN=2,FUN=function(x) log(x)-mean(log(x)))
-
-par(mfrow=c(1,1))
-phylo.heatmap(tree,clr(PF$Data))
 ```
 
 
-## Occupancy modelling
+
+
+## Detection probability
+How do the primers affect its probability of detection (presence/absence). We used a generalized linear mixed effects model of presence/absense as a function of primer
+primer. To account for the paired design (where both types of samples were derived from the same community), we defined Sample ID as a random effect.
+Since the response was binomial, we assumed a logit‐link and binomially distributed error
+
+```{r detection probability}
+# Use joint to get a table of expected/absent
+det_table <- joint %>% 
+  filter(material_type=="DrosMock") %>%
+  mutate(detected = case_when(
+    expected > 0 & observed > 0 ~ 1,
+    expected > 0 & observed == 0 ~ 0,
+    TRUE ~ as.numeric(NA)
+    )) %>%
+  filter(!is.na(detected)) %>% #Still some false positives remeaining!
+  mutate(extract_id = sample_name %>%
+           str_remove_all("BF1-BR1-|fwhF2-fwhR2n-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-"))
+
+# Estimate detection efficiency of all taxa - Better done within tidymodels?
+library(lme4)
+detmodel <- det_table %>%
+  filter(fcid=="CB3DR") %>%
+  dplyr::select(sample_id, extract_id, taxon, detected, target_subfragment) %>%
+  #group_by(taxon) %>%
+  nest() %>%
+  mutate(fit = map(data, ~glmer(detected ~ target_subfragment + (1|extract_id), family=binomial, data = .)), 
+           tidied = map(fit, broom::tidy),
+           aug = map(fit, broom::augment)
+
+  ) %>%
+  dplyr::select(-fit) %>%
+  unnest(tidied) 
+
+# Estimate detection efficiency of targets - Doesnt work because they were pretty much all detected!
+library(lme4)
+det_suzukii <- det_table %>%
+  filter(fcid=="CB3DR") %>%
+  group_by(taxon) %>%
+  nest() %>%
+  mutate(fit = map(data, ~glmer(detected ~ target_subfragment + (1|extract_id), family=binomial, data = .)), 
+           tidied = map(fit, broom::tidy),
+           aug = map(fit, broom::augment)
+
+  ) %>%
+  dplyr::select(-fit) %>%
+  unnest(tidied) 
+
+det_suzukii
+```
 
 ### eDNAoccupancy
 ```{r edna occupancy}
