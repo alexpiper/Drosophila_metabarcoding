@@ -14,15 +14,14 @@ editor_options:
 
 Part 1 - Cleanup & Filtering of index switching
 
-Part 1 - Comparison of 4 primers for bias and detection efficiency
-(figure 1)
+Part 1 - Comparison of 4 primers for bias and detection efficiency (figure 1)
 
 Part 2 - Comparison of bias between 3 tagged primers
 
-Part 3 - Comparison 
-
+Part 3 - Comparison
 
 ## Load packages
+
 ```{r setup}
 #Set required packages
 .cran_packages <- c("tidyverse",
@@ -106,7 +105,7 @@ ps_run1 %>%
     )) %>%
   ggplot(aes(x=sample_name, y=Abundance, fill=plotlabel)) +
   geom_col(position="stack") + 
-  facet_grid(target_subfragment~type, scales="free") +
+  facet_grid(pcr_primers~type, scales="free") +
   scale_y_continuous(labels = scales::percent) +
   coord_flip()+
   base_theme+
@@ -140,7 +139,7 @@ sample_data(ps_run1) <- sample_data(ps_run1) %>%
 #Philr PCOA
 philr.dist <- dist(ps_run1.philr, method="euclidean")
 philr.pcoa <- ordinate(ps_run1, 'PCoA', distance=philr.dist)
-gg.run1pca <- plot_ordination(ps_run1, philr.pcoa, color = "extract_id", shape = "target_subfragment") +
+gg.run1pca <- plot_ordination(ps_run1, philr.pcoa, color = "extract_id", shape = "pcr_primers") +
   geom_point(size=3, alpha=0.8) +
   geom_line(aes(group=extract_id), alpha=0.8) +
   geom_hline(yintercept = 0, linetype=2, alpha=0.5) +  
@@ -163,13 +162,13 @@ p3 <- ggtree(as.phylo(dend) ) +
 
 colours_p3 <- p3$data %>%
   left_join(as_data_frame(sample_data(ps_run1)) %>%
-              dplyr::select(sample_id, sample_name,  target_subfragment) %>%
+              dplyr::select(sample_id, sample_name,  pcr_primers) %>%
   dplyr::rename(label = sample_id)
     )
 
 p3 <- p3 %<+% colours_p3  + 
-  geom_tippoint(aes(colour=target_subfragment, shape = target_subfragment), size=2)  + 
-  geom_tiplab(aes(colour=target_subfragment, label=sample_name %>% str_remove("^.*_")), angle=90, hjust=1)+
+  geom_tippoint(aes(colour=pcr_primers, shape = pcr_primers), size=2)  + 
+  geom_tiplab(aes(colour=pcr_primers, label=sample_name %>% str_remove("^.*_")), angle=90, hjust=1)+
   scale_colour_brewer(palette="Paired") +
     scale_x_reverse(expand=c(0, 20)) +
   theme(legend.position = "none") + coord_flip()
@@ -178,7 +177,7 @@ p3
 # Plot as heatmap - Arrange by 
 gg.run1_heatmap <- ps_run1 %>%
   speedyseq::psmelt() %>%
-  dplyr::select(sample_id, Abundance, target_subfragment, Species) %>%
+  dplyr::select(sample_id, Abundance, pcr_primers, Species) %>%
   #filter(Genus=="Drosophila") %>%
   group_by(sample_id) %>%
   mutate_at(vars(Abundance), ~ . / sum(.) ) %>%
@@ -196,6 +195,62 @@ gg.run1_heatmap <- ps_run1 %>%
          fill="Relative abundance")
 
 gg.run1_heatmap
+
+
+# Heatmap separate for primers
+
+# Plot phylogeny
+
+heatmap_dat <-  ps_run1 %>%
+  speedyseq::psmelt() %>%
+  dplyr::select(sample_id, OTU, sample_name, Abundance, pcr_primers, Species, type) %>%
+  filter(!str_detect(Species, "__")) %>%
+  mutate(sample_name = sample_name %>% str_remove("CB3DR_"),
+         Species = str_replace(Species, "_", " "),
+         type = case_when(
+           str_detect(sample_name, "D100") ~ "Mock",
+           TRUE ~ "Trap"
+         )) %>%
+  group_by(sample_id) %>%
+  mutate_at(vars(Abundance), ~ . / sum(.) ) %>%
+  ungroup() %>%  
+  mutate(Abundance = na_if(Abundance, 0))
+
+# Plot tree
+keeptips <- heatmap_dat %>% 
+  filter(Abundance > 0) %>%
+  dplyr::select(OTU, Species) %>%
+  distinct()
+
+tree <- phy_tree(ps_run1)
+tree <- drop.tip(tree, tree$tip.label[!tree$tip.label %in% keeptips$OTU])
+
+tree$tip.label <- tree$tip.label %>%
+  tibble::enframe(name=NULL, value="OTU") %>%
+  left_join(keeptips) %>%
+  pull(Species)
+
+is.binary(tree)
+multi2di(tree)
+p1 <- ggtree(tree, ladderize = TRUE)
+
+gg.run1_heatmap_sep <- heatmap_dat %>%
+  left_join(p1$data %>% dplyr::rename(Species = label)) %>%
+  mutate(Species = factor(Species)) %>%
+    ggplot(aes(x=sample_name, y=fct_reorder(Species, y), fill=Abundance)) +
+    geom_tile() +
+  base_theme+
+  theme(legend.position = "right",
+        axis.text.y = element_text(face="italic"),
+        axis.title.y = element_blank())+
+    scale_fill_viridis_c(labels = scales::percent, na.value = NA, alpha=0.9) +
+    labs(x="Sample",
+         y="Taxon",
+         fill="Relative abundance") +
+  facet_grid(~pcr_primers,scales="free_x", drop=TRUE)
+
+p1 + gg.run1_heatmap_sep + plot_layout(widths = c(1,4))
+
 
 ```
 
@@ -238,7 +293,7 @@ sam <- speedyseq::psmelt(ps_bias) %>%
   janitor::clean_names() %>%
   mutate(taxon = species) %>%
   filter(!str_detect(genus, "__")) %>%#Remove unclassified
-  dplyr::select(sample_name, taxon, abundance, target_subfragment, fcid, material_type = type) %>%
+  dplyr::select(sample_name, taxon, abundance, pcr_primers, fcid, material_type = type) %>%
   mutate(sample_name = sample_name %>%
            str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
            str_remove("HLVKYDMXX_"),
@@ -252,13 +307,21 @@ joint <- sam %>%
          sample_name %in% exp$sample_name) %>%
   left_join(exp, by = c("sample_name","taxon")) %>%
   dplyr::rename(observed = abundance) %>%
+  filter(observed > 0) %>%
   mutate(expected = replace_na(expected, 0),
          observed0 = (observed + 0.5) * (expected > 0),
          error = observed0 / expected) %>%
   distinct() %>%
   group_by(sample_id) %>%
   mutate_at(vars(observed, expected), ~ . / sum(.) ) %>% #Convert to proportions
-  ungroup()
+  group_by(sample_id) %>%
+  group_modify(~{
+    clr_denom <- .x %>%
+      pull(error) %>%
+      gm_mean(na.rm = TRUE)
+    .x %>%
+      mutate(error_clr = log(error / clr_denom))
+  })
 
 
 # Visualise the error in all pairwise ratios
@@ -266,14 +329,14 @@ gg.ratio <- joint %>%
   dplyr::filter(expected > 0 ) %>%
   dplyr::mutate(Taxon = taxon %>%
                  str_replace("^.+_", paste0(str_extract(taxon, "."), "_"))) %>%
-    compute_ratios(group_vars = c("sample_id", "material_type", "target_subfragment")) %>%
+    compute_ratios(group_vars = c("sample_id", "material_type", "pcr_primers")) %>%
   mutate(Pair = paste(Taxon.x, Taxon.y, sep = ":")) %>% 
   ggplot(aes(Pair, expected, colour=sample_id)) +
   geom_hline(yintercept = 1, alpha=0.8) +
   geom_jitter(alpha=0.7) +
   scale_y_log10() +
   base_theme+
-  facet_grid(target_subfragment~.)+
+  facet_grid(pcr_primers~.)+
     theme(legend.position = "none",
           axis.text.x = element_text(angle=45, hjust=1))+
   labs(y= "Error in taxon ratios (log10)") 
@@ -284,34 +347,37 @@ gg.ratio
 bias <- joint %>%
   filter(material_type=="DrosMock") %>%
   filter(expected > 0) %>%
-  group_by(target_subfragment, material_type)  %>%
+  group_by(pcr_primers, material_type)  %>%
     nest() %>%
-    mutate(fit = purrr::map(data, ~lm(metacal::center_elts(observed0 /expected) ~ 0 + taxon , data = .)), 
+    mutate(fit = purrr::map(data, ~lm(error_clr ~ 0 + taxon , data = .)), 
            tidied =  purrr::map(fit, broom::tidy),
            aug =  purrr::map(fit, broom::augment)
     ) %>%
   dplyr::select(-fit) %>%
   unnest(tidied) %>%
-  mutate(taxon = str_remove(term, "taxon")) %>%
-   dplyr::select(target_subfragment, material_type, taxon, estimate) 
+  mutate(taxon = str_remove(term, "taxon"),
+         estimate = exp(estimate)) %>%
+   dplyr::select(pcr_primers, material_type, taxon, estimate)
+
 
 # Bootstrap estimation
 set.seed(606)
 boot_models <- joint %>%
   filter(material_type=="DrosMock") %>%
   filter(expected > 0) %>%
-  group_by(target_subfragment) %>%
+  group_by(pcr_primers) %>%
   group_modify(~{
     bootstraps(.x, times=1000, apparant=TRUE)  %>%
-    mutate(fit =  purrr::map(splits, ~lm(metacal::center_elts(observed0 /expected) ~ 0 + taxon , data = .)), 
-           coef =  purrr::map(fit, broom::tidy)) %>%
+    mutate(fit =  purrr::map(splits, ~lm(error_clr ~ 0 + taxon , data = .)), 
+           coef =  purrr::map(fit, function(x){
+             broom::tidy(x) %>% 
+               mutate(estimate = exp(estimate))})) %>%
     int_pctl(coef) 
     }) %>%
   mutate(taxon = str_remove(term, "taxon")) %>%
-  dplyr::select(target_subfragment, taxon, lower = .lower, estimate = .estimate, upper = .upper)
+  dplyr::select(pcr_primers, taxon, lower = .lower, estimate = .estimate, upper = .upper)
 
 # See how well bias esitmate fits data
-
 preds <- joint %>%
   left_join(boot_models) %>%
   dplyr::mutate(predicted = expected * estimate) %>%
@@ -322,19 +388,19 @@ preds <- joint %>%
 
 # Get RMSE
 errors <- preds %>%
-  group_by(target_subfragment) %>%
-  rmse(truth = logit(observed), estimate = logit(predicted)) %>%
-  dplyr::select(target_subfragment, rmse = .estimate)
+  group_by(pcr_primers) %>%
+  rmse(truth = observed, estimate = predicted) %>%
+  dplyr::select(pcr_primers, rmse = .estimate)
 
 gg.bias_fits <- preds %>%
   mutate(taxon = str_replace(taxon, "_", " ")) %>%
   left_join(errors) %>%
-  mutate(rmse = paste0("logit(RMSE) = ",round(rmse, 2))) %>%
+  mutate(rmse = paste0("RMSE = ", round(rmse, 2))) %>%
   ggplot(aes(x=logit(predicted), y=logit(observed), color = taxon))+
   geom_abline(intercept = 0, slope = 1, color = "grey") +
     geom_jitter(width = 0.1, height = 0, alpha=0.7, size=2) +
   geom_text(aes(x=-6, y=-1, label=rmse), check_overlap = TRUE, inherit.aes = FALSE)+
-  facet_wrap(~target_subfragment)+
+  facet_wrap(~pcr_primers)+
   coord_fixed()+
   scale_color_brewer(palette = "Paired")+
   base_theme +
@@ -359,20 +425,24 @@ try(dev.off(), silent=TRUE)
 # Plot bias estimates
 gg.bias <- preds %>%
   ungroup() %>%
-  dplyr::select(taxon, estimate, upper, lower, target_subfragment) %>%
+  dplyr::select(taxon, estimate, upper, lower, pcr_primers) %>%
   distinct()%>%
-  mutate(taxon = str_replace(taxon, "^.*_", "D. ")) %>%
-  ggplot(aes(x = taxon, y = estimate-1, colour = target_subfragment, group = target_subfragment)) +
-  geom_hline(yintercept = 0, alpha=0.5, colour = "grey20") +
-  geom_pointrange(aes(ymin = lower-1, ymax = upper-1), position=position_dodge(width=0.6))+
-  coord_flip() +
-  #facet_grid(target_subfragment~.) +
+  mutate(taxon = taxon %>% 
+           str_replace("^Drosophila_", "D. ")%>%
+           str_replace("^Scaptodrosophila_", "Sca. ")) %>%
+  ggplot(aes(x = taxon, y = estimate, colour = pcr_primers, group = pcr_primers)) +
+  geom_hline(yintercept = 1, alpha=0.5, colour = "grey20") +
+  geom_pointrange(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.6))+
+  #coord_flip() +
+  scale_y_log10()+
+  #facet_grid(pcr_primers~.) +
   base_theme+
   scale_colour_brewer(palette="Paired") +
   labs(
     x = NULL,
+    colour="PCR primers",
     y = "Efficiency / Geometric mean") +
-  theme(axis.text.y = element_text(face = "italic"),
+  theme(axis.text.x = element_text(face = "italic"),
         legend.position = "bottom")
 
 gg.bias
@@ -383,13 +453,14 @@ gg.bias
 ## Classification summary
 
 The ratio of root assigned reads to those under species level can be used as a proxy for taxonomic assignment
+
 ```{r, run 1 tax summary}
 # Subset to run 1
 ps <- readRDS("output/rds/ps_idtaxaExact.rds")%>%
   subset_samples(fcid %in% c("CB3DR")) 
 
 tax_summary <- speedyseq::psmelt(ps) %>%
-  dplyr::select(target_subfragment, sample_id, rank_names(ps), Abundance) %>%
+  dplyr::select(pcr_primers, sample_id, rank_names(ps), Abundance) %>%
   pivot_longer(rank_names(ps),
                names_to="rank",
                values_to="name") %>%
@@ -400,7 +471,7 @@ tax_summary <- speedyseq::psmelt(ps) %>%
     Abundance > 0 ~ 1,
     Abundance == 0 ~ 0
   )) %>%
-  group_by(target_subfragment, rank) %>% 
+  group_by(pcr_primers, rank) %>% 
   #dplyr::filter(!is.na(name)) %>%
   dplyr::summarise(reads_classified = sum(Abundance * !is.na(name)),
                    asvs_classified = sum(detection * !is.na(name)))
@@ -411,10 +482,10 @@ tax_plot_data <- tax_summary %>%
   filter(!rank=="Root") %>%
   left_join(tax_summary %>% 
               filter(rank=="Root") %>%
-              dplyr::select(target_subfragment, root_reads = reads_classified, root_asv = asvs_classified)) %>%
+              dplyr::select(pcr_primers, root_reads = reads_classified, root_asv = asvs_classified)) %>%
   mutate(read_prop = reads_classified / root_reads,
          asv_prop = asvs_classified / root_asv)%>% 
-  dplyr::select(target_subfragment, rank, contains("prop"))  %>%
+  dplyr::select(pcr_primers, rank, contains("prop"))  %>%
   pivot_longer(contains("prop"),
                names_to="type",
                values_to = "value") %>%
@@ -424,7 +495,7 @@ tax_plot_data <- tax_summary %>%
   mutate(rank = factor(rank, levels = rank_names(ps)[2:length(rank_names(ps))]))
 
 gg.reads_classified <- tax_plot_data  %>%
-  ggplot(aes(x=rank, y=value, fill = target_subfragment, group=target_subfragment)) +
+  ggplot(aes(x=rank, y=value, fill = pcr_primers, group=pcr_primers)) +
   geom_col(width=0.7, position=position_dodge(width = 0.8)) +
   #geom_text(aes(label = percent(value, accuracy = 0.1)),
   #          position=position_dodge(width = 0.8), angle=270,hjust =-0.1, colour="white", size=4 )+
@@ -442,25 +513,30 @@ gg.reads_classified
 
 ## Multifig1
 
-Comparison of primers for bias, off-target amp, and PCA of overlap  
+Comparison of primers for bias, off-target amp, and PCA of overlap
 
 ```{r run 1 multifig}
 # PCA, off target, and bias
 fig1a <- p3 /gg.run1_heatmap + plot_layout(heights = c(1,2)) #/ (gg.run1pca+ theme(legend.position = "none"))
 #
-fig1b <- gg.reads_classified / gg.bias + plot_layout(heights = c(1,2))
+fig1b <- gg.reads_classified / (gg.bias + coord_flip()) + plot_layout(heights = c(1,2))
 
 fig1 <- fig1a - fig1b + plot_layout(widths = c(3,1)) + plot_annotation(tag_levels = 'A') & theme(plot.margin = unit(c(1,1,1,1), "mm"))
   
 fig1 
 
+fig1_alternate <- gg.run1_heatmap_sep / gg.bias + plot_layout(heights = c(2,1))+ plot_annotation(tag_levels = 'A') & theme(plot.margin = unit(c(1,1,1,1), "mm"))
+
+fig1_alternate
 # Write out figure 1
 pdf(file="fig/run1_multifig.pdf", width = 11, height = 8 , paper="a4r")
   plot(fig1)
+  plot(fig1_alternate)
 try(dev.off(), silent=TRUE)
 
 # Problems to fix -  how does the PCA change with the filtered vs unfiltered data?
 # look at level of off-target amp
+  
 ```
 
 # Supplementary Comparison of primer replicates for detection and bias
@@ -481,7 +557,7 @@ exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
   pivot_longer(-sample_name,
                names_to= "taxon",
                values_to= "expected") %>%
-  mutate(taxon = str_replace(taxon, pattern=" ",replacement="_"),
+  mutate(taxon = str_replace(taxon, pattern="_",replacement=" "),
          sample_name = str_remove(sample_name, "-exp*.$")) %>%
   dplyr::filter(!is.na(sample_name),
   !str_detect(sample_name, "CM[0-9]|CT[0-9]|CML[0-9]|Syn"),
@@ -495,15 +571,16 @@ sam <- ps_run2%>%
   janitor::clean_names() %>%
   mutate(taxon = species) %>%
   filter(!str_detect(genus, "__")) %>%#Remove unclassified
-  dplyr::select(sample_name, sample_id, replicate, taxon, abundance, target_subfragment, fcid, material_type = type) %>%
+  dplyr::select(sample_name, sample_id, amp_rep, taxon, abundance, pcr_primers, fcid, material_type = type) %>%
   mutate(sample_name = sample_name %>%
            str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
-           str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_")) 
+           str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_"))
 
 #Join tables 
 joint <- sam %>%
   filter(taxon %in% exp$taxon,
-         sample_name %in% exp$sample_name) %>%
+         sample_name %in% exp$sample_name,
+         abundance > 0) %>%
   left_join(exp, by = c("sample_name","taxon")) %>%
   dplyr::rename(observed = abundance) %>%
   mutate(expected = replace_na(expected, 0),
@@ -512,25 +589,34 @@ joint <- sam %>%
   distinct() %>%
   group_by(sample_id) %>%
   mutate_at(vars(observed, expected), ~ . / sum(.) ) %>% #Convert to proportions
-  ungroup()
+  ungroup() %>%
+  group_by(sample_id) %>%
+  group_modify(~{
+    clr_denom <- .x %>%
+      pull(error) %>%
+      gm_mean(na.rm = TRUE)
+    .x %>%
+      mutate(error_clr = log(error / clr_denom))
+  })
 
 # Bootstrap estimation
 set.seed(606)
 boot_models <- joint %>%
   filter(material_type=="DrosMock") %>%
   filter(expected > 0) %>%
-  group_by(target_subfragment, replicate) %>%
+  group_by(pcr_primers, amp_rep) %>%
   group_modify(~{
     bootstraps(.x, times=1000, apparant=TRUE)  %>%
-    mutate(fit =  purrr::map(splits, ~lm(metacal::center_elts(observed0 /expected, na.rm = TRUE) ~ 0 + taxon , data = .)), 
-           coef =  purrr::map(fit, broom::tidy)) %>%
-    int_pctl(coef) 
+    mutate(fit =  purrr::map(splits, ~lm(error_clr ~ 0 + taxon , data = .)), 
+           coef =  purrr::map(fit, function(x){
+             broom::tidy(x) %>% 
+               mutate(estimate = exp(estimate))})) %>%
+    int_pctl(coef) %>%
+    mutate(taxon = str_remove(term, "taxon"))
     }) %>%
-  mutate(taxon = str_remove(term, "taxon")) %>%
-  dplyr::select(target_subfragment, replicate, taxon, lower = .lower, estimate = .estimate, upper = .upper)
+  dplyr::select(pcr_primers, amp_rep, taxon, lower = .lower, estimate = .estimate, upper = .upper)
 
 # See how well bias estiamte fits data
-
 preds <- joint %>%
   left_join(boot_models) %>%
   dplyr::mutate(predicted = expected * estimate) %>%
@@ -542,16 +628,17 @@ preds <- joint %>%
 # Plot bias estimates for the 3 separate primers
 gg.biasreps <- preds %>%
   ungroup() %>%
-  dplyr::select(taxon, estimate, upper, lower, target_subfragment, replicate) %>%
+  dplyr::select(taxon, estimate, upper, lower, pcr_primers, amp_rep) %>%
   distinct()%>%
-  mutate(replicate = factor(replicate, levels = c("1","2","3"))) %>%
+  mutate(amp_rep = factor(amp_rep, levels = c("1","2","3"))) %>%
   mutate(taxon = str_replace(taxon, "^.*_", "D. ")) %>%
-  ggplot(aes(x = taxon, y = estimate-1, colour = replicate, group =replicate)) +
-  geom_hline(yintercept = 0, alpha=0.5, colour = "grey20") +
-  geom_pointrange(aes(ymin = lower-1, ymax = upper-1), position=position_dodge(width=0.5))+
-  facet_grid(~target_subfragment) +
+  ggplot(aes(x = taxon, y = estimate, colour = amp_rep, group =amp_rep)) +
+  geom_hline(yintercept = 1, alpha=0.5, colour = "grey20") +
+  geom_pointrange(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.5))+
+  facet_grid(~pcr_primers) +
   coord_flip() +
   base_theme+
+  scale_y_log10()+
   scale_colour_brewer(palette="Paired") +
   labs(
     x = NULL,
@@ -572,9 +659,10 @@ try(dev.off(), silent=TRUE)
 
 ## Insects trapped summary
 
-```{r}
+```{r Trapped insects}
 trapdat <- read_csv("Fieldwork/trap_data_clean.csv") %>%
   janitor::clean_names()%>%
+  mutate(catch = as.numeric(catch)) %>%
   mutate(orchard_type = case_when(
          str_detect(fruit, "Peach") ~ "Stonefruit",
          str_detect(fruit, "Nectarine") ~ "Stonefruit",
@@ -590,23 +678,21 @@ trapdat %>%
   group_by(week, attractant, orchard, orchard_type) %>%
   dplyr::summarise(catch = sum(catch, na.rm=TRUE))
   
-
 ##Total catch by orchard and week
-trapdat %>% 
+gg.trapweek <- trapdat %>% 
   mutate(week = as.factor(week)) %>%
   ggplot(aes(x=week, y=catch, colour=attractant, group=week))+
-  geom_jitter(size=3, alpha=0.6, width=0.2, height=0.2)+
-  geom_boxplot(fill=NA)+
+  geom_jitter(size=2, alpha=0.6, width=0.2, height=0.2)+
+  geom_boxplot(fill=NA, outlier.colour = NA)+
   facet_grid(attractant~orchard_type, scales="free") +
   base_theme +
   scale_colour_brewer(palette="Paired") 
 
-
 ##Total catch by orchard and trap type
-trapdat %>% 
+gg.trapall <- trapdat %>% 
   ggplot(aes(x=attractant, y=catch, colour=attractant))+
-  geom_jitter(size=3, alpha=0.6, width=0.2, height=0.2)+
-  geom_boxplot(fill=NA)+
+  geom_jitter(size=2, alpha=0.6, width=0.2, height=0.2)+
+  geom_boxplot(fill=NA, outlier.colour = NA)+
   facet_grid(~orchard_type) +
   base_theme +
   scale_colour_brewer(palette="Paired")  + 
@@ -614,27 +700,18 @@ trapdat %>%
        y = "Estimated trap catch")
 
 
-ggplot(data=data)+
-  geom_bar(mapping = aes(x=Week, y=as.numeric(Catch), fill=Attractant),stat="identity",position="dodge",colour="black") +
-  facet_grid(Fruit~Orchard) + ylab("Total Catch") #
-
-##Average catch per 2 weeks
-ggplot(data=data)+
-  geom_bar(mapping = aes(x=Week, y=Catch, fill=Attractant), stat="summary") +
-  facet_grid(Attractant~Orchard) + ylab("Average catch for each 2 week period")
-
-
-
-
 ```
 
-
 ## Subset to just run 3
+
 ```{r subset}
 ps_run3 <- ps2 %>%
   subset_samples(fcid %in% c("HLVKYDMXX")) %>%
+  subset_taxa(Phylum =="Arthropoda") %>%
   #prune_taxa(!str_detect(Species, "Synthetic")) %>%
   filter_taxa( function(x) mean(x) > 0, TRUE)
+
+ps_run3 <-  prune_samples(sample_sums(ps_run3) >0 , ps_run3)
 
 # Need to remove synthetics
 ```
@@ -673,7 +750,7 @@ div_table <- sespd %>%
   left_join(sample_data(ps_run3) %>% 
               as("data.frame") %>%
               filter(!duplicated(sample_id)) %>%
-              dplyr::select(replicate, sample_name = sample_id, type),
+              dplyr::select(amp_rep, sample_name = sample_id, type),
             by = "sample_name") 
 
 # Filter to just the field collected types
@@ -685,9 +762,9 @@ div_table %>%
   summarise(across(where(is.numeric), mean, na.rm=TRUE))
 
 # Difference in alpha diversity between replicates
-#report::report(aov(alpha ~replicate, data=div_table))
-#report::report(aov(Shannon ~replicate, data=div_table))
-#report::report(aov(pd ~replicate, data=div_table))
+#report::report(aov(alpha ~amp_rep, data=div_table))
+#report::report(aov(Shannon ~amp_rep, data=div_table))
+#report::report(aov(pd ~amp_rep, data=div_table))
 #
 # Difference in alpha diversity between trap types
 report::report(aov(alpha ~type, data=div_table))
@@ -712,11 +789,20 @@ gg.alpha <- div_table %>%
            str_replace("pd", "Phylogenetic Diversity") %>%
            str_replace("Shannon", "Shannon Index")) %>%
   ggplot(aes(x=type, y=value, colour=type)) +
-  geom_jitter(size=3, alpha=0.6, width=0.2, height=0)+
+  geom_jitter(size=2, alpha=0.6, width=0.2, height=0)+
   geom_boxplot(fill=NA)+
+  coord_flip()+
   base_theme+
   scale_colour_brewer(palette="Paired") +
-  facet_grid(~metric, scales="free_y")
+  facet_wrap(.~metric,ncol=1, scales="free")
+
+gg.alpha
+
+pdf(file="fig/supplementary/trap_catches.pdf", width = 8, height = 6 , paper="a4r")
+  plot(gg.trapweek)
+  plot(gg.trapall)
+  plot(gg.alpha)
+try(dev.off(), silent=TRUE)
 
 # This could be nice really small, under the total catch
 
@@ -726,7 +812,8 @@ gg.alpha <- div_table %>%
 
 ```{r Distances}
 # Get OTU tables
-otutab <- otu_table(ps_run3)
+otutab <- otu_table(ps_run3) %>%
+  as("matrix")
 #Impute zeroes for compositional distances
 otutab_n0 <- as.matrix(zCompositions::cmultRepl(otutab, method="CZM", output="p-counts"))
 #Root phylogenetic tree
@@ -752,6 +839,7 @@ distlist$WUnifrac <- as.matrix(phyloseq::UniFrac(ps_run3, weighted=TRUE, paralle
 ```
 
 # Adonis and betadisper
+
 ```{r betatest}
 # Adonis test
 metadata <- sample_data(ps_run3) %>%
@@ -829,7 +917,7 @@ p3 + gg.pca
 
 ```
 
-# Plot a heatmap of insect distances vs clustering of samp;les
+# Plot a heatmap of insect distances vs clustering of samples
 
 ```{r Heatmap}
 #Prepare co-occurance matrix
@@ -914,16 +1002,24 @@ gg.heatmap <- psmelt(ps_run3) %>%
 
 ```
 
-
 # Phylogeny of trap catches
 
 ```{r Phylogeny}
+
+taxa_names(ps_run3) <- taxa_names(ps_run3)%>% str_remove("^.*-")
+
 tree <- phy_tree(ps_run3)
-circ <- ggtree(tree, layout = "circular", branch.length = 'none')
+
+# Colour tree by order
+#
 
 
 p1dat <- speedyseq::psmelt(ps_run3) %>%
-  dplyr::select(OTU, type, Abundance) %>%
+  dplyr::select(sample_id, OTU, type, Abundance) %>%
+  #group_by(sample_id) %>%  
+  #mutate_at(vars(Abundance), ~ . / sum(.)) %>%
+  filter(Abundance > 0) %>%
+  drop_na() %>%
   dplyr::filter(type %in% c("ACV", "DC", "FF", "SPD")) %>%
   group_by(OTU, type) %>%
   summarise(Abundance = sum(Abundance)) %>%
@@ -932,6 +1028,10 @@ p1dat <- speedyseq::psmelt(ps_run3) %>%
               values_from = Abundance,
               values_fill = 0) %>%
   column_to_rownames("OTU")
+
+tree <- drop.tip(tree, tree$tip.label[!tree$tip.label %in% rownames(p1dat)])
+
+circ <- ggtree(tree, layout = "circular", branch.length = 'none')
 
 p1 <- gheatmap(circ, p1dat, offset=0, width=.4, color="gray20",
                colnames_angle=95, colnames_offset_y = 0) +
@@ -946,6 +1046,7 @@ p2dat <- speedyseq::psmelt(ps_run3) %>%
     TRUE ~ as.character(NA)
   )) %>%
   dplyr::select(OTU, orchard, Abundance) %>%
+    filter(Abundance > 0) %>%
   drop_na() %>%
   group_by(OTU, orchard) %>%
   summarise(Abundance = sum(Abundance)) %>%
@@ -956,12 +1057,18 @@ p2dat <- speedyseq::psmelt(ps_run3) %>%
   column_to_rownames("OTU")
   
 p2 <- p1 + new_scale_fill()
-gg.phylo <- gheatmap(p2, p2dat, offset=10, width=.2,
+gg.phylo <- gheatmap(p2, p2dat, offset=5.5, width=.2,
          colnames_angle=90, colnames_offset_y = .25, color="gray20") +
-    scale_fill_viridis_c(option="A", name="Abundance", trans="log10")+ 
-    geom_tiplab(offset=17, align=FALSE, size=3) 
+    scale_fill_viridis_c(option="B", name="Abundance", trans="log10")+
+  geom_tiplab(offset=9, align=FALSE, size=3) 
 
-
+#p3 <- p2 + new_scale_fill()
+#gg.phylo <- gheatmap(p3, p2dat %>% dplyr::select(Stonefruit), offset=7, width=.2,
+#         colnames_angle=90, colnames_offset_y = .25, color="gray20") +
+#    #scale_fill_gradient(low="sandybrown", high="firebrick", trans="log10")+
+#    scale_fill_viridis_c(option="B", name="Abundance", trans="log10")+ 
+#    geom_tiplab(offset=12, align=FALSE, size=3) 
+#
 gg.phylo
 
 # Write out bias explained for supplementary 
@@ -976,13 +1083,9 @@ try(dev.off(), silent=TRUE)
 
 ```
 
-
-
-
 ## Detection probability
-How do the primers affect its probability of detection (presence/absence). We used a generalized linear mixed effects model of presence/absense as a function of primer
-primer. To account for the paired design (where both types of samples were derived from the same community), we defined Sample ID as a random effect.
-Since the response was binomial, we assumed a logit‐link and binomially distributed error
+
+How do the primers affect its probability of detection (presence/absence). We used a generalized linear mixed effects model of presence/absense as a function of primer primer. To account for the paired design (where both types of samples were derived from the same community), we defined Sample ID as a random effect. Since the response was binomial, we assumed a logit‐link and binomially distributed error
 
 ```{r detection probability}
 # Use joint to get a table of expected/absent
@@ -1001,10 +1104,10 @@ det_table <- joint %>%
 library(lme4)
 detmodel <- det_table %>%
   filter(fcid=="CB3DR") %>%
-  dplyr::select(sample_id, extract_id, taxon, detected, target_subfragment) %>%
+  dplyr::select(sample_id, extract_id, taxon, detected, pcr_primers) %>%
   #group_by(taxon) %>%
   nest() %>%
-  mutate(fit = map(data, ~glmer(detected ~ target_subfragment + (1|extract_id), family=binomial, data = .)), 
+  mutate(fit = map(data, ~glmer(detected ~ pcr_primers + (1|extract_id), family=binomial, data = .)), 
            tidied = map(fit, broom::tidy),
            aug = map(fit, broom::augment)
 
@@ -1018,7 +1121,7 @@ det_suzukii <- det_table %>%
   filter(fcid=="CB3DR") %>%
   group_by(taxon) %>%
   nest() %>%
-  mutate(fit = map(data, ~glmer(detected ~ target_subfragment + (1|extract_id), family=binomial, data = .)), 
+  mutate(fit = map(data, ~glmer(detected ~ pcr_primers + (1|extract_id), family=binomial, data = .)), 
            tidied = map(fit, broom::tidy),
            aug = map(fit, broom::augment)
 
@@ -1030,6 +1133,7 @@ det_suzukii
 ```
 
 ### eDNAoccupancy
+
 ```{r edna occupancy}
 
 library(eDNAoccupancy)
@@ -1162,13 +1266,11 @@ p = posteriorSummaryOfDetection(fit, burnin=1000)
 
 ```
 
-###Seak occupancy
+\#\#\#Seak occupancy
 
 Seak occupancy modelling - The model is fitted within a Bayesian framework and any of the model parameters can be functions of covariates. The implemented algorithm performs Bayesian variable selection and the output includes posterior summaries of all parameters as well as posterior probabilities of inclusion (see examples for a more detailed description of how to interpret the output).
 
 The model has been developed for single species qPCR data. The data are the number of positive qPCRs (eDNA score) for each water sample collected at surveyed sites. The model allows us to estimate the probability of species presence at each survey site, while accounting for the probabilities of a false positive and false negative error at stage 1 (field) and stage 2 (lab).
-
-
 
 Occupancy modelling calculates the probability of detection from a number of replicates. ie - 6 replicates positive = 100% probaiblity , 5/6 = 85% probability
 
@@ -1176,18 +1278,11 @@ Nested levels = Replicated extractions, replicated PCRs .
 
 Could fit a single specied
 
-
-For model taking into accoutn false poositives and negatives: https://seak.shinyapps.io/eDNA/
+For model taking into accoutn false poositives and negatives: <https://seak.shinyapps.io/eDNA/>
 
 This requires format
 
-Columns = Sample (extraciton replicate ) so 2 columns
-Rows = site (trap)
-cell value = number of positive PCR replicates (out of 3)
-Column 3 = True presence or absense 1 or 0
-column 4,5,6 etc other covariates. Sequencing depth, community size, species richness,trap type, phylogenetic richness... etc
-
-
+Columns = Sample (extraciton replicate ) so 2 columns Rows = site (trap) cell value = number of positive PCR replicates (out of 3) Column 3 = True presence or absense 1 or 0 column 4,5,6 etc other covariates. Sequencing depth, community size, species richness,trap type, phylogenetic richness... etc
 
 ```{r occupancy}
 #convert to presence/absense
@@ -1283,38 +1378,23 @@ write.csv(det_suzukii, "test_occupancy_suzukii.csv", row.names=FALSE)
 
 ```
 
-For sequencing depth covariate could you just rarefy to certain depth, recalculate detection, then rbind a longer table together in a loop
-Same with filtering threshold
-
-
+For sequencing depth covariate could you just rarefy to certain depth, recalculate detection, then rbind a longer table together in a loop Same with filtering threshold
 
 these could be fit seperately for our 3 target species
 
 Then we can look at how the detection probability changes across different filtering thresholds used to remove index switching?
 
+To test if probability of detection differs as a function of sample water volume, we used the eDNAoccupancy R package (version 0.2.4; Dorazio & Erickson, 2017) to model probabilities of eDNA detection. This package fits Bayesian, multi‐scale occupancy models to our data, which included three, nested levels of sampling: stream location, replicated water samples collected from each stream, and subsamples (i.e., PCR technical replicates) of each water sample.
 
-To test if probability of detection differs as a function of sample water volume, we used the eDNAoccupancy R package (version 0.2.4; Dorazio & Erickson, 2017) to model probabilities of eDNA detection. This package fits Bayesian, multi‐scale occupancy models to our data, which included three, nested levels of sampling: stream location, replicated water samples collected from each stream, and subsamples (i.e., PCR technical replicates) of each water sample. 
+<https://onlinelibrary.wiley.com/doi/full/10.1002/edn3.23>
 
+<https://besjournals.onlinelibrary.wiley.com/doi/10.1111/j.2041-210X.2011.00156.x>
 
+<https://www.pnas.org/content/pnas/116/18/8931.full.pdf>
 
-https://onlinelibrary.wiley.com/doi/full/10.1002/edn3.23
-
-https://besjournals.onlinelibrary.wiley.com/doi/10.1111/j.2041-210X.2011.00156.x
-
-https://www.pnas.org/content/pnas/116/18/8931.full.pdf
-
-Based on the overall model, a total of seven water samples was
-required to achieve >95% detection probabilities of S. mansoni
-eDNA at water sample level (θ = 0.35) [as calculated by using
-the equation P = 1 − (1 − θ)
-n (27)]. By using the same approach,
-the model-based estimated number of qPCR replicates required
-to achieve detection probabilities >95% ranged from three to
-nine replicates between sites
-
+Based on the overall model, a total of seven water samples was required to achieve \>95% detection probabilities of S. mansoni eDNA at water sample level (θ = 0.35) [as calculated by using the equation P = 1 − (1 − θ) n (27)]. By using the same approach, the model-based estimated number of qPCR replicates required to achieve detection probabilities \>95% ranged from three to nine replicates between sites
 
 ## Check for concordance between mock and real
-
 
 ```{r PCA}
 # Read in expected table
@@ -1381,7 +1461,9 @@ joint_pca$pca %>%
 
 
 library(RColorBrewer)
-col <- colorRampPalette(brewer.pal(11, "Spectral"))(25)
+colourCount = length(cls)
+getPalette = colorRampPalette(brewer.pal(12, "Spectral"))
+colour.pal <- getPalette(colourCount)
 
 joint_pca %>%
   mutate(
@@ -1420,7 +1502,6 @@ ps.merged %>%
 
 ```
 
-
 # Reproducability Receipt
 
 ```{details, echo = FALSE, details.summary = 'Reproducability receipt'}
@@ -1430,4 +1511,3 @@ Sys.time()
 git2r::repository()
 sessioninfo::session_info()
 ```
-

@@ -40,6 +40,9 @@ knitr::opts_chunk$set(echo = TRUE, eval=FALSE, message=FALSE,error=FALSE,fig.sho
                     "seqinr",
                     "stringi",
                     "phangorn",
+                    "ggtree",
+                    "castor",
+                    "geiger",
                     "filesstrings")
 .bioc_packages <- c("dada2",
                     "phyloseq",
@@ -66,18 +69,21 @@ sapply(c(.cran_packages,.bioc_packages), require, character.only = TRUE)
 
 devtools::install_github("alexpiper/taxreturn")
 devtools::install_github("alexpiper/seqateurs")
+devtools::install_github("mikemc/speedyseq")
 
+
+library(speedyseq)
 library(taxreturn)
 library(seqateurs)
 
 #Install blast
-blast_install(dest.dir = "bin")
+#blast_install(dest.dir = "bin")
 
 #Install bbmap
-bbmap_install(dest.dir = "bin")
+#bbmap_install(dest.dir = "bin")
 
 #Install fastqc
-fastqc_install(dest.dir = "bin")
+#fastqc_install(dest.dir = "bin")
 
 # Create directories
 if(!dir.exists("data")){dir.create("data", recursive = TRUE)}
@@ -840,41 +846,39 @@ seqtabs <- list.files("output/rds/", pattern="seqtab.rds", full.names = TRUE)
 
 # If multiple seqtabs present, merge.
 if(length(seqtabs) > 1){
-  st.all <- mergeSequenceTables(tables=seqtabs)
+  st_all <- mergeSequenceTables(tables=seqtabs)
 } else if(length(seqtabs) == 1) {
-  st.all <- readRDS(seqtabs)
+  st_all <- readRDS(seqtabs)
 }
 
 #Remove chimeras
-seqtab.nochim <- removeBimeraDenovo(st.all, method="consensus", multithread=TRUE, verbose=TRUE)
-message(paste(sum(seqtab.nochim)/sum(st.all),"of the abundance remaining after chimera removal"))
-saveRDS(seqtab.nochim, "output/rds/seqtab_nochim.rds")
+seqtab_nochim <- removeBimeraDenovo(st_all, method="consensus", multithread=TRUE, verbose=TRUE)
+message(paste(sum(seqtab_nochim)/sum(st_all),"of the abundance remaining after chimera removal"))
+saveRDS(seqtab_nochim, "output/rds/seqtab_nochim.rds")
 
 
 #cut to expected size allowing for some codon indels
-seqtab.cut <- seqtab.nochim[,nchar(colnames(seqtab.nochim)) %in% 200:210]
+seqtab_cut <- seqtab_nochim[,nchar(colnames(seqtab_nochim)) %in% 200:210]
 message(paste0("Identified ",
-               length(colnames(seqtab.nochim))  - length(colnames(seqtab.cut)),
-               " incorrectly sized sequences out of ", length(colnames(seqtab.nochim)) , " input sequences."))
-message(paste(sum(seqtab.cut)/sum(seqtab.nochim),"of the abundance remaining after cutting to expected size"))
-saveRDS(seqtab.cut, "output/rds/seqtab_cut.rds")
+               length(colnames(seqtab_nochim))  - length(colnames(seqtab_cut)),
+               " incorrectly sized sequences out of ", length(colnames(seqtab_nochim)) , " input sequences."))
+message(paste(sum(seqtab_cut)/sum(seqtab_nochim),"of the abundance remaining after cutting to expected size"))
+saveRDS(seqtab_cut, "output/rds/seqtab_cut.rds")
 
 
 #Filter for homology with the target marker
 fwh_ref <-  ape::read.dna("reference/fwh_insecta_aligned_curated.fasta", format="fasta")
 model <- aphid::derivePHMM(fwh_ref)
 
-seqs <- as.DNAbin(DNAStringSet(colnames(seqtab.cut)))
-phmm_filt <- taxreturn::clean_seqs(seqs, minscore = 100, shave = FALSE, model = model)
-codon_filt <- codon_filter(phmm_filt)
+seqs <- as.DNAbin(DNAStringSet(colnames(seqtab_cut)))
+names(seqs) <- colnames(seqtab_cut)
+phmm_filt <- taxreturn::map_to_model(seqs, model = model, minscore = 100, shave = FALSE, check_indels = TRUE) 
 
-#Filter sequences containing stop codons
-
-seqtab.final <- seqtab.cut[,colnames(seqtab.cut) %in% as.character(codon_filt)]
-saveRDS(seqtab.final, "output/rds/seqtab_final.rds")
+seqtab_final <- seqtab_cut[,colnames(seqtab_cut) %in% names(phmm_filt)]
+saveRDS(seqtab_final, "output/rds/seqtab_final.rds")
 
 # summarise cleanup
-cleanup <- st.all %>%
+cleanup <- st_all %>%
   as.data.frame() %>%
   pivot_longer( everything(),
     names_to = "OTU",
@@ -883,18 +887,18 @@ cleanup <- st.all %>%
   summarise(Abundance = sum(Abundance)) %>%
   mutate(length  = nchar(OTU)) %>%
   mutate(type = case_when(
-    !OTU %in% getSequences(seqtab.nochim) ~ "Chimera",
-    !OTU %in% getSequences(seqtab.cut) ~ "Incorrect size",
-    !OTU %in% getSequences(seqtab.final) ~ "Stop codons",
+    !OTU %in% getSequences(seqtab_nochim) ~ "Chimera",
+    !OTU %in% getSequences(seqtab_cut) ~ "Incorrect size",
+    !OTU %in% getSequences(seqtab_final) ~ "Stop codons",
     TRUE ~ "Real"
   )) 
 write_csv(cleanup, "output/logs/chimera_summary.csv")
 
 #Read Tracker
-chimera_filtered <- as.data.frame(cbind(rowSums(st.all),
-                                rowSums(seqtab.nochim),
-                                rowSums(seqtab.cut),
-                                rowSums(seqtab.final))) %>%
+chimera_filtered <- as.data.frame(cbind(rowSums(st_all),
+                                rowSums(seqtab_nochim),
+                                rowSums(seqtab_cut),
+                                rowSums(seqtab_final))) %>%
               magrittr::set_colnames(c("seqtab", "chimera_filt", "size_filt", "seqtab_final")) %>%
               rownames_to_column("sample_id") %>%
               mutate(sample_id = str_replace(basename(sample_id), pattern="_S.*$", replacement=""))
@@ -903,22 +907,22 @@ write_csv(chimera_filtered, "output/logs/chimera_filtered.csv")
 
 # Get filter stats for paper
 #total ASV's
-nrow(st.all)
+nrow(st_all)
 #Chimeric ASV's
-nrow(st.all) - nrow(seqtab.nochim)
+nrow(st_all) - nrow(seqtab_nochim)
 #wrong size
-nrow(seqtab.nochim) - nrow(seqtab.cut)
+nrow(seqtab_nochim) - nrow(seqtab_cut)
 #Non-homologous or stop codons
-nrow(seqtab.cut) - nrow(seqtab.final)
+nrow(seqtab_cut) - nrow(seqtab_final)
 
 
 #Update log DF
 logdf <- read_csv("output/logs/logdf.csv")
 
 logdf <- logdf %>% 
-  left_join(as.data.frame(cbind(rowSums(st.all),
-                                rowSums(seqtab.nochim),
-                                rowSums(seqtab.final))) %>%
+  left_join(as.data.frame(cbind(rowSums(st_all),
+                                rowSums(seqtab_nochim),
+                                rowSums(seqtab_final))) %>%
                             rownames_to_column("sample_id") %>%
               mutate(sample_id = str_replace(basename(sample_id), pattern="_S.*$", replacement="")) %>%
               dplyr::select(sample_id, reads_chimerafilt = V2, reads_sizefilt = V3),
@@ -949,12 +953,15 @@ This requires training on a curated reference database - The pre-trained file ca
 Folllowing assignment with IDTAXA, we will also use exact matching with a reference database to assign more sequences (including the synthetic positive controls) to species level
 
 ```{r IDTAXA}
-seqtab.final <- readRDS("output/rds/seqtab_final.rds")
-ranks <-  c("Root", "Kingdom", "Phylum","Class", "Order", "Family", "Genus","Species") # ranks of interest
+seqtab_final <- readRDS("output/rds/seqtab_final.rds")
+ranks <-  c("Root","Kingdom", "Phylum","Class", "Order", "Family", "Genus","Species") # ranks of interest
+
+# Testing
+trainingSet <- readRDS("reference/classifiers/idtaxa_bftrimmed.rds")
 
 #Classify using IDTAXA
-trainingSet <- readRDS("reference/idtaxa.rds")
-dna <- DNAStringSet(getSequences(seqtab.final)) # Create a DNAStringSet from the ASVs
+#trainingSet <- readRDS("reference/idtaxa.rds")
+dna <- DNAStringSet(getSequences(seqtab_final)) # Create a DNAStringSet from the ASVs
 ids <- IdTaxa(dna, trainingSet, processors=8, threshold = 60, verbose=TRUE) 
 saveRDS(ids, "ids.rds")
 
@@ -972,32 +979,115 @@ tax <- t(sapply(ids, function(x) {
   purrr::map(unlist) %>%
   stri_list2matrix(byrow=TRUE, fill=NA) %>%
   magrittr::set_colnames(ranks) %>%
-  as.data.frame()  %T>%
+  as.data.frame() %>%
+magrittr::set_rownames(getSequences(seqtab_final)) %T>%
   write.csv("output/logs/idtaxa_results.csv") %>%  #Write out logfile with confidence levels
   mutate_all(str_replace,pattern="(?:.(?!_))+$", replacement="") %>%
-  magrittr::set_rownames(getSequences(seqtab.final)) %>%
-  seqateurs::na_to_unclassified() %>% #Propagate high order ranks to unassigned ASV'
+  magrittr::set_rownames(getSequences(seqtab_final)) 
+
+saveRDS(tax, "output/rds/tax_IdTaxa.rds")
+
+tax <- readRDS("output/rds/tax_IdTaxa.rds")
+
+# Extra species level assignment using BLAST
+seqs <- insect::char2dna(colnames(seqtab_final))
+names(seqs) <- colnames(seqtab_final)
+
+# Top hit with BLAST
+blast_spp <- blast_assign_species(query=seqs,db="reference/classifiers/insecta_hierarchial_bftrimmed.fa.gz", identity=97, coverage=95, evalue=1e06, maxtargetseqs=5, maxhsp=5, ranks=c("Root", "Kingdom", "Phylum","Class", "Order", "Family", "Genus","Species"), delim=";") %>%
+  dplyr::rename(blast_genus = Genus, blast_spp = Species) %>%
+  dplyr::filter(!is.na(blast_spp))
+
+saveRDS(blast_spp, "output/rds/blast_top_hit.rds")
+
+blast_spp <- readRDS("output/rds/blast_top_hit.rds") 
+#Join together
+tax_blast <- tax %>%
+  as_tibble(rownames = "OTU") %>%
+  left_join(blast_spp , by="OTU") %>%
+  dplyr::mutate(Species = case_when(
+    is.na(Species) & Genus == blast_genus ~ blast_spp,
+    !is.na(Species) ~ Species
+  )) %>%
+  dplyr::select(OTU, all_of(ranks)) 
+
+# Assign synthetic controls
+seqs <- insect::char2dna(colnames(seqtab_final))
+names(seqs) <- colnames(seqtab_final)
+
+synthetics <- blast_assign_species(query=seqs, db="reference/synthetics.fa", identity=95, coverage=95, evalue=1e06, maxtargetseqs=5, maxhsp=5, ranks=c("Genus", "Species"), delim=" ")%>%
+  dplyr::rename(syn_genus = Genus, syn_species = Species )
+
+syn_tax <- tax_blast %>% 
+  left_join(synthetics , by="OTU") %>%
+  mutate(Species = case_when(
+    syn_genus == "Synthetic" ~ syn_species,
+    TRUE ~ Species
+  )) %>%
+  mutate_at(vars(one_of(c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus" ))),
+    funs(case_when(
+    syn_genus == "Synthetic" ~ syn_genus,
+    TRUE ~ .
+  )) ) %>%
+  dplyr::select(OTU, all_of(ranks)) %>%
+  column_to_rownames("OTU") %>%
+  as.matrix() %>%
+  seqateurs::na_to_unclassified(rownames=TRUE)
+
+# Manually resolve taxonomic clashes at species level
+syn_tax %>% 
+  as_tibble(rownames="OTU") %>%
+  filter(str_detect(Species, "/")) %>%
+  pull(Species) %>%
+  unique()
+ 
+replacements <- syn_tax %>% 
+  as_tibble(rownames="OTU") %>%
+  #filter(str_detect(Species, "/")) %>%
+  dplyr::select(OTU, Species) %>%
+  mutate(replacement = case_when(
+    Species == "Drosophila buzzatii/koepferae" ~ "Drosophila buzzatii",
+    Species ==  "Sarcophaga assimilis/furcata" ~ "Sarcophaga assimilis",
+    Species ==  "Bactrocera melas/tryoni" ~ "Bactrocera tryoni",
+    Species ==  "Drosophila kepulauana/kohkoa/sulfurigaster" ~ "Drosophila sulfurigaster",
+    Species ==  "Drosophila kepulauana/sulfurigaster" ~ "Drosophila sulfurigaster",
+    Species ==  "Bactrocera aquilonis/neohumeralis/tryoni" ~ "Bactrocera tryoni",
+    Species ==  "Drosophila albomicans/pulaua" ~ "Drosophila albomicans",
+    Species ==  "Drosophila albomicans/sulfurigaster" ~ "Drosophila sulfurigaster",
+    Species ==  "Drosophila albomicans/nasuta/sulfurigaster" ~ "Drosophila albomicans",
+    Species ==  "Bactrocera aquilonis/melas/tryoni" ~ "Bactrocera tryoni",
+    Species ==  "Megaselia abdita/scalaris" ~ "Megaselia scalaris",
+    Species ==  "Lonchoptera bifurcata/uniseta" ~ "Lonchoptera bifurcata",
+    Species ==  "Nylanderia braueri/glabrior/tasmaniensis" ~ "Nylanderia tasmaniensis/braueri", #Probably a synonym
+    Species ==  "Epiphyas dotatana/postvittana" ~ "Epiphyas postvittana",
+    Species ==  "Drosophila kepulauana/nasuta" ~ "Drosophila nasuta",
+    Species ==  "Calliphora augur/dubia" ~ "Calliphora augur/dubia", #Probably a synonym
+    Species ==  "Dendrolaelaps longiscutatus/longiusculus" ~ "Dendrolaelaps longiusculus",
+    Species ==  "Culex molestus/quinquefasciatus" ~ "Culex quinquefasciatus",
+    Species ==  "Drosophila albomicans/neohypocausta/neonasuta" ~ "Drosophila albomicans",
+    Species ==  "Carpophilus bakewelli/planatus" ~ "Carpophilus bakewelli",
+    Species ==  "Frankliniella borinquen/occidentalis" ~ "Frankliniella occidentalis",
+    Species ==  "Drosophila nasuta/pulaua" ~ "Drosophila nasuta",
+    Species ==  "Iridomyrmex purpureus/spadius" ~ "Iridomyrmex purpureus",
+    Species ==  "Brachypeplus_Sp1" ~ "Brachypeplus_Sp", 
+    Species ==  "Brachypeplus_Sp2" ~ "Brachypeplus_Sp"
+    )) %>%
+  filter(!is.na(replacement))
+
+# Replace taxonomy
+final_tax <- syn_tax %>%
+  as_tibble(rownames="OTU") %>%
+  left_join(replacements, by=c("OTU", "Species")) %>%
+  mutate(Species = case_when(
+    !is.na(replacement) ~ replacement,
+    is.na(replacement)  ~ Species
+    ))%>%
+  dplyr::select(OTU, all_of(ranks)) %>%
+  column_to_rownames("OTU") %>%
   as.matrix()
 
 # Write taxonomy table to disk
-saveRDS(tax, "output/rds/tax_IdTaxa.rds") 
-
-# Fix bad taxonomic assignments
-#tax <- read_rds("output/rds/tax_IdTaxa.rds")
-
-#tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Drosophila_albomicans")] <-
-#"Drosophila_immigrans"
-#tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Drosophila_sulfurigaster")] <-
-#"Drosophila_immigrans"
-#tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Drosophila_mauritiana/simulans")] <-
-#"Drosophila_simulans"
-#tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <-
-#"Carpophilus_nr.dimidiatus"
-#tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
-#tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
-
-# Write taxonomy table to disk
-#saveRDS(tax, "output/rds/tax_IdTaxa.rds") 
+saveRDS(final_tax, "output/rds/final_tax.rds") 
 ```
 
 ## Summarise Top hit distribution with reference database
@@ -1008,23 +1098,20 @@ seqtab_final <- readRDS("output/rds/seqtab_final.rds")
 seqs <- insect::char2dna(colnames(seqtab_final))
 names(seqs) <- colnames(seqtab_final)
 
-out <- blast_top_hit(query=seqs, db="reference/merged_final.fa.gz", threshold=60 )
-saveRDS(out, "output/rds/blast_top_hit.rds")
+out <- blast_top_hit(query=seqs, db="reference/classifiers/insecta_hierarchial_bftrimmed.fa.gz", identity=60, coverage=90 )
+saveRDS(out, "output/rds/blast_distances.rds")
 
 # Colour by IDTAXA assignment
-tax <- readRDS("output/rds/tax_merged_final_IdTaxa.rds")
-out <- readRDS("output/rds/blast_top_hit.rds")
+tax <- readRDS("output/rds/final_tax.rds")
+out <- readRDS("output/rds/blast_distances.rds")
 
-#Get alignment length distributions and choose the allowed alignment lengths - this should be an argument to the blast top hit?
-hist(out$length)
-allowed_lengths <- 180:210
-
+#Get alignment
 joint <- out %>% 
-  dplyr::select(OTU = qseqid, acc, blastspp = Species, pident, length, evalue) %>%
+  dplyr::select(OTU = qseqid, acc, blastspp = Species, pident, length, evalue, qcovs) %>%
   left_join(tax %>% 
               seqateurs::unclassified_to_na(rownames=FALSE) %>%
               mutate(lowest = lowest_classified(.)), by="OTU") %>%
-  dplyr::filter(length %in% allowed_lengths) 
+  filter(!Kingdom=="Synthetic")
 
 #Write out comparison between BLAST and IDTAXA
 write_csv(joint, "output/logs/tax_assignment_comparison.csv")
@@ -1042,7 +1129,7 @@ gg.tophit <- joint %>%
 
 gg.tophit
 
-pdf(paste0("output/logs/top_hit_heirarchial.pdf"), width = 11, height = 8 , paper="a4r")
+pdf(paste0("output/logs/top_hit_comparison.pdf"), width = 11, height = 8 , paper="a4r")
   gg.tophit
 try(dev.off(), silent=TRUE)
 
@@ -1051,30 +1138,281 @@ try(dev.off(), silent=TRUE)
 ## Make phylogenetic tree
 
 ```{r phylogenetic tree}
-seqtab.final <- readRDS("output/rds/seqtab_final.rds")
+tax <- readRDS("output/rds/final_tax.rds")
 
-seqs <- getSequences(seqtab.final)
-names(seqs) <- seqs # This propagates to the tip labels of the tree
-alignment <- AlignSeqs(DNAStringSet(seqs), anchor=NA)
+seqs <- rownames(tax)
+names(seqs) <- rownames(tax)
 
-library(phangorn)
-phang.align <- phyDat(as(alignment, "matrix"), type="DNA")
-dm <- dist.ml(phang.align)
+# Align to PHMM of coi
+fwh_ref <-  ape::read.dna("reference/fwh_insecta_aligned_curated.fasta", format="fasta")
+model <- aphid::derivePHMM(fwh_ref)
+alignment <- taxreturn::map_to_model(DNAStringSet(seqs), model = model, minscore = 100, shave = TRUE, extra="fill")
 
-#Fit NJ tree
-treeNJ <- NJ(dm) # Note, tip order != sequence order
-fit <- pml(treeNJ, data=phang.align)
+# Drop positions with > 95% gaps
+nogaps <- as.list(ape::del.colgapsonly(as.matrix(alignment), threshold=0.95))
 
-#Fit ML tree
-fitGTR <- update(fit, k=4, inv=0.2)
-fitGTR <- optim.pml(fitGTR, model="GTR", optInv=TRUE, optGamma=TRUE,
-                      rearrangement = "stochastic", control = pml.control(trace = 0))
+# Write out an alignment
+insect::writeFASTA(nogaps, "output/alignment.fa", compress = FALSE)
 
-# Write phytree to disk
-saveRDS(fitGTR, "output/rds/phytree.rds") 
+# Constrain by taxonomy at the order level and Force multifurcations to bifurications 
+tax_constraints <- tax %>%
+  as_tibble(rownames="OTU") %>%
+  dplyr::select(-Root) %>%
+  unite("tax", 2:ncol(.), sep=";") %>%
+  mutate(names=paste0(OTU, "|TEST", ";", tax))
 
-#Output newick tree
-write.tree(fitGTR$tree, file="output/tree.nwk")
+constraint_seqs <- alignment
+names(constraint_seqs) <- tax_constraints$names
+
+constraint_tree <- tax2phylo(constraint_seqs, depth="Order", resolve_poly = "upper")
+
+# View constraint tree
+ggtree(constraint_tree)
+
+# Extract fasttree constraints from tree
+constraints <- castor::extract_fasttree_constraints(constraint_tree)$constraints
+
+# Write out constraints as fasta file
+file.remove("output/tree_constraints.fa")
+Ntips <- length(constraint_tree$tip.label)
+cat(paste(sapply(1:Ntips, #Ntips
+    FUN=function(tip) sprintf(">%s\n%s\n",constraint_tree$tip.label[tip],
+    paste(as.character(constraints[tip,]),collapse=""))),collapse=""), file="output/tree_constraints.fa")
+
+```
+
+## FastTree
+
+```{bash}
+# Make an unconstrained tree with fasttree
+module load FastTree
+FastTree -gtr -cat 20 -nt alignment.fa > unconstrained_tree.nwk
+
+# Make a tree constrained at order level with fasttree
+FastTree -gtr -cat 20 -constraints tree_constraints.fa -nt alignment.fa > order_constrained_tree.nwk
+
+```
+
+
+## Make tree ultrametric
+```{r}
+# Make ultrametric & Date
+tree <- read.tree("output/unconstrained_tree.nwk")
+
+Ntips 	<- length(tree$tip.label)
+Nnodes 	<- tree$Nnode
+cat(sprintf("Tree has %d nodes, %d tips and %d edges\n",Nnodes,Ntips,nrow(tree$edge)));
+
+# Get taxonomy again
+tax <- readRDS("output/rds/final_tax.rds")
+
+lineage <- tree$tip.label %>% 
+  enframe() %>% 
+  dplyr::rename(OTU = value) %>%
+  dplyr::select(-name) %>%
+  left_join(tax %>% as_tibble(rownames="OTU"), by="OTU") 
+
+## Reroot on Arachnida
+#outgroups <- lineage %>% 
+#  filter(Class == "Arachnida") %>%
+#  filter(OTU %in% tree$tip.label) %>%
+#  pull(OTU)
+#
+#library(castor)
+#newroot <- get_mrca_of_set(tree, outgroups)
+#
+#ggtree(tree, layout="circular")
+#
+#tree2 <- root_at_node(tree, newroot-Ntips)
+#
+#ggtree(tree2, layout="circular")
+#
+#cat(sprintf("New root is %d\n",find_root(tree)))
+#
+# Set names back to species
+
+# create internal node labels
+tree$node.label <- NA
+if(is.na(tree$node.label)){
+	cat(sprintf("Adding node labels to full tree..\n"))
+	tree$node.label = paste("node.", 1:Nnodes, sep = "") # don't use underscores, because some tree readers (e.g. rncl) interpret them as spaces
+}
+
+# replace zero-length edges
+if(any(tree$edge.length==0)){
+  epsilon = 0.1*min(tree$edge.length[tree$edge.length>0])
+	cat(sprintf("Note: Some edges have length zero, which may break some of the HSP routines. Replacing zero-lengths with a tiny positive length (%g)..\n",epsilon))
+	tree$edge.length[tree$edge.length==0] = epsilon
+}
+
+taxtab <- lineage %>%
+  dplyr::select(OTU, Genus, Family, Order) %>%
+  tibble::column_to_rownames("OTU") %>%
+  as.matrix()
+
+# Date usign congruify
+ref_tree <- read.tree("reference/chesters_2017_species_level_tree_ultrametric.nwk")
+ref_tree$node.label <- NA
+ref_tree$node.label = paste("node.", 1:Nnodes, sep = "") # don't use underscores, because some tree readers (e.g. rncl) interpret them as spaces
+table(ref_tree$tip.label %in% (tree$tip.label%>% str_remove("^.*\\|")))
+#38520 congruent tips
+
+# prune ref_tree to only congruent tips
+ref_tree_pruned <- drop.tip(ref_tree, ref_tree$tip.label[!ref_tree$tip.label %in% (lineage$Species%>% str_replace_all(" ", "_"))])
+
+table(ref_tree_pruned$tip.label %in% (lineage$Species%>% str_replace_all(" ", "_")))
+
+
+# Prune duplicate genera
+ref_tree_pruned2 <- drop.tip(ref_tree_pruned, ref_tree_pruned$tip.label[duplicated(ref_tree_pruned$tip.label %>%
+  str_remove("_.*$"))])
+
+#Adjust to genus
+ref_tree_pruned2$tip.label <- ref_tree_pruned2$tip.label %>%
+  str_remove("_.*$")
+
+res <- congruify.phylo(reference=ref_tree_pruned2, target=tree,taxonomy = taxtab, scale="PATHd8")
+
+write.tree(res$phy, "output/ultrametric_tree.nwk")
+
+```
+
+# Make Phyloseq object
+
+```{r create PS, eval = FALSE}
+seqtab <- readRDS("output/rds/seqtab_final.rds")
+
+#Reformat sample IDs
+rownames(seqtab)  <- rownames(seqtab) %>%
+  str_remove("\\..*$") %>%
+  str_replace("\\_S[0-9].*\\_...", replacement="_") %>%
+  str_replace("_$", "_1") %>%
+  str_replace("1in10", "1:10")
+
+tax <- readRDS("output/rds/final_tax.rds") 
+seqs <- DNAStringSet(colnames(seqtab))
+names(seqs) <- seqs
+phy <- read.tree("output/ultrametric_tree_order_constrained.nwk")
+
+##### Rename problematic samples
+#Could do this with the new dplyr functionality
+rownames(seqtab)  <- rownames(seqtab) %>%
+ str_replace_all("D250M1-", "D250M4REP-") %>% # Works
+ str_replace_all("D250M4-", "D250M2REP-") %>% # Works
+ str_replace_all("D250M5-", "D250M3REP-") %>% #FAILED library
+ str_replace_all("D250M3-", "D250M1REP-") %>% #FP suzukii - low reads
+ str_replace_all("D250M2-", "D250M5REP-") %>% #Works
+ str_replace_all("D500M1-", "D500M4REP-") %>% #Works 
+ str_replace_all("D500M4-", "D500M1REP-") %>% #FP Suzukii
+ str_replace_all("D500M5-", "D500M2REP-") %>% #Works
+ str_replace_all("D500M3-", "D500M3REP-") %>% #Works but low reads for Suz + Biarmipes 
+ str_replace_all("D500M2-", "D500M5REP-") %>% #Works
+ str_replace_all("D1000M1-", "D1000M3REP-") %>% #Works
+ str_replace_all("D1000M4-", "D1000M1REP-") %>% #Works
+ str_replace_all("D1000M5-", "D1000M2REP-") %>% #Works
+ str_replace_all("D1000M3-", "D1000M5REP-") %>% #Works
+ str_replace_all("D1000M2-", "D1000M4REP-") %>% #Works
+ str_replace_all("CM10-", "CM9REP-") %>%
+ str_replace_all("CM11-", "CM10REP-") %>%
+ str_replace_all("CM9-", "CM11REP-") %>%
+ str_replace_all("CML2-", "CML6REP-")%>%
+ str_replace_all("CML3-", "CML2REP-")%>%
+ str_replace_all("CML4-", "CML3REP-")%>%
+ str_replace_all("CML5-", "CML4REP-")%>%
+ str_replace_all("CML6-", "CML5REP-")%>%
+ str_replace_all("CT5-", "CT4REP-")%>%
+ str_replace_all("CT4-", "CT5REP-") %>%
+str_replace_all("REP", "")
+
+
+# Samdf processing --------------------------------------------------------
+
+samdf <- read.csv("sample_data/sample_info.csv", header=TRUE) %>% 
+  mutate(sample_id = case_when(
+    fcid=="HLVKYDMXX" ~ paste0(sample_name, "_", amp_rep),
+    !fcid=="HLVKYDMXX" ~ paste0(fcid, "_", sample_name, "_", amp_rep)
+  )) %>%
+  mutate(extract_id = sample_name) %>%
+  mutate(sample_name = str_remove(sample_name, "-exp*.$")) %>%
+  mutate(sample_name = case_when(
+    fcid=="HLVKYDMXX" ~ sample_name,
+    !fcid=="HLVKYDMXX" ~ paste0(fcid, "_", sample_name)
+  )) %>%
+  filter(!(i7_index=="ATCGATCG" & i5_index=="ATCACACG"), #CT11-ex1 duplicated
+         !(i7_index=="TCGCTGTT" & i5_index=="ACTCCATC") # CT12-ex1 duplicated
+  ) %>%
+  mutate(type = case_when(
+    str_detect(sample_id, "D[0-9][0-9][0-9]M|D[0-9][0-9][0-9][0-9]M|DM[0-9]")  ~ "DrosMock",
+    str_detect(sample_id, "SPD")  ~ "SPD",
+    str_detect(sample_id, "ACV")  ~ "ACV",
+    str_detect(sample_id, "DC")  ~ "DC",
+    str_detect(sample_id, "Sach")  ~ "Sachet",
+    str_detect(sample_id, "FF")  ~ "FF",
+    str_detect(sample_id, "NTC")  ~ "NTC",
+    str_detect(sample_id, "DLarv")  ~ "DrosLarv",
+    str_detect(sample_id, "POS|SynMock")  ~ "POS",
+    str_detect(sample_id, "extblank|BLANK")  ~ "Extblank",
+    str_detect(sample_id, "pcrblank")  ~ "PCRblank",
+    str_detect(sample_id, "CT")  ~ "CarpTrap",
+    str_detect(sample_id, "CM[0-9]")  ~ "CarpMock",
+    str_detect(sample_id, "CML[0-9]")  ~ "CarpLarval"
+  )) %>%
+  magrittr::set_rownames(.$sample_id)
+
+write_csv(samdf, "sample_data/sample_info2.csv")
+
+#Load sample information
+## ---- samdat ----
+samdf <- read.csv("sample_data/sample_info2.csv", header=TRUE) %>%
+  magrittr::set_rownames(.$sample_id)
+
+# Will probably need to rename the seqtabs and append the flowcell number onto the samples before they are merged
+
+## ---- phyloseq ----
+ps <- phyloseq(tax_table(tax), 
+               sample_data(samdf),
+               otu_table(seqtab, taxa_are_rows = FALSE),
+               phy_tree(phy),
+               refseq(seqs))
+
+if(nrow(seqtab) > nrow(sample_data(ps))){warning("Warning: All samples not included in phyloseq object, check sample names match the sample metadata")}
+
+rownames(samdf)[which(!rownames(sample_data(ps))  %in% rownames(samdf))]
+rownames(sample_data(ps))[which(!rownames(samdf)  %in% rownames(sample_data(ps)))]
+
+# Rename all taxa
+taxa_names(ps) <- paste0("SV", seq(ntaxa(ps)),"-",tax_table(ps)[,8])
+
+saveRDS(ps, "output/rds/ps_idtaxaExact.rds") 
+
+#Rename synthetic orders
+tax_table(ps)[,2][which(str_detect(tax_table(ps)[,8], "Synthetic"))] <- "Arthropoda"
+
+#Subset to Drosophila (Remove carpophilus)
+ps <- ps %>%
+  subset_samples(!str_detect(sample_name, "CM[0-9]|CT[0-9]|CML[0-9]")
+  ) %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE) 
+dir.create("output/csv")
+dir.create("output/csv/unfiltered/")
+
+##Export raw csv
+export <- speedyseq::psmelt(ps) %>%
+  filter(Abundance > 0)
+write.csv(export, file = "output/csv/rawdata.csv")
+
+#Summary export
+seqateurs::summarise_taxa(ps, "Species", "sample_name") %>%
+  filter(!str_detect(sample_name, "NTC")) %>%
+  spread(key="sample_name", value="totalRA") %>%
+  write.csv(file = "output/csv/unfiltered/spp_sum.csv")
+
+seqateurs::summarise_taxa(ps, "Genus", "sample_name") %>%
+  spread(key="sample_name", value="totalRA") %>%
+  write.csv(file = "output/csv/unfiltered/gen_sum.csv")
+
+##Output fasta of all ASV's - Name each one by abundance + taxonomic assignment
+seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta")
 ```
 
 
@@ -1131,128 +1469,6 @@ try(dev.off(), silent=TRUE)
 
 ```
 
-# Make Phyloseq object
-
-```{r create PS, eval = FALSE}
-seqtab <- readRDS("output/rds/seqtab_final.rds")
-
-# Add fcid to run 1 samples
-rownames(seqtab)[!str_detect(rownames(seqtab), "Rep") ] <- paste0("CB3DR_", rownames(seqtab)[!str_detect(rownames(seqtab), "Rep") ])
-
-# Add fcid to run2 samples
-rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
-                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
-                   !str_detect(rownames(seqtab), "DL|CL")] <- paste0("CK3HD_", rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
-                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
-                   !str_detect(rownames(seqtab), "DL|CL")])
-
-	
-# Add fcid to run 3 samples
-rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
-                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
-                   str_detect(rownames(seqtab), "DL|CL")] <- paste0("CJKFJ_", rownames(seqtab)[str_detect(rownames(seqtab), "Rep") & 
-                   !str_detect(rownames(seqtab), "HLVKYDMXX") & 
-                   str_detect(rownames(seqtab), "DL|CL")])
-
-#Reformat sample IDs
-rownames(seqtab)  <- rownames(seqtab) %>%
-  str_remove("\\..*$") %>%
-  str_replace("\\_S[0-9].*\\_...", replacement="_") %>%
-  str_replace("_$", "_1") %>%
-  str_replace("1in10", "1:10")
-
-tax <- readRDS("output/rds/tax_IdTaxaExact.rds") 
-seqs <- DNAStringSet(colnames(seqtab))
-names(seqs) <- seqs
-phy <- readRDS("output/rds/phytree.rds")$tree
-
-
-##### Rename problematic samples
-#Could do this with the new dplyr functionality
-rownames(seqtab)  <- rownames(seqtab) %>%
- str_replace_all("D250M1-", "D250M4REP-") %>% # Works
- str_replace_all("D250M4-", "D250M2REP-") %>% # Works
- str_replace_all("D250M5-", "D250M3REP-") %>% #FAILED library
- str_replace_all("D250M3-", "D250M1REP-") %>% #FP suzukii - low reads
- str_replace_all("D250M2-", "D250M5REP-") %>% #Works
- str_replace_all("D500M1-", "D500M4REP-") %>% #Works 
- str_replace_all("D500M4-", "D500M1REP-") %>% #FP Suzukii
- str_replace_all("D500M5-", "D500M2REP-") %>% #Works
- str_replace_all("D500M3-", "D500M3REP-") %>% #Works but low reads for Suz + Biarmipes 
- str_replace_all("D500M2-", "D500M5REP-") %>% #Works
- str_replace_all("D1000M1-", "D1000M3REP-") %>% #Works
- str_replace_all("D1000M4-", "D1000M1REP-") %>% #Works
- str_replace_all("D1000M5-", "D1000M2REP-") %>% #Works
- str_replace_all("D1000M3-", "D1000M5REP-") %>% #Works
- str_replace_all("D1000M2-", "D1000M4REP-") %>% #Works
- str_replace_all("CM10-", "CM9REP-") %>%
- str_replace_all("CM11-", "CM10REP-") %>%
- str_replace_all("CM9-", "CM11REP-") %>%
- str_replace_all("CML2-", "CML6REP-")%>%
- str_replace_all("CML3-", "CML2REP-")%>%
- str_replace_all("CML4-", "CML3REP-")%>%
- str_replace_all("CML5-", "CML4REP-")%>%
- str_replace_all("CML6-", "CML5REP-")%>%
- str_replace_all("CT5-", "CT4REP-")%>%
- str_replace_all("CT4-", "CT5REP-") %>%
-str_replace_all("REP", "")
-
-#Load sample information
-## ---- samdat ----
-samdf <- read.csv("sample_data/sample_info2.csv", header=TRUE) %>%
-  magrittr::set_rownames(.$sample_id)
-
-# Will probably need to rename the seqtabs and append the flowcell number onto the samples before they are merged
-
-## ---- phyloseq ----
-ps <- phyloseq(tax_table(tax), 
-               sample_data(samdf),
-               otu_table(seqtab, taxa_are_rows = FALSE),
-               phy_tree(phy),
-               refseq(seqs))
-
-if(nrow(seqtab) > nrow(sample_data(ps))){warning("Warning: All samples not included in phyloseq object, check sample names match the sample metadata")}
-
-rownames(samdf)[which(!rownames(sample_data(ps))  %in% rownames(samdf))]
-rownames(sample_data(ps))[which(!rownames(samdf)  %in% rownames(sample_data(ps)))]
-
-# Rename all taxa
-taxa_names(ps) <- paste0("SV", seq(ntaxa(ps)),"-",tax_table(ps)[,7])
-
-saveRDS(ps, "output/rds/ps_idtaxaExact.rds") 
-
-#Rename synthetic orders
-tax_table(ps)[,2][which(str_detect(tax_table(ps)[,7], "Synthetic"))] <- "Arthropoda"
-
-#Subset to Drosophila (Remove carpophilus)
-ps <- ps %>%
-  subset_samples(!str_detect(sample_name, "CM[0-9]|CT[0-9]|CML[0-9]")
-  ) %>%
-  subset_taxa(Phylum == "Arthropoda") %>%
-  filter_taxa( function(x) mean(x) > 0, TRUE) 
-dir.create("output/csv")
-dir.create("output/csv/unfiltered/")
-
-##Export raw csv
-export <- speedyseq::psmelt(ps) %>%
-  filter(Abundance > 0)
-write.csv(export, file = "output/csv/rawdata.csv")
-
-#Summary export
-seqateurs::summarise_taxa(ps, "Species", "sample_name") %>%
-  filter(!str_detect(sample_name, "NTC")) %>%
-  spread(key="sample_name", value="totalRA") %>%
-  write.csv(file = "output/csv/unfiltered/spp_sum.csv")
-
-seqateurs::summarise_taxa(ps, "Genus", "sample_name") %>%
-  spread(key="sample_name", value="totalRA") %>%
-  write.csv(file = "output/csv/unfiltered/gen_sum.csv")
-
-##Output fasta of all ASV's - Name each one by abundance + taxonomic assignment
-seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta")
-```
-
-
 
 ### Summary statistics
 
@@ -1301,12 +1517,12 @@ speedyseq::psmelt(ps) %>%
 #Fraction of ASV's assigned to each taxonomic rank
 tax_table(ps) %>%
   as("matrix") %>%
+  unclassified_to_na() %>%
   as_tibble(rownames="OTU") %>%
     pivot_longer(rank_names(ps),
                names_to="rank",
                values_to="name") %>%
   group_by(rank) %>%
-  mutate(name = replace(name, str_detect(name, "__"), NA)) %>% 
   dplyr::summarise(OTUs_classified = sum(!is.na(name))) %>%
   mutate(frac_OTUs = OTUs_classified / ntaxa(ps)) %>%
   mutate(rank = factor(rank, rank_names(ps))) %>%
@@ -1332,6 +1548,7 @@ speedyseq::psmelt(ps) %>%
 #Prevalence matrix
 prevdf <- ps %>%
     otu_table %>%
+    as("matrix") %>%
   apply(2, function(x) ifelse(x > 0, 1, 0)) %>%
   colSums() %>%
   as.data.frame() %>%
@@ -1376,8 +1593,8 @@ get_taxa_unique(ps, "Order")
 ps # Check the number of taxa prior to removal
 ps0 <- ps %>%
   subset_taxa(
-    Phylum == "Arthropoda" & 
-    Class %in% c("Insecta", "Arachnida", "Collembola")
+    Phylum %in% c("Arthropoda", "Synthetic") &
+    Class %in% c("Insecta", "Arachnida", "Collembola",  "Synthetic")
   )
 ps # Confirm that the taxa were removed
 get_taxa_unique(ps0, "Phylum")
@@ -1466,15 +1683,15 @@ mpd_pcr <- ps1 %>%
   as_tibble(rownames = "sample_id") %>%
   left_join(sample_data(ps1) %>%
               as("data.frame") %>%
-              dplyr::select(sample_id, extract_id, type, fcid)) %>%
-  group_by(extract_id) %>%
+              dplyr::select(sample_id, sample_name,extract_id, fcid)) %>%
+  group_by(sample_name) %>%
   add_tally()  %>%
   filter(n > 1,
          fcid=="HLVKYDMXX",
-         !str_detect(extract_id, "BLANK|SynMock|POS")) %>%
+         !str_detect(sample_name, "BLANK|SynMock|POS")) %>%
   group_modify(~ {
       .x %>% 
-        dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "type", "fcid"))) %>%
+        dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "fcid"))) %>%
         as.matrix() %>%
         vegdist(method="jac", binary = T) %>%
         as.matrix() %>%
@@ -1488,7 +1705,7 @@ mpd_pcr <- ps1 %>%
 
 # Mean pairwise distance between extraction replicates
 mpd_extraction <- ps1 %>%
-   merge_samples(group = "extract_id", fun="sum") %>%
+   merge_samples2(group = "extract_id", fun="sum") %>%
   otu_table() %>%
   as("matrix") %>%
   as_tibble(rownames = "extract_id") %>%
@@ -1515,11 +1732,12 @@ mpd_extraction <- ps1 %>%
         summarise(dist = mean(dist)) 
     })
 
+
 # This shoudl be trap types instead
 mpd_traps <- ps1 %>%
-   merge_samples(group = "sample_name", fun="sum") %>%
+   merge_samples2(group = "sample_name", fun="sum") %>%
   otu_table() %>%
-  as("matrix") %>%
+  as("matrix") %>%  
   as_tibble(rownames = "sample_name") %>%
   left_join(sample_data(ps1) %>%
               as("data.frame") %>%
@@ -1547,7 +1765,7 @@ mpd_traps <- ps1 %>%
 
 # Mean pairwise distance between all samples
 mpd_samples <- ps1 %>%
-   merge_samples(group = "sample_name", fun="sum") %>%
+   merge_samples2(group = "sample_name", fun="sum") %>%
   otu_table() %>%
   as("matrix") %>%
   as_tibble(rownames = "sample_name") %>%
@@ -1574,12 +1792,13 @@ mpd_samples <- ps1 %>%
 gg.mpd <- do.call("list", mget(grep("mpd_",names(.GlobalEnv),value=TRUE))) %>%
   bind_rows(.id="type") %>%
   ungroup %>%
-  select(type, dist) %>%
+  dplyr::select(type, dist) %>%
   mutate(type = type %>% 
            str_remove("^.+_") %>%
            factor(levels = c("samples", "traps", "extraction", "pcr"))) %>%
   ggplot(aes(x = type, y = dist, fill=type)) + 
   geom_boxplot() +
+  #geom_point(position=position_jitter(width = 0.2))+
   base_theme + 
   scale_fill_brewer(palette= "Paired") +
   labs(x = "Type",
@@ -1594,72 +1813,112 @@ try(dev.off(), silent=TRUE)
 
 ## Abundance counts for different replicates
 ```{r Heatmap replicate abundance}
+# Load in all samples that were expected
+exp_samples <- read_csv("data/HLVKYDMXX/SampleSheet.csv", skip = 19) %>%
+  dplyr::select(extract_id = Sample_Name, sample_name = Sample_Name) %>%
+  group_by(extract_id) %>%
+  #group_split() %>%
+  group_modify(~{
+    .x %>%
+      dplyr::slice(rep(1:n(), each=3)) %>%
+      mutate(amp_rep = row_number()) %>%
+      mutate(sample_id = paste0(sample_name, "_", amp_rep))
+  }) %>%
+  ungroup() %>%
+  mutate(sample_name = extract_id %>%
+           str_remove("-ex[0-9]$"))%>%
+  mutate(type = case_when(
+    str_detect(sample_id, "D[0-9][0-9][0-9]M|D[0-9][0-9][0-9][0-9]M|DM[0-9]")  ~ "DrosMock",
+    str_detect(sample_id, "SPD")  ~ "SPD",
+    str_detect(sample_id, "ACV")  ~ "ACV",
+    str_detect(sample_id, "DC")  ~ "DC",
+    str_detect(sample_id, "Sach")  ~ "Sachet",
+    str_detect(sample_id, "FF")  ~ "FF",
+    str_detect(sample_id, "NTC")  ~ "NTC",
+    str_detect(sample_id, "DLarv")  ~ "DrosLarv",
+    str_detect(sample_id, "POS|SynMock")  ~ "POS",
+    str_detect(sample_id, "extblank|BLANK")  ~ "Extblank",
+    str_detect(sample_id, "pcrblank")  ~ "PCRblank",
+    str_detect(sample_id, "CT")  ~ "CarpTrap",
+    str_detect(sample_id, "CM[0-9]")  ~ "CarpMock",
+    str_detect(sample_id, "CML[0-9]")  ~ "CarpLarval"
+  )) %>%
+  filter(type %in% c("DrosMock", "DrosLarv", "ACV", "DC", "SPD", "FF", "POS", "SPD"))
+  
+  
 # Heatmap of abundance of pcr replicates
-gg.repmap <- ps1 %>% 
+gg.repmap <- exp_samples %>%
+  left_join(ps1 %>% 
   speedyseq::psmelt() %>%
-  filter(fcid=="HLVKYDMXX", Abundance > 0) %>%
+    filter(fcid=="HLVKYDMXX", Abundance > 0) %>%
+    group_by(sample_name, extract_id, sample_id, amp_rep, fcid) %>%
+    summarise(Abundance = sum(Abundance)) %>%
+    ungroup()) %>%
+  filter(!str_detect(sample_name, "_DM1$|_DM2$|_DM3$|_DM4$|_DM5$")) %>%
   mutate(extrep = extract_id %>% str_extract("ex.*$")) %>%
-  ggplot(aes(x = replicate, y = sample_name, fill = log10(Abundance))) +
+  mutate(type = factor(type, levels=c("POS", "DrosMock", "DrosLarv","FF","SPD", "DC", "ACV"))) %>%
+  mutate(sample_name = sample_name %>%
+           str_remove("HLVKYDMXX_") %>%
+           str_replace("^D2","D02") %>%
+           str_replace("^D5","D05")) %>%
+  filter(!(extrep=="ex1" & amp_rep == 2)) %>%
+  mutate(amp_rep = factor(amp_rep)) %>%
+  mutate(extrep = extrep %>% str_replace("ex", "Extraction Rep "))%>%
+   ggplot(aes(x = amp_rep, y = sample_name, fill = log10(Abundance))) +
   geom_tile()+
   scale_fill_viridis_c()+
-  facet_grid(~extrep)+
+  facet_grid(extrep~type, scales="free", space="free", drop=TRUE)+
   base_theme+
+  coord_flip()+
+  theme(legend.position = "right")+
   labs(x = "PCR Replicate",
-       y = "Sample Name")
+       y = "Sample",
+       fill = "Total Reads\n(Log10)")
 
 gg.repmap
 
-pdf(file="fig/replicate_abundances.pdf", width = 8, height = 11 , paper="a4")
+pdf(file="fig/replicate_abundances.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.repmap)
 try(dev.off(), silent=TRUE)
 ```
 
 
-## Merge technical replicates
-
-```{r merge replicates}
-# Merge replicates
-ps.merged <- ps1 %>%
-    merge_samples(group = "sample_name", fun="sum")
-
-#This loses the sample metadata - Need to add it agian
-sample_data(ps.merged) <- sample_data(ps1) %>%
-  as("data.frame")  %>%
-  mutate(sample_id = sample_name) %>%
-  mutate(sample_name = sample_name %>%
-           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
-           str_remove("HLVKYDMXX_")) %>%
-  dplyr::filter(!duplicated(sample_id)) %>%
-  magrittr::set_rownames(.$sample_id)
-```
-
-
-## Filter index switching
+## Train detection model
 
 We will filter index switching using a logistic regression model trained on the mocks
 
 ```{r index switch removal}
 # Subset to mocks
-ps_model <- ps.merged
+ps_model <- ps1
 
+tax_table(ps_model)[,8] <- tax_table(ps_model)[,8] %>% str_replace(" ", "_")
 # Check Drosophila_suzukii in sample D500M1 - these are definitely misplaced and ruinign the modelling
 
 #Rename taxa to match expected
-tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Drosophila_albomicans")] <-
+tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_albomicans")] <-
 "Drosophila_immigrans"
-tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Drosophila_nasuta")] <-
+tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_nasuta")] <-
 "Drosophila_immigrans"
-tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Drosophila_sulfurigaster")] <-
+tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_hypocausta")] <-
 "Drosophila_immigrans"
-tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Drosophila_mauritiana/simulans")] <-
+tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_pulaua")] <-
+"Drosophila_immigrans"
+tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_kohkoa")] <-
+"Drosophila_immigrans"
+tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_rubida")] <-
+"Drosophila_immigrans"
+tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_sulfurigaster")] <-
+"Drosophila_immigrans"
+tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_mauritiana/simulans")] <-
 "Drosophila_simulans"
-tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Carpophilus_dimidiatus/nr.dimidiatus")] <-
+tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Carpophilus_dimidiatus/nr.dimidiatus")] <-
 "Carpophilus_nr.dimidiatus"
-tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
-tax_table(ps_model)[,7][which(tax_table(ps_model)[,7]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
+tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
+tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
 
 ps_model <- ps_model %>%
   speedyseq::tax_glom(taxrank = "Species") %>%
+  subset_samples(fcid %in% c("CB3DR", "HLVKYDMXX")) %>%
   filter_taxa( function(x) mean(x) > 0, TRUE) 
 
 exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
@@ -1674,23 +1933,31 @@ exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
   expected > 0) %>%
   distinct()
 
-#Get observed
+# Merge replicates and get observed
 sam <- speedyseq::psmelt(ps_model) %>%
   janitor::clean_names() %>%
   mutate(taxon = species) %>%
-  #filter(!str_detect(taxon, "__")) %>%#Remove unclassified
-  dplyr::select(otu, sample_name, sample_id, taxon, abundance, target_subfragment, fcid, material_type = type) %>%
-  #mutate(sample_name = sample_name %>%
-  #         str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
-  #         str_remove("HLVKYDMXX_")) %>%
-  mutate(extract_id = sample_name %>%
-           str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_")) %>%
-  mutate(sample_name = sample_name %>%
-           str_remove("-exp*.$")%>%
-           str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_"))
+  filter(abundance > 0 ) %>%
+  filter(fcid %in% c("CB3DR", "HLVKYDMXX"))  %>%
+  dplyr::select(otu, sample_name, extract_id, sample_id, taxon, pcr_primers,fcid, material_type = type, abundance) %>%
+  distinct() %>%
+  #group_by(extract_id, otu,fcid) %>%
+  #mutate(n_rep = n_distinct(sample_id)) %>%
+  #ungroup() %>%
+  group_by(sample_name, otu, fcid) %>%
+  mutate(n_extract = n_distinct(extract_id), n_rep = n_distinct(sample_id)) %>%
+  dplyr::rename() %>%
+  mutate(taxon = taxon %>% str_replace(" ", "_")) %>%
+  mutate(sample_id = sample_name,
+         sample_name = sample_name %>%      
+         str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
+         str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_")) %>%
+  group_by(otu, sample_name,sample_id, taxon, pcr_primers, fcid, material_type, n_rep, n_extract) %>%
+  summarise(abundance = sum(abundance)) %>% 
+  ungroup()
 
 #Create a mocks table to train the model on
-mock_train <- sam %>%
+model_df <- sam %>%
   filter(abundance > 0) %>%
   mutate(type = case_when( 
          (sample_name %in% exp$sample_name) & (material_type == "DrosMock") & !str_detect(taxon, "__") ~ "train",
@@ -1706,104 +1973,319 @@ mock_train <- sam %>%
     outcome == "FP" & abundance > 10000 ~ as.character(NA), #Deal with obvious misannotated expecteds
     TRUE ~ outcome
   )) %>%
-  group_by(extract_id,fcid, target_subfragment) %>%
+  group_by(sample_id,fcid, pcr_primers) %>%
   dplyr::mutate(abundance_clr = abundance) %>%
   mutate_at(vars(abundance_clr ), ~metacal::clr(. + 0.5) ) %>%
   ungroup() %>%
-  dplyr::select(fcid, sample_id, extract_id, sample_name, otu, taxon, abundance, abundance_clr, outcome) 
+  dplyr::select(fcid, sample_id, sample_name, otu, taxon, abundance, abundance_clr, outcome, n_extract, n_rep) %>%
+  mutate(outcome = factor(outcome, levels=c("TP", "FP")))
+
+# Get just known outcomes
+mock_dat <- model_df %>%
+  filter(!is.na(outcome))
+
+# Create dataset split
+set.seed(seed = 296) 
+
+mock_split <- initial_split(mock_dat, strata = fcid, prop=0.8)
+mock_train <- training(mock_split)
+mock_test <- testing(mock_split)
+
+# Cross validations
+mock_cv <- vfold_cv(mock_train, v = 10)
 
 # Create modelling recipe
-switch_recipe <- recipe(outcome ~ ., data = mock_train) %>%
-  update_role(sample_id, sample_name, extract_id, otu, taxon, abundance, new_role = "ID") %>%
-  #step_string2factor(all_nominal(), -all_outcomes(), -has_role("ID")) %>%
-  step_dummy(fcid) %>%
-  #step_other(all_predictors(), -all_numeric(), threshold = 1, other = "other") %>%
-  step_zv(all_predictors()) #%>%
-  #step_novel(all_predictors(), -all_numeric(), -has_role("ID"))%>%
-  #step_unknown(all_predictors(), -all_numeric(), -has_role("ID")) 
-
-# See if the new replacement even worked
-
-#Prep a recipe
-rec_prepped <- prep(switch_recipe)
-
-rec_prepped 
+switch_recipe <- recipe(outcome ~ abundance_clr + fcid + n_extract + n_rep, data = mock_train) %>%
+  step_novel(all_nominal(), -all_outcomes()) %>% 
+ # step_other(taxon, threshold = 0.1) %>%
+  step_dummy(fcid) %>% 
+  step_zv(all_predictors()) %>%
+  step_normalize(n_extract, n_rep) #
 
 # Define model
-logit_spec <- logistic_reg(mode = "classification") %>%
-  set_engine(engine = "glm") 
+glmnet_spec <- logistic_reg(penalty = tune(), mixture = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("glmnet") 
 
 # Create workflow
-logit_wf <- workflow() %>%
-  add_model(logit_spec) %>%
-  add_recipe(switch_recipe)
+glmnet_wf <- workflow() %>%
+  add_recipe(switch_recipe) %>%
+  add_model(glmnet_spec)
 
-# Fit workflow
-logistic_glm <- logit_wf  %>%
-  fit(mock_train)
+glmnet_grid <- tidyr::crossing(penalty = 10^seq(-6, -1, length.out = 20), mixture = c(0.05, 
+    0.2, 0.4, 0.6, 0.8, 1)) 
 
-# See how it went on the trainigng dataset
-predictions_glm <- logistic_glm %>%
-  predict(new_data = mock_train) %>%
-  bind_cols(bake(rec_prepped, new_data =  mock_train))
+glmnet_tune <- 
+  tune_grid(glmnet_wf, resamples = mock_cv, grid = glmnet_grid) 
+
+autoplot(glmnet_tune)
+
+glmnet_wf <- glmnet_wf %>%
+  finalize_workflow(glmnet_tune %>% select_best("roc_auc" ))
+
+# Fit to resamples
+glmnet_wf %>%
+  fit_resamples(mock_cv) %>%
+  unnest(.metrics) %>%
+  filter(.metric == "roc_auc") %>%
+  summarise(roc_auc = mean(.estimate))
+
+# See how it went on the training dataset
+predictions_glm <- mock_train %>%
+  nest(everything()) %>%
+  dplyr::rename(train = data) %>%
+  bind_cols(mock_test %>%
+              nest(everything()) %>%
+              dplyr::rename(test = data)) %>%
+  mutate(model_obj = purrr::map(train, ~fit(glmnet_wf, .x)),
+         pred_train = purrr::map2(model_obj, train, ~predict(.x, .y, type = "prob")),
+         pred_test = purrr::map2(model_obj, test, ~predict(.x, .y, type = "prob")),
+         pred_curve = purrr::map2(model_obj, test, function(x, y){
+              newdat <- data.frame(abundance_clr=seq(min(y$abundance_clr),
+                                                     max(y$abundance_clr),len=1000),
+                                   n_rep=1,
+                                   n_extract=1,
+                                   fcid="HLVKYDMXX")
+              newdat <- newdat %>%
+                bind_cols(predict(x, new_data=newdat, type="prob")) %>%
+                mutate(prob = round(.pred_TP,1))
+              plot_dat <- y %>%
+                mutate(outcome_TP = case_when(
+                  outcome == "FP" ~ 0,
+                  outcome == "TP" ~ 1)) 
+              
+              annot <- newdat %>% 
+                             filter(prob==0.5) %>%
+                             summarise(abundance_clr = mean(abundance_clr))
+                
+              ggplot(plot_dat, aes(x = abundance_clr, y = outcome_TP, colour = outcome)) +
+                geom_point(alpha=0.8) + 
+                geom_line(data = newdat, aes(x = abundance_clr, y = .pred_TP), inherit.aes = FALSE, size=1) +
+                geom_vline(xintercept = annot$abundance_clr, colour="grey30", alpha=0.5, size=1)+
+                base_theme +
+                theme(legend.position = "right")+
+                scale_colour_manual(values = c("FP" = "#F8766D", "TP" = "#00BFC4" ))+
+                labs(x = "Abundance (CLR)",
+                     y = "Prediction probability",
+                     colour="Outcome")
+         }),
+
+          vip = purrr::map(model_obj ,~{
+            .x %>%
+            pull_workflow_fit() %>%
+            vip::vi()
+         })
+  )
+
+# Plot regression curve
+predictions_glm %>%
+  pull(pred_curve)
+
+pdf(file="fig/log_curve.pdf", width = 6, height = 4 , paper="a4r")
+  plot(predictions_glm$pred_curve[[1]])
+try(dev.off(), silent=TRUE)
+  
+# Calculate performance over number of predictors
+library(probably)
+threshold_data <- predictions_glm %>%
+  unnest(train, pred_train) %>%
+  dplyr::select(-where(~is.list(.x))) %>%
+  threshold_perf(outcome, .pred_TP, thresholds = seq(0, 1, by = 0.0025)) %>%
+  filter(!.metric == "distance") %>%
+  mutate(.metric = .metric %>% 
+           str_replace("sens", "Sensitivity") %>%
+           str_replace("spec", "Specificity") %>%
+           str_replace("j_index", "J Index"))
+
+max_j_index_threshold <- threshold_data %>%
+  filter(.metric == "J Index") %>%
+  filter(.estimate == max(.estimate)) %>%
+  summarise(upper = max(.threshold), lower = min(.threshold))
+
+gg_thresholds <- threshold_data %>%
+  mutate(.metric = factor(.metric, levels = c("Sensitivity","Specificity","J Index" ))) %>%
+  ggplot(aes(x = .threshold, y = .estimate, color = .metric)) +
+    geom_line(size=1) +
+    base_theme +
+    scale_color_viridis_d(end = 0.9) +
+    scale_alpha_manual(values = c(.4, 1), guide = "none") +
+    geom_rect(data = max_j_index_threshold, aes(xmin = lower, xmax=upper,
+                 ymin=0, ymax=1), alpha = .3, fill = "grey30", inherit.aes = FALSE) +
+    #geom_vline(xintercept = max_j_index_threshold, alpha = .6, color = "grey30")+
+    facet_grid(.metric~.) +
+    labs(
+      x = "Confidence threshold\n(above this value is considered a detection)",
+      y = "Metric Estimate",
+      title = "Balancing performance by varying the confidence threshold"
+    ) 
+
+gg_thresholds
+
+pdf(file="fig/logistic_prob_thresholds.pdf", width = 11, height = 8 , paper="a4r")
+  plot(gg_thresholds)
+try(dev.off(), silent=TRUE)
+
+# Get importance of predictors
+predictions_glm  %>%
+  dplyr::select(vip) %>%
+  unnest() %>%
+  group_by(Sign) %>%
+  top_n(20, wt = abs(Importance)) %>%
+  ungroup() %>%
+  mutate(
+    Importance = abs(Importance),
+    Variable = fct_reorder(Variable, Importance)
+  ) %>%
+  ggplot(aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col(show.legend = FALSE) +
+  labs(y = NULL)
 
 # Confusion matrix
-predictions_glm %>%
-  conf_mat(outcome, .pred_class) %>%
+gg.conf_matrix <- predictions_glm %>%
+  unnest(test, pred_test) %>%
+  dplyr::select(-where(~is.list(.x))) %>%
+  mutate(.pred = factor(make_two_class_pred(.pred_TP, levels(outcome), threshold = .5)))%>%
+  conf_mat(outcome, .pred) %>%
   pluck(1) %>%
   as_tibble() %>%
   ggplot(aes(Prediction, Truth, alpha = n)) +
   geom_tile(show.legend = FALSE) +
   geom_text(aes(label = n), colour = "white", alpha = 1, size = 8)
 
-# Calculate metrics
-multimetric <- metric_set(accuracy, bal_accuracy, sens, yardstick::spec, precision, recall, ppv, npv)
-multimetric(predictions_glm, truth = outcome, estimate = .pred_class)  
+gg.conf_matrix
 
-# Make an ROC curve
-## get probabilities on test set
-predictions_prob <- logistic_glm %>%
-  predict(new_data = mock_train, type="prob") %>%
-  bind_cols(bake(rec_prepped, new_data =  mock_train))
+# Check for disagreements within mock
+test <- predictions_glm %>%
+  dplyr::select(.pred, abundance_clr,  taxon, outcome)  %>%
+  mutate(diff = !.pred == outcome)
+
 
 # plot curve
-roc_data <- roc_curve(predictions_prob, truth = outcome, .pred_FP) 
-roc_data %>%  
+roc_data <- predictions_glm %>%
+   unnest(test, pred_test) %>%
+  roc_curve(truth = outcome, .pred_TP) 
+gg.roc_curve <- roc_data %>%  
   ggplot(aes(x = 1 - specificity, y = sensitivity)) +
   geom_path() +
   geom_abline(lty = 3) + 
   coord_equal()
 
-#Get area under curve
-roc_auc(predictions_prob, truth = outcome, .pred_FP) 
+gg.roc_curve
 
-# Check for disagreements within mock
-test <- predictions_glm %>%
-  dplyr::select(.pred_class,abundance, abundance_clr, sample_id,  otu, outcome)  %>%
-  mutate(diff = !.pred_class == outcome)
+# Calculate metrics
+multimetric <- metric_set(accuracy, bal_accuracy, sens, yardstick::spec, precision, recall, ppv, npv)
+predictions_glm %>%
+  unnest(test, pred_test) %>%
+  dplyr::select(-where(~is.list(.x))) %>%
+  mutate(.pred = make_two_class_pred(.pred_FP, levels(outcome), threshold = .5)) %>%
+  multimetric(truth = outcome, estimate = as.factor(.pred, levels= levels(outcome)))  
+```
+
+# merge replicates and remove index switching
+
+```{r merge replicates}
+# Merge replicates
+ps.merged <- ps_model %>%
+    merge_samples(group = "sample_name", fun="sum")
+
+##This loses the sample metadata - Need to add it agian
+sample_data(ps.merged) <- sample_data(ps_model) %>%
+  as("data.frame")  %>%
+  mutate(sample_id = sample_name) %>%
+  mutate(sample_name = sample_name %>%
+           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
+           str_remove("HLVKYDMXX_")) %>%
+  dplyr::filter(!duplicated(sample_id)) %>%
+  magrittr::set_rownames(.$sample_id)
+
+saveRDS(ps.merged, "output/rds/ps_merged.rds")
+
+## Train model again on full mock dataset and predict unknowns
+final_logistic_glm <- glmnet_wf  %>%
+  fit(mock_dat)
+
+final_predictions_glm <- final_logistic_glm %>%
+  predict(new_data = model_df, type="prob") %>%
+  bind_cols(model_df) %>%
+  mutate(.pred = factor(make_two_class_pred(.pred_TP, levels(outcome), threshold = .5)))
+
+
+taxon_roc <- final_logistic_glm %>%
+  predict(new_data = model_df, type="prob") %>%
+  bind_cols(model_df) %>%
+  filter(!is.na(outcome)) %>%
+  mutate(outcome = as.factor(outcome, levels = c("TP", "FP"))) %>%
+  mutate(.pred = factor(make_two_class_pred(.pred_TP, levels(outcome), threshold = .5))) %>%
+  filter(taxon %in% exp$taxon) %>%
+  group_by(taxon) %>%
+  group_modify(~{
+    # Add 1 fake FP observation per taxon to allow ROC curve
+    if(length(unique(.x$outcome)) == 1){
+      fake_obs <- .x %>%
+        dplyr::slice(1) %>%
+        mutate(.pred_FP = 0.9999, .pred_TP = 0.0001, outcome=as.factor("FP"))
+      .x <- .x %>%
+        bind_rows(fake_obs)  
+    }
+    return(.x)
+  }) %>%
+  roc_curve(truth = outcome, .pred_TP)
+
+
+gg.roc_curve <- taxon_roc %>%  
+  mutate(taxon = taxon %>%
+           str_replace("_", " ") %>%
+           factor(levels = c("Drosophila suzukii",
+                             "Drosophila subpulchrella",
+                             "Drosophila biarmipes",
+                             "Drosophila immigrans",
+                             "Drosophila hydei",
+                             "Drosophila melanogaster",
+                             "Drosophila simulans",
+                             "Scaptodrosophila lattivitata"))) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity, colour= taxon)) +
+  geom_path(size=1) +
+  geom_abline(lty = 3) + 
+  facet_wrap(~taxon, ncol = 4) +
+  coord_equal() +
+  scale_color_brewer(palette="Paired")+
+  base_theme+
+  theme(strip.text = element_text(face="italic"))+
+  labs(colour = "Taxon",
+       x = "1 - Specificity",
+       y = "Sensitivity")
+
+gg.roc_curve
+
+pdf(file="fig/roc_curve.pdf", width = 11, height = 8 , paper="a4r")
+  plot(gg.roc_curve)
+try(dev.off(), silent=TRUE)
 
 # Filter predicted switching
-keeptab <- predictions_glm %>%
-  dplyr::select(.pred_class, sample_id, otu) %>%
+keeptab <- final_predictions_glm %>%
+  dplyr::select(.pred_class, sample_id , otu) %>%
   mutate(.pred_class = case_when(
     .pred_class == "TP" ~ 1,
     .pred_class == "FP" ~ 0
-  )) %>%
+  ))  %>%
   #mutate(across(where(is.factor), ~ as.character(.x))) %>%
   pivot_wider(names_from = otu,
               values_from = .pred_class,
               values_fill = 0) %>%
-  dplyr::slice(match(rownames(otu_table(ps_model)), sample_id)) %>%
-  column_to_rownames("sample_id") %>%
-  dplyr::select(colnames(otu_table(ps_model))) %>%
+  dplyr::slice(match(rownames(otu_table(ps.merged)), sample_id)) %>%
+  column_to_rownames("sample_id")%>%
+  dplyr::select(colnames(otu_table(ps.merged))) %>%
   as.matrix()
 
+#colnames(otu_table(ps.merged))[!colnames(otu_table(ps.merged)) %in% colnames(keeptab)]
+#
+
 #get current OTU table
-otutab <- otu_table(ps_model) %>%
+otutab <- otu_table(ps.merged) %>%
   as("matrix") 
 
 #Replace taxa predicted as False positives
-ps2 <- ps_model
+ps2 <- ps.merged
 otu_table(ps2) <- otu_table(otutab * keeptab, taxa_are_rows = FALSE)
 
 # Check staxa that were dropped
@@ -1817,11 +2299,8 @@ dropped <- taxa_sums(ps2) %>%
 # Remove zero taxa
 ps2 <- filter_taxa(ps2, function(x) mean(x) > 0, TRUE) #Drop missing taxa from table
 message(nsamples(ps_model) - nsamples(ps2), " Samples and ", ntaxa(ps_model) - ntaxa(ps2), " taxa under read threshold Dropped")
-```
-
 
 ## Write out final phyloseq
-```{r save final ps}
 saveRDS(ps2, "output/rds/ps_filtered.rds")
 ```
 
