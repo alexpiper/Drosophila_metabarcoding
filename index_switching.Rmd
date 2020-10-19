@@ -297,20 +297,6 @@ group_by(otu, sample_name,sample_id, taxon, pcr_primers, fcid, material_type, n_
   summarise(abundance = sum(abundance)) %>% 
   ungroup()
 
-
-# old code?
-#sam <- speedyseq::psmelt(ps_model) %>%
-#  janitor::clean_names() %>%
-#  mutate(taxon = species) %>%
-#  filter(!str_detect(taxon, "__")) %>%#Remove unclassified
-#  dplyr::select(sample_name, taxon, abundance, pcr_primers, fcid, material_type = type) %>%
-#  mutate(sample_name = sample_name %>%
-#           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
-#           str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_"),
-#         sample_id = paste0(fcid, "_", sample_name),
-#         sample_name = sample_name %>%
-#           str_remove("-ex[0-9]")) 
-
 #Join tables 
 mocks <- sam %>%
   filter(sample_name %in% exp$sample_name,

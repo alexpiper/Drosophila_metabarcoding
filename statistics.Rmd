@@ -115,91 +115,49 @@ ps_run1 %>%
        fill="Species",
        title = "Run 1 - Primer testing")
 
-
-#Compositional PCA using PhilR
-# Get OTU tables
-otutab <- otu_table(ps_run1)
-#Impute zeroes for compositional distances
-otutab_n0 <- as.matrix(zCompositions::cmultRepl(otutab, method="CZM", output="p-counts"))
-#Root phylogenetic tree
-phy_tree(ps_run1) <- multi2di(phy_tree(ps_run1))
-# Get philr distance
-ps_run1.philr <- philr::philr(otutab_n0, phy_tree(ps_run1),
-                     part.weights='enorm.x.gm.counts', 
-                     ilr.weights='blw.sqrt')
-
-# Add extract id
-sample_data(ps_run1) <- sample_data(ps_run1) %>%
-  as("data.frame") %>%
-  mutate(extract_id = sample_name %>%
-           str_remove_all("BF1-BR1-|fwhF2-fwhR2n-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-")) %>%
-  magrittr::set_rownames(.$sample_id)
-
-
-#Philr PCOA
-philr.dist <- dist(ps_run1.philr, method="euclidean")
-philr.pcoa <- ordinate(ps_run1, 'PCoA', distance=philr.dist)
-gg.run1pca <- plot_ordination(ps_run1, philr.pcoa, color = "extract_id", shape = "pcr_primers") +
-  geom_point(size=3, alpha=0.8) +
-  geom_line(aes(group=extract_id), alpha=0.8) +
-  geom_hline(yintercept = 0, linetype=2, alpha=0.5) +  
-  geom_vline(xintercept = 0, linetype=2, alpha=0.5) +
-  base_theme +
-  #coord_fixed() +
-  scale_colour_brewer(palette="Paired") +
-  theme(legend.position = "bottom", legend.margin=margin()) +
-  labs(shape = "Primer pair",
-       colour = "Sample")
-
-gg.run1pca
-
-
-# Heirarchial clustering
-dend <- hclust(philr.dist, method="ward.D2")
-
-p3 <- ggtree(as.phylo(dend) ) + 
-  theme_void()
-
-colours_p3 <- p3$data %>%
-  left_join(as_data_frame(sample_data(ps_run1)) %>%
-              dplyr::select(sample_id, sample_name,  pcr_primers) %>%
-  dplyr::rename(label = sample_id)
-    )
-
-p3 <- p3 %<+% colours_p3  + 
-  geom_tippoint(aes(colour=pcr_primers, shape = pcr_primers), size=2)  + 
-  geom_tiplab(aes(colour=pcr_primers, label=sample_name %>% str_remove("^.*_")), angle=90, hjust=1)+
-  scale_colour_brewer(palette="Paired") +
-    scale_x_reverse(expand=c(0, 20)) +
-  theme(legend.position = "none") + coord_flip()
-
-p3
-# Plot as heatmap - Arrange by 
-gg.run1_heatmap <- ps_run1 %>%
+# Reads per sample
+ps_run1 %>% 
   speedyseq::psmelt() %>%
-  dplyr::select(sample_id, Abundance, pcr_primers, Species) %>%
-  #filter(Genus=="Drosophila") %>%
-  group_by(sample_id) %>%
-  mutate_at(vars(Abundance), ~ . / sum(.) ) %>%
-  #mutate(Abundance = replace(Abundance, Abundance==0, 0.5)) %>%
- # mutate(Abundance = metacal::clr(Abundance, na.rm = TRUE)) %>%
-  left_join(p3$data %>% dplyr::select(sample_id = label, y)) %>%
-    ggplot(aes(x=fct_reorder(sample_id,y), y=Species, fill=Abundance)) +
-    geom_tile() +
-  base_theme+
-  theme(axis.text.x = element_blank(),
-          legend.position = "bottom") +
-    scale_fill_viridis_c(labels = scales::percent) +
-    labs(x="Sample",
-         y="Taxon",
-         fill="Relative abundance")
+  group_by(sample_id, sample_name, pcr_primers) %>%
+  summarise(Abundance = sum(Abundance)) %>%
+  ggplot(aes(x = sample_name, y = Abundance))+
+  geom_col() +
+  geom_text(aes(label=Abundance),angle=90,hjust=1,vjust=0.5, colour="white")+
+  facet_grid(~pcr_primers,scales="free_x", drop=TRUE) + 
+  base_theme
 
-gg.run1_heatmap
+ps_run1 %>% 
+  speedyseq::psmelt() %>%
+  group_by(sample_id, sample_name, pcr_primers) %>%
+  summarise(Abundance = sum(Abundance)) %>%
+  ungroup() %>%
+  summarise(total = sum(Abundance), mean=mean(Abundance), sd = sd(Abundance), upper = range(Abundance)[2], lower=range(Abundance)[1])
 
+# Taxa per primer
+ps_run1 %>% 
+  speedyseq::psmelt() %>%
+  filter(Abundance > 0, !is.na(Abundance)) %>%
+  mutate(type = case_when(
+    str_detect(sample_name,"D100M") ~ "MOCK",
+    TRUE ~ "TRAP"
+  ))%>%
+  group_by(type, pcr_primers) %>%
+  summarise(unique = n_distinct(Species)) 
 
 # Heatmap separate for primers
 
 # Plot phylogeny
+exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
+  dplyr::rename(sample_name = Sample) %>%
+  pivot_longer(-sample_name,
+               names_to= "Species",
+               values_to= "expected") %>%
+  mutate(taxon = str_replace(taxon, pattern=" ",replacement="_"),
+         sample_name = str_remove(sample_name, "-exp*.$")) %>%
+  dplyr::filter(!is.na(sample_name),
+  !str_detect(sample_name, "CM[0-9]|CT[0-9]|CML[0-9]|Syn"),
+  expected > 0) %>%
+  distinct()
 
 heatmap_dat <-  ps_run1 %>%
   speedyseq::psmelt() %>%
@@ -214,7 +172,19 @@ heatmap_dat <-  ps_run1 %>%
   group_by(sample_id) %>%
   mutate_at(vars(Abundance), ~ . / sum(.) ) %>%
   ungroup() %>%  
-  mutate(Abundance = na_if(Abundance, 0))
+  mutate(Abundance = na_if(Abundance, 0))  %>%
+  left_join(read_csv("sample_data/expected_quant_merged.csv") %>%
+  dplyr::rename(sample_name = Sample) %>%
+  pivot_longer(-sample_name,
+               names_to= "Species",
+               values_to= "expected") %>%
+    mutate(Species = Species %>% str_replace("_", " ")), by = c("sample_name","Species")) %>%
+  mutate(expected = na_if(expected, 0))  %>%
+  mutate(outcome = case_when(
+    type == "Mock" & Abundance > 0 & is.na(expected) ~ "FP",
+    type == "Mock" & Abundance > 0 & !is.na(expected) ~ "TP",
+    type == "Mock" & is.na(Abundance) & expected > 0 ~ "FN"
+  )) 
 
 # Plot tree
 keeptips <- heatmap_dat %>% 
@@ -230,28 +200,27 @@ tree$tip.label <- tree$tip.label %>%
   left_join(keeptips) %>%
   pull(Species)
 
-is.binary(tree)
-multi2di(tree)
-p1 <- ggtree(tree, ladderize = TRUE)
+mock_tree <- ggtree(tree, ladderize = TRUE)
+library(ggnewscale)
 
-gg.run1_heatmap_sep <- heatmap_dat %>%
-  left_join(p1$data %>% dplyr::rename(Species = label)) %>%
+gg.run1_heatmap <- heatmap_dat %>%
+  left_join(mock_tree$data %>% dplyr::rename(Species = label)) %>%
   mutate(Species = factor(Species)) %>%
     ggplot(aes(x=sample_name, y=fct_reorder(Species, y), fill=Abundance)) +
     geom_tile() +
+  scale_fill_viridis_c(labels = scales::percent, na.value = NA, alpha=0.9) +
+  new_scale_fill() +
+  geom_tile(aes(fill = outcome))+
+  scale_fill_manual(values=c("FP" = "#e41a1c", "TP" = NA, "FN"= "grey60")) +
   base_theme+
   theme(legend.position = "right",
         axis.text.y = element_text(face="italic"),
         axis.title.y = element_blank())+
-    scale_fill_viridis_c(labels = scales::percent, na.value = NA, alpha=0.9) +
     labs(x="Sample",
-         y="Taxon",
-         fill="Relative abundance") +
+         y="Taxon") +
   facet_grid(~pcr_primers,scales="free_x", drop=TRUE)
 
-p1 + gg.run1_heatmap_sep + plot_layout(widths = c(1,4))
-
-
+mock_tree + gg.run1_heatmap + plot_layout(widths = c(1,4))
 ```
 
 ## Bias
@@ -427,10 +396,12 @@ gg.bias <- preds %>%
   ungroup() %>%
   dplyr::select(taxon, estimate, upper, lower, pcr_primers) %>%
   distinct()%>%
+  left_join(mock_tree$data %>% dplyr::mutate(taxon = label %>% str_replace(" ", "_"))) %>%
   mutate(taxon = taxon %>% 
            str_replace("^Drosophila_", "D. ")%>%
            str_replace("^Scaptodrosophila_", "Sca. ")) %>%
-  ggplot(aes(x = taxon, y = estimate, colour = pcr_primers, group = pcr_primers)) +
+  mutate(taxon = factor(taxon))%>%
+  ggplot(aes(x = fct_reorder(taxon, y), y = estimate, colour = pcr_primers, group = pcr_primers)) +
   geom_hline(yintercept = 1, alpha=0.5, colour = "grey20") +
   geom_pointrange(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.6))+
   #coord_flip() +
@@ -449,6 +420,25 @@ gg.bias
 
 #bias is missing for BF1 biarmipes because it was low reads
 ```
+
+## Multifig1
+
+Comparison of primers for bias, off-target amp, and PCA of overlap
+
+```{r run 1 multifig}
+
+fig1a <- mock_tree + gg.run1_heatmap + plot_layout(widths = c(1,6))
+
+fig1 <- fig1a / gg.bias + plot_layout(heights = c(2,1))+ plot_annotation(tag_levels = 'A') & theme(plot.margin = unit(c(1,1,1,1), "mm"))
+
+fig1
+# Write out figure 1
+pdf(file="fig/run1_multifig.pdf", width = 11, height = 8 , paper="a4r")
+  plot(fig1)
+try(dev.off(), silent=TRUE)
+```
+
+
 
 ## Classification summary
 
@@ -511,33 +501,6 @@ gg.reads_classified <- tax_plot_data  %>%
 gg.reads_classified
 ```
 
-## Multifig1
-
-Comparison of primers for bias, off-target amp, and PCA of overlap
-
-```{r run 1 multifig}
-# PCA, off target, and bias
-fig1a <- p3 /gg.run1_heatmap + plot_layout(heights = c(1,2)) #/ (gg.run1pca+ theme(legend.position = "none"))
-#
-fig1b <- gg.reads_classified / (gg.bias + coord_flip()) + plot_layout(heights = c(1,2))
-
-fig1 <- fig1a - fig1b + plot_layout(widths = c(3,1)) + plot_annotation(tag_levels = 'A') & theme(plot.margin = unit(c(1,1,1,1), "mm"))
-  
-fig1 
-
-fig1_alternate <- gg.run1_heatmap_sep / gg.bias + plot_layout(heights = c(2,1))+ plot_annotation(tag_levels = 'A') & theme(plot.margin = unit(c(1,1,1,1), "mm"))
-
-fig1_alternate
-# Write out figure 1
-pdf(file="fig/run1_multifig.pdf", width = 11, height = 8 , paper="a4r")
-  plot(fig1)
-  plot(fig1_alternate)
-try(dev.off(), silent=TRUE)
-
-# Problems to fix -  how does the PCA change with the filtered vs unfiltered data?
-# look at level of off-target amp
-  
-```
 
 # Supplementary Comparison of primer replicates for detection and bias
 

@@ -2244,13 +2244,14 @@ gg.roc_curve <- taxon_roc %>%
                              "Drosophila simulans",
                              "Scaptodrosophila lattivitata"))) %>%
   ggplot(aes(x = 1 - specificity, y = sensitivity, colour= taxon)) +
-  geom_path(size=1) +
+  geom_path(size=1, position=position_dodge(width=0.03), alpha=0.8) +
   geom_abline(lty = 3) + 
-  facet_wrap(~taxon, ncol = 4) +
+  #facet_wrap(~taxon, ncol = 4) +
   coord_equal() +
   scale_color_brewer(palette="Paired")+
   base_theme+
-  theme(strip.text = element_text(face="italic"))+
+  theme(legend.text = element_text(face="italic"),
+        legend.position = "right")+
   labs(colour = "Taxon",
        x = "1 - Specificity",
        y = "Sensitivity")
