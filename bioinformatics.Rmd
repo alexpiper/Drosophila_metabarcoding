@@ -43,6 +43,7 @@ knitr::opts_chunk$set(echo = TRUE, eval=FALSE, message=FALSE,error=FALSE,fig.sho
                     "ggtree",
                     "castor",
                     "geiger",
+                    "probably",
                     "filesstrings")
 .bioc_packages <- c("dada2",
                     "phyloseq",
@@ -1664,155 +1665,10 @@ message(nsamples(ps0) - nsamples(ps1), " Samples and ", ntaxa(ps0) - ntaxa(ps1),
 setdiff(sample_names(ps0), sample_names(ps1))
 ```
 
-## Overlap between replicates
+## Replicate observations and overlap
 
-Venn diagrams? - Heatmap of presence absense
-
-Species accumulation curve- adding more extraction reps, pcr reps, biological samples, sequence depth
-
-Want to show - Different extraction replicates adds more - but this is probably due to contamination
-PCR replicates doesnt add more
-
-Visualise overlap, then merge choosing a majority rules approach
-
-```{r overlap between replicates}
-# Mean pairwise distance between PCR replicates
-mpd_pcr <- ps1 %>%
-  otu_table() %>%
-  as("matrix") %>%
-  as_tibble(rownames = "sample_id") %>%
-  left_join(sample_data(ps1) %>%
-              as("data.frame") %>%
-              dplyr::select(sample_id, sample_name,extract_id, fcid)) %>%
-  group_by(sample_name) %>%
-  add_tally()  %>%
-  filter(n > 1,
-         fcid=="HLVKYDMXX",
-         !str_detect(sample_name, "BLANK|SynMock|POS")) %>%
-  group_modify(~ {
-      .x %>% 
-        dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "fcid"))) %>%
-        as.matrix() %>%
-        vegdist(method="jac", binary = T) %>%
-        as.matrix() %>%
-        as_tibble()%>%
-        pivot_longer(everything(),
-                     names_to = "sample",
-                     values_to = "dist")%>%
-        dplyr::filter(dist > 0) %>%
-        summarise(dist = mean(dist)) 
-    })
-
-# Mean pairwise distance between extraction replicates
-mpd_extraction <- ps1 %>%
-   merge_samples2(group = "extract_id", fun="sum") %>%
-  otu_table() %>%
-  as("matrix") %>%
-  as_tibble(rownames = "extract_id") %>%
-  left_join(sample_data(ps1) %>%
-              as("data.frame") %>%
-              as_tibble()%>%
-              dplyr::select(sample_id, sample_name, extract_id, type, fcid)) %>%
-  group_by(sample_name) %>%
-  add_tally() %>%
-  filter(n > 1,
-         fcid=="HLVKYDMXX",
-         !str_detect(extract_id, "BLANK|SynMock|POS")) %>%
-  group_modify(~ {
-      .x %>% 
-        dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "type", "fcid"))) %>%
-        as.matrix() %>%
-        vegdist(method="jac", binary = T) %>%
-        as.matrix() %>%
-        as_tibble()%>%
-        pivot_longer(everything(),
-                     names_to = "sample",
-                     values_to = "dist")%>%
-        dplyr::filter(dist > 0) %>%
-        summarise(dist = mean(dist)) 
-    })
-
-
-# This shoudl be trap types instead
-mpd_traps <- ps1 %>%
-   merge_samples2(group = "sample_name", fun="sum") %>%
-  otu_table() %>%
-  as("matrix") %>%  
-  as_tibble(rownames = "sample_name") %>%
-  left_join(sample_data(ps1) %>%
-              as("data.frame") %>%
-              as_tibble()%>%
-              dplyr::select(sample_id, sample_name, extract_id, type, fcid)) %>%
-  group_by(type) %>%
-  add_tally() %>%
-  filter(n > 1,
-         fcid=="HLVKYDMXX",
-         !str_detect(extract_id, "BLANK|SynMock|POS")) %>%
-  group_modify(~ {
-      .x %>% 
-        dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "type", "fcid"))) %>%
-        as.matrix() %>%
-        vegdist(method="jac", binary = T) %>%
-        as.matrix() %>%
-        as_tibble()%>%
-        pivot_longer(everything(),
-                     names_to = "sample",
-                     values_to = "dist")%>%
-        dplyr::filter(dist > 0)  %>%
-        summarise(dist = mean(dist, na.rm=TRUE)) 
-    })
-
-
-# Mean pairwise distance between all samples
-mpd_samples <- ps1 %>%
-   merge_samples2(group = "sample_name", fun="sum") %>%
-  otu_table() %>%
-  as("matrix") %>%
-  as_tibble(rownames = "sample_name") %>%
-  left_join(sample_data(ps1) %>%
-              as("data.frame") %>%
-              as_tibble()%>%
-              dplyr::select(sample_name, extract_id, type, fcid) %>%
-              filter(fcid=="HLVKYDMXX"))%>%
-    filter(!str_detect(extract_id, "BLANK|SynMock|POS"),
-         fcid=="HLVKYDMXX") %>%
-  dplyr::select(-any_of(c("sample_id", "extract_id", "type", "fcid"))) %>%
-  distinct() %>%
-  column_to_rownames("sample_name") %>%
-  as.matrix() %>%
-  vegdist(method="jac", binary = T) %>%
-  as.matrix() %>%
-  as_tibble()%>%
-  pivot_longer(everything(),
-              names_to = "sample",
-              values_to = "dist")%>%
-  dplyr::filter(dist > 0)
-
-# Plot together:
-gg.mpd <- do.call("list", mget(grep("mpd_",names(.GlobalEnv),value=TRUE))) %>%
-  bind_rows(.id="type") %>%
-  ungroup %>%
-  dplyr::select(type, dist) %>%
-  mutate(type = type %>% 
-           str_remove("^.+_") %>%
-           factor(levels = c("samples", "traps", "extraction", "pcr"))) %>%
-  ggplot(aes(x = type, y = dist, fill=type)) + 
-  geom_boxplot() +
-  #geom_point(position=position_jitter(width = 0.2))+
-  base_theme + 
-  scale_fill_brewer(palette= "Paired") +
-  labs(x = "Type",
-       y = "Jaccard dissimilarity")
-
-gg.mpd 
-
-pdf(file="fig/mean_pairwise.pdf", width = 8, height = 11 , paper="a4")
-  plot(gg.mpd)
-try(dev.off(), silent=TRUE)
-```
-
-## Abundance counts for different replicates
-```{r Heatmap replicate abundance}
+```{r Replicates}
+# Abundance counts for different replicates
 # Load in all samples that were expected
 exp_samples <- read_csv("data/HLVKYDMXX/SampleSheet.csv", skip = 19) %>%
   dplyr::select(extract_id = Sample_Name, sample_name = Sample_Name) %>%
@@ -1856,12 +1712,15 @@ gg.repmap <- exp_samples %>%
     ungroup()) %>%
   filter(!str_detect(sample_name, "_DM1$|_DM2$|_DM3$|_DM4$|_DM5$")) %>%
   mutate(extrep = extract_id %>% str_extract("ex.*$")) %>%
-  mutate(type = factor(type, levels=c("POS", "DrosMock", "DrosLarv","FF","SPD", "DC", "ACV"))) %>%
+  mutate(type = type %>% 
+           str_replace("DrosMock", "Adult Mock") %>%
+           str_replace("DrosLarv", "Larval Mock") %>%
+           factor(levels=c("POS", "Adult Mock", "Larval Mock","FF","SPD", "DC", "ACV"))) %>%
   mutate(sample_name = sample_name %>%
            str_remove("HLVKYDMXX_") %>%
            str_replace("^D2","D02") %>%
            str_replace("^D5","D05")) %>%
-  filter(!(extrep=="ex1" & amp_rep == 2)) %>%
+  #filter(!(extrep=="ex1" & amp_rep == 2)) %>%
   mutate(amp_rep = factor(amp_rep)) %>%
   mutate(extrep = extrep %>% str_replace("ex", "Extraction Rep "))%>%
    ggplot(aes(x = amp_rep, y = sample_name, fill = log10(Abundance))) +
@@ -1877,8 +1736,168 @@ gg.repmap <- exp_samples %>%
 
 gg.repmap
 
-pdf(file="fig/replicate_abundances.pdf", width = 11, height = 8 , paper="a4r")
-  plot(gg.repmap)
+# Mean pairwise distance between pcr replicates within extraction
+mpd_pcr <- ps1 %>%
+  subset_samples(fcid=="HLVKYDMXX") %>%
+  otu_table() %>%
+  as("matrix") %>%
+  as_tibble(rownames = "sample_id") %>%
+  filter(!str_detect(sample_id, "BLANK|SynMock|POS")) %>%
+  left_join(sample_data(ps1) %>%
+              as("data.frame") %>%
+              as_tibble()%>%
+              dplyr::filter(fcid=="HLVKYDMXX") %>%
+              dplyr::select(sample_id, sample_name, extract_id)  %>%
+              distinct()) %>%
+  group_by(sample_name, extract_id) %>%
+  add_tally()  %>%
+  filter(n > 1) %>%
+  group_modify(~ {
+      .x %>% 
+        dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "fcid"))) %>%
+        as.matrix() %>%
+        vegdist(method="jac", binary = TRUE) %>%
+        as.matrix() %>%
+        as_tibble()%>%
+        pivot_longer(everything(),
+                     names_to = "sample",
+                     values_to = "dist")%>%
+        dplyr::filter(dist > 0) %>%
+        summarise(dist = mean(dist), n = n_distinct(sample)) 
+    })
+
+# Mean pairwise distance of extraction reps within samples
+mpd_extraction <- ps1 %>%
+  subset_samples(fcid=="HLVKYDMXX") %>%
+  merge_samples(group = "extract_id", fun="sum") %>%
+  otu_table() %>%
+  as("matrix") %>%
+  as_tibble(rownames = "extract_id") %>%
+  filter(!str_detect(extract_id, "BLANK|SynMock|POS")) %>%
+  left_join(sample_data(ps1) %>%
+              as("data.frame") %>%
+              as_tibble()%>%
+              dplyr::filter(fcid=="HLVKYDMXX") %>%
+              dplyr::select(sample_name, extract_id)  %>%
+              distinct()) %>%
+  group_by(sample_name) %>%
+  add_tally() %>%
+  filter(n > 1) %>%
+  group_modify(~ {
+      .x %>% 
+        dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "type", "fcid"))) %>%
+        as.matrix() %>%
+        vegdist(method="jac", binary = TRUE) %>%
+        as.matrix() %>%
+        as_tibble()%>%
+        pivot_longer(everything(),
+                     names_to = "sample",
+                     values_to = "dist")%>%
+        dplyr::filter(dist > 0) %>%
+        summarise(dist = mean(dist), n = n_distinct(sample)) 
+    })
+
+
+# Mean pairwise distance within collection methods
+mpd_traps <- ps1 %>%
+  subset_samples(fcid=="HLVKYDMXX") %>%
+  merge_samples(group = "sample_name", fun="sum") %>%
+  otu_table() %>%
+  as("matrix") %>%  
+  as_tibble(rownames = "sample_name") %>%
+  filter(!str_detect(sample_name, "BLANK|SynMock|POS")) %>%
+  left_join(sample_data(ps1) %>%
+              as("data.frame") %>%
+              as_tibble()%>%
+              dplyr::filter(fcid=="HLVKYDMXX") %>%
+              dplyr::select(sample_name, type)  %>%
+              distinct()) %>%
+  group_by(type) %>%
+  add_tally() %>%
+  filter(n > 1) %>%
+  group_modify(~ {
+      .x %>% 
+        dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "type", "fcid"))) %>%
+        as.matrix() %>%
+        vegdist(method="jac", binary = TRUE) %>%
+        as.matrix() %>%
+        as_tibble()%>%
+        pivot_longer(everything(),
+                     names_to = "sample",
+                     values_to = "dist")%>%
+        dplyr::filter(dist > 0)  %>%
+        summarise(dist = mean(dist), n = n_distinct(sample)) 
+    })
+
+# Mean pairwise distance within orchard
+mpd_orchard <- ps1 %>%
+  subset_samples(fcid=="HLVKYDMXX") %>%
+  merge_samples(group = "sample_name", fun="sum") %>%
+  otu_table() %>%
+  as("matrix") %>%  
+  as_tibble(rownames = "sample_name") %>%
+  filter(!str_detect(sample_name, "BLANK|SynMock|POS")) %>%
+  left_join(sample_data(ps1) %>%
+              as("data.frame") %>%
+              as_tibble()%>%
+              dplyr::filter(fcid=="HLVKYDMXX") %>%
+              mutate(enviro = case_when(
+                str_detect(sample_name,"_T") ~ "Cherries",
+                str_detect(sample_name, "_M") ~ "Stonefruit",
+                str_detect(sample_name, "_D") ~ "Mock")) %>%
+              dplyr::select(sample_name, enviro, type)  %>%
+              distinct()) %>%
+  group_by(enviro) %>%
+  add_tally() %>%
+  filter(n > 1) %>%
+  group_modify(~ {
+      .x %>% 
+        dplyr::select(-any_of(c("sample_id", "sample_name", 
+                                "extract_id", "type", "fcid", "enviro"))) %>%
+        as.matrix() %>%
+        vegdist(method="jac", binary = TRUE) %>%
+        as.matrix() %>%
+        as_tibble()%>%
+        pivot_longer(everything(),
+                     names_to = "sample",
+                     values_to = "dist")%>%
+        dplyr::filter(dist > 0)  %>%
+        summarise(dist = mean(dist), n = n_distinct(sample)) 
+    })
+
+# Plot together:
+gg.mpd <- do.call("list", mget(grep("mpd_",names(.GlobalEnv),value=TRUE))) %>%
+  bind_rows(.id="type") %>%
+  ungroup %>%
+  dplyr::select(type, dist) %>%
+  mutate(type = type %>% 
+           str_remove("^.+_") %>%
+           str_replace("orchard", "Location") %>%
+           str_replace("traps", "Sampling method") %>%
+           str_replace("extraction", "Extraction reps") %>%
+           str_replace("pcr", "PCR reps") %>%
+           factor(levels = c("PCR reps", "Extraction reps", "Sampling method", "Location"))
+         ) %>%
+  ggplot(aes(x = type, y = dist, fill=type, colour=type)) + 
+  geom_boxplot(alpha=0.5, colour="black") +
+  geom_point(position=position_jitter(width = 0.2),size=2,alpha=0.8, shape=21, colour="black")+
+  base_theme + 
+  coord_flip(ylim=c(0,1))+
+  scale_fill_viridis_d()+
+  scale_colour_viridis_d()+
+  #scale_fill_brewer(palette= "Paired") +
+  #scale_colour_brewer(palette= "Paired") +
+  labs(x = "Type",
+       y = "Jaccard dissimilarity")
+
+gg.mpd 
+
+# Replicate figure
+gg.rep_multifig <- gg.repmap / gg.mpd + plot_layout(heights = c(2,1)) + plot_annotation(tag_levels = "A")
+gg.rep_multifig
+
+pdf(file="fig/Fig2_replicates.pdf", width = 11, height = 8 , paper="a4r")
+  plot(gg.rep_multifig)
 try(dev.off(), silent=TRUE)
 ```
 
@@ -1931,63 +1950,105 @@ exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
   dplyr::filter(!is.na(sample_name),
   !str_detect(sample_name, "CM[0-9]|CT[0-9]|CML[0-9]|Syn"),
   expected > 0) %>%
-  distinct()
+  distinct() %>%
+  mutate(expected_RA = expected) %>%
+  group_by(sample_name) %>%
+  mutate_at(vars(expected_RA), ~ . / sum(., na.rm = TRUE) ) %>%
+  ungroup()
+
+# Calculate alpha div
+#Set number of randomisations for calculating significance
+ps.alpha <- ps_model %>%
+    merge_samples(group = "sample_name", fun="sum")
+
+richness <- phyloseq::estimate_richness(ps.alpha, measures=c("Chao1", "Shannon", "Simpson")) %>% #
+  rownames_to_column("sample") %>%
+  mutate(sample = str_replace(sample, "\\.", "-"))
+
+# Calculate Faith's PD-index & Species richness - with Standard errors
+sespd <- picante::ses.pd(as(phyloseq::otu_table(ps.alpha), "matrix"),  phyloseq::phy_tree(ps.alpha), null.model = "taxa.labels", include.root = F, runs = 1)
+
+# Join together
+div_table <- sespd %>%
+  rownames_to_column("sample") %>%
+  dplyr::select(sample, ntaxa, pd.obs) %>%
+  dplyr::rename(pd = pd.obs, alpha = ntaxa) %>%
+  left_join(richness, by="sample") %>%
+  dplyr::rename(sample_id = sample)
+
 
 # Merge replicates and get observed
 sam <- speedyseq::psmelt(ps_model) %>%
   janitor::clean_names() %>%
   mutate(taxon = species) %>%
-  filter(abundance > 0 ) %>%
   filter(fcid %in% c("CB3DR", "HLVKYDMXX"))  %>%
+  #filter(!str_detect(taxon, "__")) %>%
+  filter(pcr_primers == "fwhF2-fwhR2n") %>%
+  #filter(abundance > 0) %>%
   dplyr::select(otu, sample_name, extract_id, sample_id, taxon, pcr_primers,fcid, material_type = type, abundance) %>%
   distinct() %>%
-  #group_by(extract_id, otu,fcid) %>%
-  #mutate(n_rep = n_distinct(sample_id)) %>%
-  #ungroup() %>%
   group_by(sample_name, otu, fcid) %>%
-  mutate(n_extract = n_distinct(extract_id), n_rep = n_distinct(sample_id)) %>%
-  dplyr::rename() %>%
+  mutate(n_extract = case_when( # Need this to only count reps they were detected in!
+    abundance > 0 ~ extract_id,
+    TRUE ~ as.character(NA)
+  ),
+  n_rep = case_when(
+    abundance > 0 ~ sample_id,
+    TRUE ~ as.character(NA)
+  )) %>%
+  mutate(n_extract = n_distinct(n_extract, na.rm = TRUE), n_rep = n_distinct(n_rep, na.rm = TRUE))%>%
   mutate(taxon = taxon %>% str_replace(" ", "_")) %>%
   mutate(sample_id = sample_name,
          sample_name = sample_name %>%      
          str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
          str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_")) %>%
-  group_by(otu, sample_name,sample_id, taxon, pcr_primers, fcid, material_type, n_rep, n_extract) %>%
+  group_by(otu, sample_name, sample_id, taxon, pcr_primers, fcid, material_type, n_rep, n_extract) %>%
   summarise(abundance = sum(abundance)) %>% 
-  ungroup()
+  ungroup() %>%
+  left_join(div_table)
 
 #Create a mocks table to train the model on
 model_df <- sam %>%
-  filter(abundance > 0) %>%
   mutate(type = case_when( 
          (sample_name %in% exp$sample_name) & (material_type == "DrosMock") & !str_detect(taxon, "__") ~ "train",
          TRUE ~ "test")) %>%
   left_join(exp, by = c("sample_name","taxon"))  %>%
+  left_join(exp %>%
+              group_by(sample_name) %>%
+              mutate(total_abund = sum(expected))%>%
+              ungroup() %>%
+              dplyr::select(sample_name, total_abund) %>%
+              distinct(), by="sample_name") %>%
   mutate(outcome = case_when(
-    abundance > 0 & is.na(expected) & type== "train" ~ "FP",
-    abundance > 0 & !is.na(expected) & type=="train" ~ "TP",
-    #abundance == 0 & expected > 0 ~ "FN",
-    TRUE ~ as.character(NA)
-  )) %>%
-  mutate(outcome = case_when(
-    outcome == "FP" & abundance > 10000 ~ as.character(NA), #Deal with obvious misannotated expecteds
-    TRUE ~ outcome
+    abundance > 0 & is.na(expected) & type== "train" ~ 0, #False positive
+    abundance > 0 & !is.na(expected) & type== "train" ~ 1, # True positive
+    abundance == 0 & expected > 0 & type== "train" ~ 1, # False negative
+    abundance ==0 & is.na(expected) & type== "train" ~ 0 # True negative
   )) %>%
   group_by(sample_id,fcid, pcr_primers) %>%
-  dplyr::mutate(abundance_clr = abundance) %>%
-  mutate_at(vars(abundance_clr ), ~metacal::clr(. + 0.5) ) %>%
+  dplyr::mutate(abundance_clr = abundance, abundance_RA = abundance, total_seq = sum(abundance)) %>%
+  mutate_at(vars(abundance_clr), ~metacal::clr(. + 0.5) ) %>%
+  mutate_at(vars(abundance_RA), ~ . / sum(., na.rm = TRUE) ) %>%
   ungroup() %>%
-  dplyr::select(fcid, sample_id, sample_name, otu, taxon, abundance, abundance_clr, outcome, n_extract, n_rep) %>%
-  mutate(outcome = factor(outcome, levels=c("TP", "FP")))
+  dplyr::select(fcid, sample_id, sample_name, otu, taxon, abundance, abundance_clr, abundance_RA, outcome, n_extract, n_rep, alpha, pd, Shannon, total_seq, total_abund, expected, expected_RA) %>%
+  mutate(outcome_all = outcome) %>%
+  mutate(outcome = case_when(
+    outcome == 0 & abundance_RA > 0.01 ~ as.numeric(NA), #Deal with obvious misannotated expecteds
+    outcome == 1 & abundance == 0 ~ as.numeric(NA), #Deal with total dropouts
+    TRUE ~ outcome
+  )) %>%
+  #filter(!is.na(outcome)) %>%
+  mutate(outcome = factor(outcome, levels=c("0", "1")))
 
 # Get just known outcomes
 mock_dat <- model_df %>%
-  filter(!is.na(outcome))
+  filter(!is.na(outcome)) #%>%
+  #mutate(strata = paste0(outcome,"-", fcid))
 
 # Create dataset split
-set.seed(seed = 296) 
+set.seed(seed = 42) 
 
-mock_split <- initial_split(mock_dat, strata = fcid, prop=0.8)
+mock_split <- initial_split(mock_dat,strata=outcome, prop=0.8)
 mock_train <- training(mock_split)
 mock_test <- testing(mock_split)
 
@@ -1995,41 +2056,46 @@ mock_test <- testing(mock_split)
 mock_cv <- vfold_cv(mock_train, v = 10)
 
 # Create modelling recipe
-switch_recipe <- recipe(outcome ~ abundance_clr + fcid + n_extract + n_rep, data = mock_train) %>%
+switch_recipe <- recipe(outcome ~ abundance_RA + fcid + n_extract + n_rep, data = mock_train) %>%
   step_novel(all_nominal(), -all_outcomes()) %>% 
- # step_other(taxon, threshold = 0.1) %>%
-  step_dummy(fcid) %>% 
+  step_dummy(fcid, one_hot = FALSE) %>% 
   step_zv(all_predictors()) %>%
-  step_normalize(n_extract, n_rep) #
+  step_normalize(n_rep)
+  #step_normalize(alpha, pd, n_rep, n_extract, total_abund) #
+
+juice(prep(switch_recipe))
+
+#+ alpha + pd + total_abund
 
 # Define model
-glmnet_spec <- logistic_reg(penalty = tune(), mixture = tune()) %>% 
+glmnet_spec <- logistic_reg() %>%  #penalty = tune(), mixture = tune()
   set_mode("classification") %>% 
-  set_engine("glmnet") 
+  set_engine("glm") 
 
 # Create workflow
 glmnet_wf <- workflow() %>%
   add_recipe(switch_recipe) %>%
   add_model(glmnet_spec)
 
-glmnet_grid <- tidyr::crossing(penalty = 10^seq(-6, -1, length.out = 20), mixture = c(0.05, 
-    0.2, 0.4, 0.6, 0.8, 1)) 
+#glmnet_grid <- tidyr::crossing(penalty = 10^seq(-6, -1, length.out = 20), mixture = c(0.05, 
+#    0.2, 0.4, 0.6, 0.8, 1)) 
 
-glmnet_tune <- 
-  tune_grid(glmnet_wf, resamples = mock_cv, grid = glmnet_grid) 
+#glmnet_tune <- 
+#  tune_grid(glmnet_wf, resamples = mock_cv, grid = glmnet_grid) 
 
-autoplot(glmnet_tune)
+#autoplot(glmnet_tune)
 
-glmnet_wf <- glmnet_wf %>%
-  finalize_workflow(glmnet_tune %>% select_best("roc_auc" ))
+#glmnet_wf <- glmnet_wf %>%
+#  finalize_workflow(glmnet_tune %>% select_best("roc_auc" ))
 
 # Fit to resamples
-glmnet_wf %>%
-  fit_resamples(mock_cv) %>%
-  unnest(.metrics) %>%
-  filter(.metric == "roc_auc") %>%
-  summarise(roc_auc = mean(.estimate))
+#glmnet_wf %>%
+#  fit_resamples(mock_cv) %>%
+#  unnest(.metrics) %>%
+#  filter(.metric == "roc_auc") %>%
+# summarise(roc_auc = mean(.estimate))
 
+  
 # See how it went on the training dataset
 predictions_glm <- mock_train %>%
   nest(everything()) %>%
@@ -2043,28 +2109,38 @@ predictions_glm <- mock_train %>%
          pred_curve = purrr::map2(model_obj, test, function(x, y){
               newdat <- data.frame(abundance_clr=seq(min(y$abundance_clr),
                                                      max(y$abundance_clr),len=1000),
+                                   abundance=as.integer(seq(min(y$abundance),
+                                                     max(y$abundance),len=1000)),
+                                   abundance_RA=seq(min(y$abundance_RA),
+                                                    max(y$abundance_RA),len=1000),
                                    n_rep=1,
                                    n_extract=1,
+                                   alpha=1,
+                                   pd=1,
+                                   total_abund=1,
                                    fcid="HLVKYDMXX")
               newdat <- newdat %>%
                 bind_cols(predict(x, new_data=newdat, type="prob")) %>%
-                mutate(prob = round(.pred_TP,1))
+                mutate(prob = round(.pred_1,1))
               plot_dat <- y %>%
-                mutate(outcome_TP = case_when(
-                  outcome == "FP" ~ 0,
-                  outcome == "TP" ~ 1)) 
+               mutate(outcome_1 = case_when(
+                  outcome == 0 ~ 0,
+                  outcome == 1 ~ 1)) 
               
               annot <- newdat %>% 
                              filter(prob==0.5) %>%
-                             summarise(abundance_clr = mean(abundance_clr))
+                             summarise(abundance_clr = mean(abundance_clr),
+                                       abundance_RA = mean(abundance_RA))
                 
-              ggplot(plot_dat, aes(x = abundance_clr, y = outcome_TP, colour = outcome)) +
-                geom_point(alpha=0.8) + 
-                geom_line(data = newdat, aes(x = abundance_clr, y = .pred_TP), inherit.aes = FALSE, size=1) +
-                geom_vline(xintercept = annot$abundance_clr, colour="grey30", alpha=0.5, size=1)+
+              ggplot(plot_dat, aes(x = abundance_RA, y = outcome_1, colour = outcome)) +
+                geom_point(alpha=0.5,size=1, position=position_jitter(width=0.001, height=0)) + 
+                geom_line(data = newdat, aes(x = abundance_RA, y = .pred_1),
+                          inherit.aes = FALSE, size=1,  alpha=0.5) +
+                geom_vline(xintercept = annot$abundance_RA, colour="grey30", alpha=0.5, size=1)+
                 base_theme +
                 theme(legend.position = "right")+
-                scale_colour_manual(values = c("FP" = "#F8766D", "TP" = "#00BFC4" ))+
+                #scale_x_log10()+
+                scale_colour_manual(values = c("0" = "#F8766D", "1" = "#00BFC4" ))+
                 labs(x = "Abundance (CLR)",
                      y = "Prediction probability",
                      colour="Outcome")
@@ -2074,8 +2150,30 @@ predictions_glm <- mock_train %>%
             .x %>%
             pull_workflow_fit() %>%
             vip::vi()
+         }),
+         coef_info = purrr::map(model_obj,~{
+           .x %>% 
+             pull_workflow_fit() %>%
+             broom::tidy()
          })
   )
+
+library(probably)
+
+# Confusion matrix
+gg.conf_matrix <- predictions_glm %>%
+  unnest(test, pred_test) %>%
+  dplyr::select(-where(~is.list(.x))) %>%
+  mutate(.pred = factor(make_two_class_pred(.pred_0, levels(outcome), threshold = .5)))%>%
+  mutate(.pred = factor(.pred, levels = levels(outcome))) %>%
+  conf_mat(outcome, .pred) %>%
+  pluck(1) %>%
+  as_tibble() %>%
+  ggplot(aes(Prediction, Truth, alpha = n)) +
+  geom_tile(show.legend = FALSE) +
+  geom_text(aes(label = n), colour = "white", alpha = 1, size = 8)
+
+gg.conf_matrix
 
 # Plot regression curve
 predictions_glm %>%
@@ -2086,11 +2184,11 @@ pdf(file="fig/log_curve.pdf", width = 6, height = 4 , paper="a4r")
 try(dev.off(), silent=TRUE)
   
 # Calculate performance over number of predictors
-library(probably)
+
 threshold_data <- predictions_glm %>%
   unnest(train, pred_train) %>%
   dplyr::select(-where(~is.list(.x))) %>%
-  threshold_perf(outcome, .pred_TP, thresholds = seq(0, 1, by = 0.0025)) %>%
+  threshold_perf(outcome, .pred_1, thresholds = seq(0, 1, by = 0.0025)) %>%
   filter(!.metric == "distance") %>%
   mutate(.metric = .metric %>% 
            str_replace("sens", "Sensitivity") %>%
@@ -2125,45 +2223,43 @@ pdf(file="fig/logistic_prob_thresholds.pdf", width = 11, height = 8 , paper="a4r
   plot(gg_thresholds)
 try(dev.off(), silent=TRUE)
 
+# Get coefficients
+predictions_glm  %>%
+  dplyr::select(coef_info) %>%
+  unnest() %>%
+  mutate(signif = case_when(
+    p.value < 0.001 ~ TRUE,
+    p.value > 0.001 ~ FALSE
+  )) %>%
+ # mutate(estimate = exp(estimate)) %>%
+  ggplot(aes(x = estimate, y = term, colour=signif)) +
+  geom_pointrange(aes(x = estimate, xmax=estimate+std.error, xmin=estimate-std.error ), size=1) +
+  labs(y = NULL) +
+  base_theme + 
+  geom_vline(xintercept=0) + 
+  theme(legend.position = "right")
+  
 # Get importance of predictors
 predictions_glm  %>%
   dplyr::select(vip) %>%
   unnest() %>%
   group_by(Sign) %>%
-  top_n(20, wt = abs(Importance)) %>%
-  ungroup() %>%
-  mutate(
-    Importance = abs(Importance),
-    Variable = fct_reorder(Variable, Importance)
-  ) %>%
   ggplot(aes(x = Importance, y = Variable, fill = Sign)) +
   geom_col(show.legend = FALSE) +
   labs(y = NULL)
 
-# Confusion matrix
-gg.conf_matrix <- predictions_glm %>%
-  unnest(test, pred_test) %>%
-  dplyr::select(-where(~is.list(.x))) %>%
-  mutate(.pred = factor(make_two_class_pred(.pred_TP, levels(outcome), threshold = .5)))%>%
-  conf_mat(outcome, .pred) %>%
-  pluck(1) %>%
-  as_tibble() %>%
-  ggplot(aes(Prediction, Truth, alpha = n)) +
-  geom_tile(show.legend = FALSE) +
-  geom_text(aes(label = n), colour = "white", alpha = 1, size = 8)
-
-gg.conf_matrix
-
 # Check for disagreements within mock
 test <- predictions_glm %>%
-  dplyr::select(.pred, abundance_clr,  taxon, outcome)  %>%
+  unnest(test, pred_test) %>%
+  dplyr::select(-where(~is.list(.x))) %>%
+  mutate(.pred = factor(make_two_class_pred(.pred_0, levels(outcome), threshold = .5)))%>%
+  #dplyr::select(.pred, abundance_clr,abundance,  taxon, outcome)  %>%
   mutate(diff = !.pred == outcome)
-
 
 # plot curve
 roc_data <- predictions_glm %>%
    unnest(test, pred_test) %>%
-  roc_curve(truth = outcome, .pred_TP) 
+  roc_curve(truth = outcome, .pred_0) 
 gg.roc_curve <- roc_data %>%  
   ggplot(aes(x = 1 - specificity, y = sensitivity)) +
   geom_path() +
@@ -2177,8 +2273,8 @@ multimetric <- metric_set(accuracy, bal_accuracy, sens, yardstick::spec, precisi
 predictions_glm %>%
   unnest(test, pred_test) %>%
   dplyr::select(-where(~is.list(.x))) %>%
-  mutate(.pred = make_two_class_pred(.pred_FP, levels(outcome), threshold = .5)) %>%
-  multimetric(truth = outcome, estimate = as.factor(.pred, levels= levels(outcome)))  
+  mutate(.pred = make_two_class_pred(.pred_0, levels(outcome), threshold = .5)) %>%
+  multimetric(truth = outcome, estimate = factor(.pred, levels= levels(outcome)))  
 ```
 
 # merge replicates and remove index switching
@@ -2207,15 +2303,14 @@ final_logistic_glm <- glmnet_wf  %>%
 final_predictions_glm <- final_logistic_glm %>%
   predict(new_data = model_df, type="prob") %>%
   bind_cols(model_df) %>%
-  mutate(.pred = factor(make_two_class_pred(.pred_TP, levels(outcome), threshold = .5)))
+  mutate(outcome = factor(outcome, levels = c("0", "1"))) %>%
+  mutate(.pred = factor(make_two_class_pred(.pred_0, levels(outcome), threshold = .5)))%>%
+  mutate(diff = !.pred == outcome_all, diff2=!outcome == outcome_all)
 
-
-taxon_roc <- final_logistic_glm %>%
-  predict(new_data = model_df, type="prob") %>%
-  bind_cols(model_df) %>%
+taxon_roc <-final_predictions_glm %>%
+  mutate(outcome = outcome_all) %>% # Set back to orginal outcomes
+  mutate(outcome = factor(outcome, levels = c("0", "1"))) %>% 
   filter(!is.na(outcome)) %>%
-  mutate(outcome = as.factor(outcome, levels = c("TP", "FP"))) %>%
-  mutate(.pred = factor(make_two_class_pred(.pred_TP, levels(outcome), threshold = .5))) %>%
   filter(taxon %in% exp$taxon) %>%
   group_by(taxon) %>%
   group_modify(~{
@@ -2223,32 +2318,43 @@ taxon_roc <- final_logistic_glm %>%
     if(length(unique(.x$outcome)) == 1){
       fake_obs <- .x %>%
         dplyr::slice(1) %>%
-        mutate(.pred_FP = 0.9999, .pred_TP = 0.0001, outcome=as.factor("FP"))
+        mutate(.pred_0 = 0.9999, .pred_1 = 0.0001, outcome=as.factor("0"))
       .x <- .x %>%
         bind_rows(fake_obs)  
     }
     return(.x)
-  }) %>%
-  roc_curve(truth = outcome, .pred_TP)
+  })
 
+
+roc_annot <- taxon_roc %>%
+  roc_auc(truth = outcome, .pred_0)
+
+# Could split outcome into real outcome, and training outcome
 
 gg.roc_curve <- taxon_roc %>%  
-  mutate(taxon = taxon %>%
-           str_replace("_", " ") %>%
-           factor(levels = c("Drosophila suzukii",
-                             "Drosophila subpulchrella",
-                             "Drosophila biarmipes",
-                             "Drosophila immigrans",
-                             "Drosophila hydei",
-                             "Drosophila melanogaster",
-                             "Drosophila simulans",
-                             "Scaptodrosophila lattivitata"))) %>%
+  roc_curve(truth = outcome, .pred_0) %>%
+  left_join(taxon_roc %>%
+  roc_auc(truth = outcome, .pred_0)) %>%
+   mutate(taxon = taxon %>%
+           str_replace("_", " ") ) %>%
+  filter(taxon %in% c("Drosophila suzukii",
+                      "Drosophila subpulchrella",
+                      "Drosophila biarmipes",
+                      "Drosophila immigrans",
+                      "Drosophila hydei",
+                      "Drosophila melanogaster",
+                      "Drosophila simulans",
+                      "Scaptodrosophila lattivitata"
+                      )) %>%
+  mutate(taxon = paste0(taxon, "\n(AUC: ", round(.estimate, 2), ")")) %>%
   ggplot(aes(x = 1 - specificity, y = sensitivity, colour= taxon)) +
   geom_path(size=1, position=position_dodge(width=0.03), alpha=0.8) +
   geom_abline(lty = 3) + 
   #facet_wrap(~taxon, ncol = 4) +
   coord_equal() +
   scale_color_brewer(palette="Paired")+
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = scales::percent) +
   base_theme+
   theme(legend.text = element_text(face="italic"),
         legend.position = "right")+
@@ -2258,20 +2364,86 @@ gg.roc_curve <- taxon_roc %>%
 
 gg.roc_curve
 
+final_predictions_glm %>%
+  mutate(taxon = taxon %>% str_replace("_", " ")) %>%
+  filter(taxon %in% c("Drosophila suzukii",
+                             "Drosophila subpulchrella",
+                             "Drosophila biarmipes"),outcome == 1 
+         ) %>%
+  dplyr::select(-where(~is.list(.x))) %>%
+  mutate(total_seq = log10(total_seq)) %>%
+  pivot_longer(cols=c("Shannon", "alpha", "pd", "total_abund", "total_seq", "expected_RA"),
+               names_to = "metric",
+               values_to = "value") %>%
+  ggplot(aes(x = value, y=.pred_1, colour=taxon, group=taxon))+
+  geom_point(alpha=0.5) +
+  geom_smooth(method="lm")+
+  coord_cartesian(ylim=c(0,1))+
+  facet_wrap(metric~., scales="free_x", ncol=1) +
+  base_theme+
+  scale_colour_brewer(palette="Paired")+
+  theme(legend.position="bottom")
+
+
+# Make a probability surface
+newdat <- tidyr::crossing(
+  abundance_RA= seq(0, 0.001,len=1000),
+  #abundance_clr= seq(min(final_predictions_glm$abundance_clr),                                          max(final_predictions_glm$abundance_clr),len=1000),
+  n_rep = seq(0, 7,1),
+  n_extract = seq(1, 2, 1),
+  fcid = c("HLVKYDMXX", "CB3DR")
+                )
+library(ggnewscale)
+gg.prob_surface <-bind_cols(newdat, final_logistic_glm %>%
+  predict(new_data = newdat, type="prob")) %>%
+  mutate(.pred = factor(make_two_class_pred(.pred_0, c("0","1"), threshold = .5))) %>%
+  filter(fcid == "HLVKYDMXX") %>%
+  ggplot(aes(x = abundance_RA, y = n_rep))+
+  geom_contour_filled(aes(z = .pred_1, colour=.pred_1), alpha=0.8)+
+  scale_colour_viridis_d() +
+  new_scale_colour()+
+  new_scale_fill() +
+  geom_point(data=final_predictions_glm %>%
+               filter(fcid == "HLVKYDMXX", abundance_RA < 0.001), aes(colour= .pred, fill=.pred_1),
+             position = position_jitter(width=0, height=0.1), alpha=1,shape=21, show.legend=FALSE ) +
+  scale_colour_manual(values=c("#d7191c", "#2b83ba"))+
+  scale_fill_viridis_c() +
+  scale_x_continuous(labels = scales::percent) +
+  base_theme +
+  #facet_grid(fcid~.)+
+  coord_cartesian(xlim=c(0,0.001), ylim=c(1,7))+
+  theme(legend.position = "right") +
+  labs(x = "Relative abundance",
+       y = "Total Number of replicates") 
+
+
+gg.prob_surface
+
+# Calculate metrics
+multimetric <- metric_set(accuracy, bal_accuracy, sens, yardstick::spec, precision, recall, ppv, npv)
+final_predictions_glm %>%
+  mutate(taxon = taxon %>%
+           str_replace("_", " ")) %>%
+  filter(taxon %in% c("Drosophila suzukii",
+                             "Drosophila subpulchrella",
+                             "Drosophila biarmipes")) %>%
+  group_by(taxon) %>%
+  multimetric(truth = outcome, estimate = .pred)
+
 pdf(file="fig/roc_curve.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.roc_curve)
 try(dev.off(), silent=TRUE)
 
 # Filter predicted switching
 keeptab <- final_predictions_glm %>%
-  dplyr::select(.pred_class, sample_id , otu) %>%
-  mutate(.pred_class = case_when(
-    .pred_class == "TP" ~ 1,
-    .pred_class == "FP" ~ 0
+  dplyr::select(.pred, sample_id , otu) %>%
+  mutate(.pred = case_when(
+    .pred == "TP" ~ 1,
+    .pred == "FP" ~ 0
   ))  %>%
   #mutate(across(where(is.factor), ~ as.character(.x))) %>%
   pivot_wider(names_from = otu,
-              values_from = .pred_class,
+              values_from = .pred,
               values_fill = 0) %>%
   dplyr::slice(match(rownames(otu_table(ps.merged)), sample_id)) %>%
   column_to_rownames("sample_id")%>%
@@ -2303,7 +2475,74 @@ message(nsamples(ps_model) - nsamples(ps2), " Samples and ", ntaxa(ps_model) - n
 
 ## Write out final phyloseq
 saveRDS(ps2, "output/rds/ps_filtered.rds")
+
+
+# Deteciton model figure - Potentially add the comparison of cleaning procedures as well.
+# Put all taxa back on the ROC Curve
+# Add a detection probability with expected relative abundance plot
+gg.roc_curve / gg.prob_surface + plot_annotation(tag_levels = "A") 
+
+
 ```
+
+# Index removal figure
+
+```{r}
+
+pred_boots <- readRDS(file="output/index_switch_bootstraps.rds")
+
+group.colors <- c(TP = "#abdda4", FP = "#d7191c", FN ="#2b83ba", TN ="#cccccc")
+
+gg.bias_resolved <- pred_boots %>%
+  filter(fcid=="HLVKYDMXX") %>%
+  group_by(est_type, outcome_post, fcid) %>%
+  summarise(count = n(), count_fp = sum(outcome_post == "FP")) %>%
+  group_by(est_type, fcid) %>%
+  mutate_at(vars(count), ~ . / sum(.) ) %>%
+  mutate(est_type = est_type %>%
+           str_replace("pred_logit$", "Logistic Reg") %>%
+           str_replace("pred_logit_reps$", "Logistic Reg + Reps") %>%
+           str_replace("pred_mock", "Mock Communities") %>%
+           str_replace("pred_naive", "0.01% Threshold") %>%
+           str_replace("pred_pos", "Positive control") %>%
+           str_replace("pred_uncorrected", "Uncorrected") %>%
+           str_replace("pred_index", "Unassigned indices")
+         ) %>%
+  mutate(fcid = case_when(
+    fcid == "HLVKYDMXX" ~ paste0("NovaSeq"," ", fcid),
+    TRUE ~ paste0("MiSeq"," ", fcid),
+  )) %>%
+  mutate(est_type = factor(est_type,
+                           levels= c(
+    "Logistic Reg + Reps",
+    "Logistic Reg",
+    "Mock Communities",
+    "Positive control",
+    "Unassigned indices",
+    "0.01% Threshold",
+    "Uncorrected"))) %>%
+  ggplot(aes(x=est_type, y=count, fill=outcome_post)) + 
+  geom_col(position="stack", alpha = 0.8) +
+  base_theme+
+  coord_flip()+
+  #facet_grid(~fcid) +
+  scale_y_continuous(labels = scales::percent)+ 
+  scale_fill_manual(values=group.colors) + 
+  theme(legend.position = "bottom") +
+  labs(y = NULL,
+       x = NULL,
+       fill = "Outcome")
+
+gg.detection_multi <- gg.bias_resolved - ( gg.roc_curve / gg.prob_surface) + plot_annotation(tag_levels = "A") 
+
+gg.detection_multi
+
+pdf(file="fig/Fig3_detection.pdf", width = 11, height = 8 , paper="a4r")
+  plot(gg.detection_multi)
+try(dev.off(), silent=TRUE)
+
+```
+
 
 # Reproducability Receipt
 

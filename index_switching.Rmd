@@ -14,13 +14,8 @@ editor_options:
 .cran_packages <- c("tidyverse",
                     "tidymodels",
                     "patchwork", 
-                    "vegan", 
-                    "seqinr",
-                    "ape", 
                     "RColorBrewer",
-                    "ggtree", 
-                    "castor", 
-                    "picante",
+                    "probably",
                     "devtools")
 .bioc_packages <- c("dada2",
                     "phyloseq", 
@@ -190,18 +185,6 @@ gg.syn <- ps %>%
 
 gg.syn
 
-
-test <- ps %>%
-  speedyseq::psmelt() %>%
-  mutate(Species = Species %>% str_replace("_", " ")) %>%
-  mutate(switched = case_when(
-    type=="POS" & Species %in% Syn_taxa  ~ "TP",
-    type=="POS" & !Species %in% Syn_taxa  ~ "FP",
-    !type=="POS" & Species %in% Syn_taxa  ~ "FP",
-    !type=="POS" & !Species %in% Syn_taxa  ~ "TP"
-  )) %>%
-  dplyr::select(Species, Abundance, switched, sample_id, type)
-
 # Calculate index switching from syns that are outside positive controls, and non-syns within the positive controls
 pos_switchrate <- ps %>%
   speedyseq::psmelt() %>%
@@ -221,7 +204,6 @@ pos_switchrate <- ps %>%
   
 pos_switchrate
 
-# NOTE some syn taxa are missing? where are they?
 ```
 
 # Estimate rate using known exp vs observed in mocks
@@ -229,8 +211,10 @@ pos_switchrate
 From the use of the mock community we can see that the majority cross contamination must have come from DNA extraction and prior processes. Therefore we will also get an estimate 
 
 ```{r switch mocks}
+ps <- readRDS("output/rds/ps_idtaxaExact.rds")
+
 # Subset to mocks
-ps_model <- ps2
+ps_model <- ps
 
 tax_table(ps_model)[,8] <- tax_table(ps_model)[,8] %>% str_replace(" ", "_")
 # Check Drosophila_suzukii in sample D500M1 - these are definitely misplaced and ruinign the modelling
@@ -374,23 +358,69 @@ it can be parameterized on:
 * Presence of taxa in high abundance in another sample on the run - Ie there needs to be a high abundance taxa somewhere else for the switching to come from, otherwise its probably real or lab contamination
 
 ```{r logistic regression}
+sam <- speedyseq::psmelt(ps_model) %>%
+  janitor::clean_names() %>%
+  mutate(taxon = species) %>%
+  filter(!str_detect(taxon, "__")) %>%
+  filter(fcid %in% c("CB3DR", "HLVKYDMXX"))  %>%
+  filter(abundance > 0) %>%
+  dplyr::select(otu, sample_name, extract_id, sample_id, taxon, pcr_primers,fcid, material_type = type, abundance) %>%
+  distinct() %>%
+  group_by(sample_name, otu, fcid) %>%
+  mutate(n_extract = case_when( # Need this to only count reps they were detected in!
+    abundance > 0 ~ extract_id,
+    TRUE ~ as.character(NA)
+  ),
+  n_rep = case_when(
+    abundance > 0 ~ sample_id,
+    TRUE ~ as.character(NA)
+  )) %>%
+  mutate(n_extract = n_distinct(n_extract, na.rm = TRUE), n_rep = n_distinct(n_rep, na.rm = TRUE))%>%
+  mutate(taxon = taxon %>% str_replace(" ", "_")) %>%
+  mutate(sample_name = sample_name %>%
+           str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
+           str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_"),
+         sample_id = paste0(fcid, "_", sample_name),
+         sample_name = sample_name %>%
+           str_remove("-ex[0-9]"))  %>%
+group_by(otu, sample_name,sample_id, taxon, pcr_primers, fcid, material_type, n_rep, n_extract) %>%
+  summarise(abundance = sum(abundance)) %>% 
+  ungroup()
+
 # Create model dataset
-mock_dat <- mocks %>%
+mock_dat <- sam %>%
+  filter(sample_name %in% exp$sample_name,
+         material_type =="DrosMock") %>%
+  left_join(exp, by = c("sample_name","taxon")) %>%
+  mutate(outcome = case_when(
+    abundance > 0 & is.na(expected) ~ 0, #False positive
+    abundance > 0 & !is.na(expected) ~ 1, # True positive
+    abundance == 0 & expected > 0 ~ 1, # False negative
+    abundance ==0 & is.na(expected) ~ 0 # True negative
+  )) %>%
+  filter(!is.na(outcome))%>%
   group_by(sample_id, pcr_primers, fcid) %>%
   dplyr::mutate(abundance_RA = abundance, 
                 abundance_clr = abundance) %>%
   mutate_at(vars(abundance_RA), ~ . / sum(.) ) %>%
   mutate_at(vars(abundance_clr ), ~metacal::clr(. + 0.5) ) %>%
   ungroup() %>%
-  dplyr::select(fcid, sample_id, sample_name, taxon, abundance, abundance_RA, abundance_clr, outcome, n_rep, n_extract) %>% 
-  filter(outcome %in% c("TP", "FP"))
+  dplyr::select(fcid, sample_id, sample_name, taxon, abundance, abundance_RA, abundance_clr, outcome, n_rep, n_extract) %>%
+  mutate(outcome = case_when(
+    outcome == 0 & abundance_RA > 0.01 ~ as.numeric(NA), #Deal with obvious misannotated expecteds
+    outcome == 1 & abundance == 0 ~ as.numeric(NA), #Deal with total dropouts
+    TRUE ~ outcome
+  )) %>%
+  filter(!is.na(outcome)) %>%
+  mutate(outcome = as.factor(outcome)) 
   
 # Check for difference in distribution
 gg.bias_sep <- mock_dat %>%
-  ggplot(aes(x = abundance_clr, fill = outcome)) +
+  ggplot(aes(x = abundance_clr, fill = as.factor(outcome))) +
   geom_histogram(position = "identity", alpha = 0.7) +
   #facet_grid(fcid, scales="free") + 
   base_theme+
+  scale_y_log10()+
   theme(legend.position = "right") + 
   labs(
     x = "log(Abundance)/gm. mean",
@@ -398,6 +428,7 @@ gg.bias_sep <- mock_dat %>%
     fill = "Outcome"
   )
 
+gg.bias_sep
 #Looks like there is enough separation to predict it
 
 # Look at overall numbers of events
@@ -427,25 +458,14 @@ switch_recipe <- recipe(outcome ~ abundance_clr + fcid, data = mock_train) %>%
   step_zv(all_predictors()) 
 
 # Define model
-glmnet_spec <- logistic_reg(penalty = tune(), mixture = tune()) %>% 
+glmnet_spec <- logistic_reg() %>% 
   set_mode("classification") %>% 
-  set_engine("glmnet") 
+  set_engine("glm") 
 
 # Create workflow
 glmnet_wf <- workflow() %>%
   add_recipe(switch_recipe) %>%
   add_model(glmnet_spec)
-
-glmnet_grid <- tidyr::crossing(penalty = 10^seq(-6, -1, length.out = 20), mixture = c(0.05, 
-    0.2, 0.4, 0.6, 0.8, 1)) 
-
-glmnet_tune <- 
-  tune_grid(glmnet_wf, resamples = mock_cv, grid = glmnet_grid) 
-
-autoplot(glmnet_tune)
-
-glmnet_wf <- glmnet_wf %>%
-  finalize_workflow(glmnet_tune %>% select_best("roc_auc" ))
 
 # Fit workflow
 logistic_glm <- glmnet_wf  %>%
@@ -494,9 +514,8 @@ multimetric(predictions_glm, truth = outcome, estimate = .pred_class)
 
 # Check for disagreements within mock
 test <- predictions_glm %>%
-  dplyr::select(.pred_class, abundance_clr, sample_id,  taxon, outcome)  %>%
+  dplyr::select(.pred_class, abundance_clr,abundance, sample_id,  taxon, outcome)  %>%
   mutate(diff = !.pred_class == outcome)
-
 
 # Make an ROC curve
 ## get probabilities on test set
@@ -505,8 +524,7 @@ predictions_prob <- logistic_glm %>%
   bind_cols(bake(prep(switch_recipe), new_data =  mock_test))
 
 # plot curve
-roc_data <- roc_curve(predictions_prob, truth = outcome, .pred_FP) 
-gg.roc_curve <- roc_data %>%  
+gg.roc_curve <- roc_curve(predictions_prob, truth = outcome, .pred_0) %>%
   ggplot(aes(x = 1 - specificity, y = sensitivity)) +
   geom_path() +
   geom_abline(lty = 3) + 
@@ -517,7 +535,8 @@ gg.roc_curve
 
 
 # Logistic + reps
-```{r}
+
+```{r logistic regression with replicates}
 # Create modelling recipe
 switch_recipe_reps <- recipe(outcome ~ abundance_clr + fcid + n_extract + n_rep, data = mock_train) %>%
   #update_role(sample_id, sample_name,fcid, taxon, new_role = "ID") %>%
@@ -526,25 +545,14 @@ switch_recipe_reps <- recipe(outcome ~ abundance_clr + fcid + n_extract + n_rep,
   step_zv(all_predictors()) 
 
 # Define model
-glmnet_spec <- logistic_reg(penalty = tune(), mixture = tune()) %>% 
+glmnet_spec <- logistic_reg() %>%  #penalty = tune(), mixture = tune()
   set_mode("classification") %>% 
-  set_engine("glmnet") 
+  set_engine("glm") 
 
 # Create workflow
 glmnet_reps_wf <- workflow() %>%
   add_recipe(switch_recipe_reps) %>%
   add_model(glmnet_spec)
-
-glmnet_grid <- tidyr::crossing(penalty = 10^seq(-6, -1, length.out = 20), mixture = c(0.05, 
-    0.2, 0.4, 0.6, 0.8, 1)) 
-
-glmnet_tune <- 
-  tune_grid(glmnet_reps_wf, resamples = mock_cv, grid = glmnet_grid) 
-
-autoplot(glmnet_tune)
-
-glmnet_reps_wf <- glmnet_reps_wf %>%
-  finalize_workflow(glmnet_tune %>% select_best("roc_auc" ))
 
 # Fit workflow
 logistic_glm_reps <- glmnet_reps_wf  %>%
@@ -603,8 +611,7 @@ predictions_prob <- logistic_glm_reps %>%
   bind_cols(bake(prep(switch_recipe), new_data =  mock_test))
 
 # plot curve
-roc_data <- roc_curve(predictions_prob, truth = outcome, .pred_FP) 
-gg.roc_curve <- roc_data %>%  
+gg.roc_curve <- roc_curve(predictions_prob, truth = outcome, .pred_0) %>%
   ggplot(aes(x = 1 - specificity, y = sensitivity)) +
   geom_path() +
   geom_abline(lty = 3) + 
@@ -617,7 +624,7 @@ gg.roc_curve
 
 ```{R comparison}
 # Fit model to bootstrap resamples
-boots <- bootstraps(mock_dat, times = 100, strata=fcid, apparent = TRUE)
+boots <- bootstraps(mock_dat, times = 1000, strata=outcome, apparent = TRUE)
 
 fit_boots <- boots %>%
   mutate(
@@ -627,10 +634,11 @@ fit_boots <- boots %>%
         assessment(x), 
         predict(fits, assessment(x))) %>%
       mutate(filtered = case_when(
-                       .pred_class == "TP" ~ abundance_RA,
-                       .pred_class == "FP" ~ 0)
+                       .pred_class == 1 ~ abundance_RA,
+                       .pred_class == 0 ~ 0)
                      ) %>%
-        dplyr::select(fcid, sample_id, sample_name, taxon, abundance_RA, outcome, filtered)
+        dplyr::select(fcid, sample_id, sample_name, taxon ,abundance,
+                      abundance_RA, abundance_clr, outcome, filtered)
     }),
     pred_logit_reps = purrr::map(splits, function(x){
       fits <- fit(glmnet_reps_wf, analysis(x))
@@ -638,11 +646,12 @@ fit_boots <- boots %>%
         assessment(x), 
         predict(fits, assessment(x))) %>%
       mutate(filtered = case_when(
-                       .pred_class == "TP" ~ abundance_RA,
-                       .pred_class == "FP" ~ 0)
+                       .pred_class == 1 ~ abundance_RA,
+                       .pred_class == 0 ~ 0)
                      ) %>%
-        dplyr::select(fcid, sample_id, sample_name, taxon, abundance_RA, outcome, filtered)
-    }),
+        dplyr::select(fcid, sample_id, sample_name, taxon ,abundance, 
+                      abundance_RA, abundance_clr, outcome, filtered)
+      }),
     pred_pos = purrr::map(splits, function(x){
       assessment(x) %>%
         left_join(
@@ -650,7 +659,7 @@ fit_boots <- boots %>%
           dplyr::select(fcid, estimate = switchrate) 
         ) %>%
         mutate(filtered = abundance_RA - estimate)%>%
-        dplyr::select(fcid, sample_id, sample_name, taxon, abundance_RA, outcome, filtered)
+        dplyr::select(fcid, sample_id, sample_name, taxon ,abundance, abundance_RA, outcome, filtered)
     }),
     pred_mock = purrr::map(splits, function(x){
       assessment(x) %>%
@@ -659,19 +668,21 @@ fit_boots <- boots %>%
           dplyr::select(fcid, estimate = switchrate) 
         ) %>%
         mutate(filtered = abundance_RA - estimate)%>%
-        dplyr::select(fcid, sample_id, sample_name, taxon, abundance_RA, outcome, filtered)
+        dplyr::select(fcid, sample_id, sample_name, taxon ,abundance, abundance_RA, outcome, filtered)
     }),
     pred_naive = purrr::map(splits, function(x){
       assessment(x) %>%
-        mutate(estimate = 0.0001) %>%
+        mutate(estimate = 0.001) %>%
         mutate(filtered = abundance_RA - estimate)%>%
-        dplyr::select(fcid, sample_id, sample_name, taxon, abundance_RA, outcome, filtered)
-    }),
+        dplyr::select(fcid, sample_id, sample_name, taxon ,abundance,
+                      abundance_RA, abundance_clr, outcome, filtered)
+      }),
     pred_uncorrected = purrr::map(splits, function(x){
       assessment(x) %>%
         mutate(filtered = abundance_RA)%>%
-        dplyr::select(fcid, sample_id, sample_name, taxon, abundance_RA, outcome, filtered)
-    }),
+        dplyr::select(fcid, sample_id, sample_name, taxon ,abundance,
+                      abundance_RA, abundance_clr, outcome, filtered)
+      }),
     pred_index = purrr::map(splits, function(x){
       assessment(x) %>%
         left_join(
@@ -679,8 +690,9 @@ fit_boots <- boots %>%
           dplyr::select(fcid, estimate = switchrate) 
         ) %>%
         mutate(filtered = abundance_RA - estimate)%>%
-        dplyr::select(fcid, sample_id, sample_name, taxon, abundance_RA, outcome, filtered)
-    })
+        dplyr::select(fcid, sample_id, sample_name, taxon ,abundance,
+                      abundance_RA, abundance_clr, outcome, filtered)
+      })
   )
 
 pred_boots <- fit_boots %>%
@@ -689,14 +701,16 @@ pred_boots <- fit_boots %>%
                values_to = "estimate") %>%
   unnest(estimate) %>%
   left_join(exp) %>%
+  dplyr::select(-where(~is.list(.x))) %>%
   mutate(outcome_post= case_when(
     filtered > 0 & is.na(expected) ~ "FP",
     filtered > 0 & !is.na(expected) ~ "TP",
     filtered <= 0 & expected > 0 ~ "FN",
-    filtered <= 0 & is.na(expected) ~ "TP"
-  ))   %>%
-  dplyr::select(-where(~is.list(.x)))
+    filtered <= 0 & is.na(expected) ~ as.character(NA)
+  )) %>%
+  filter(!is.na(outcome_post))
 
+saveRDS(pred_boots, file="output/index_switch_bootstraps.rds")
 
 group.colors <- c(TP = "#abdda4", FP = "#d7191c", FN ="#2b83ba", TN ="#cccccc")
 
@@ -746,7 +760,7 @@ gg.bias_resolved
 
 # Write out figures
 
-```{R}
+```{R save figures}
 pdf(file="fig/switching.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.switch)
   plot(gg.assignments)
