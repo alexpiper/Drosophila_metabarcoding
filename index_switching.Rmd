@@ -400,10 +400,11 @@ mock_dat <- sam %>%
   )) %>%
   filter(!is.na(outcome))%>%
   group_by(sample_id, pcr_primers, fcid) %>%
-  dplyr::mutate(abundance_RA = abundance, 
-                abundance_clr = abundance) %>%
+  dplyr::mutate(abundance_RA = abundance) %>%
+  #mutate(abundance_RA = abundance_RA + 0.5) %>% # Add pseudocount
   mutate_at(vars(abundance_RA), ~ . / sum(.) ) %>%
-  mutate_at(vars(abundance_clr ), ~metacal::clr(. + 0.5) ) %>%
+  mutate(abundance_clr = abundance_RA) %>%
+  mutate_at(vars(abundance_clr ), ~seqateurs::clr(.) ) %>%
   ungroup() %>%
   dplyr::select(fcid, sample_id, sample_name, taxon, abundance, abundance_RA, abundance_clr, outcome, n_rep, n_extract) %>%
   mutate(outcome = case_when(
@@ -414,16 +415,17 @@ mock_dat <- sam %>%
   filter(!is.na(outcome)) %>%
   mutate(outcome = as.factor(outcome)) 
   
+
 # Check for difference in distribution
 gg.bias_sep <- mock_dat %>%
-  ggplot(aes(x = abundance_clr, fill = as.factor(outcome))) +
+  ggplot(aes(x = abundance_RA, fill = as.factor(outcome))) +
   geom_histogram(position = "identity", alpha = 0.7) +
   #facet_grid(fcid, scales="free") + 
   base_theme+
-  scale_y_log10()+
+  scale_x_log10()+
   theme(legend.position = "right") + 
   labs(
-    x = "log(Abundance)/gm. mean",
+    x = "log(Abundance)",
     y = "Number of occurances",
     fill = "Outcome"
   )
@@ -448,27 +450,28 @@ mock_train <- training(mock_split)
 mock_test <- testing(mock_split)
 
 # Cross validations
-mock_cv <- vfold_cv(mock_train, v = 10)
+mock_cv <- vfold_cv(mock_train, strata = fcid, v = 10)
 
 # Create modelling recipe
-switch_recipe <- recipe(outcome ~ abundance_clr + fcid, data = mock_train) %>%
+switch_recipe <- recipe(outcome ~ abundance_RA + fcid, data = mock_train) %>%
   #update_role(sample_id, sample_name,fcid, taxon, new_role = "ID") %>%
   step_novel(all_nominal(), -all_outcomes()) %>% 
-  step_dummy(fcid) %>% 
-  step_zv(all_predictors()) 
+  step_dummy(fcid, one_hot = FALSE) %>% 
+  step_zv(all_predictors()) %>%
+  step_normalize(abundance_RA)
 
 # Define model
-glmnet_spec <- logistic_reg() %>% 
+glm_spec <- logistic_reg() %>% 
   set_mode("classification") %>% 
   set_engine("glm") 
 
 # Create workflow
-glmnet_wf <- workflow() %>%
+glm_wf <- workflow() %>%
   add_recipe(switch_recipe) %>%
-  add_model(glmnet_spec)
+  add_model(glm_spec)
 
 # Fit workflow
-logistic_glm <- glmnet_wf  %>%
+logistic_glm <- glm_wf  %>%
   fit(mock_train)
 
 # See how it went on the trainigng dataset
@@ -538,24 +541,25 @@ gg.roc_curve
 
 ```{r logistic regression with replicates}
 # Create modelling recipe
-switch_recipe_reps <- recipe(outcome ~ abundance_clr + fcid + n_extract + n_rep, data = mock_train) %>%
+switch_recipe_reps <- recipe(outcome ~ abundance_RA + fcid + n_extract + n_rep, data = mock_train) %>%
   #update_role(sample_id, sample_name,fcid, taxon, new_role = "ID") %>%
   step_novel(all_nominal(), -all_outcomes()) %>% 
   step_dummy(fcid) %>% 
-  step_zv(all_predictors()) 
+  step_zv(all_predictors()) %>%
+  step_normalize(abundance_RA)
 
 # Define model
-glmnet_spec <- logistic_reg() %>%  #penalty = tune(), mixture = tune()
+glm_spec <- logistic_reg() %>%  #penalty = tune(), mixture = tune()
   set_mode("classification") %>% 
   set_engine("glm") 
 
 # Create workflow
-glmnet_reps_wf <- workflow() %>%
+glm_reps_wf <- workflow() %>%
   add_recipe(switch_recipe_reps) %>%
-  add_model(glmnet_spec)
+  add_model(glm_spec)
 
 # Fit workflow
-logistic_glm_reps <- glmnet_reps_wf  %>%
+logistic_glm_reps <- glm_reps_wf  %>%
   fit(mock_train)
 
 # See how it went on the trainigng dataset
@@ -629,7 +633,7 @@ boots <- bootstraps(mock_dat, times = 1000, strata=outcome, apparent = TRUE)
 fit_boots <- boots %>%
   mutate(
     pred_logit = purrr::map(splits, function(x){
-      fits <- fit(glmnet_wf, analysis(x))
+      fits <- fit(glm_wf, analysis(x))
       bind_cols(
         assessment(x), 
         predict(fits, assessment(x))) %>%
@@ -641,7 +645,7 @@ fit_boots <- boots %>%
                       abundance_RA, abundance_clr, outcome, filtered)
     }),
     pred_logit_reps = purrr::map(splits, function(x){
-      fits <- fit(glmnet_reps_wf, analysis(x))
+      fits <- fit(glm_reps_wf, analysis(x))
       bind_cols(
         assessment(x), 
         predict(fits, assessment(x))) %>%
@@ -761,7 +765,7 @@ gg.bias_resolved
 # Write out figures
 
 ```{R save figures}
-pdf(file="fig/switching.pdf", width = 11, height = 8 , paper="a4r")
+pdf(file="fig/supplementary/switching.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.switch)
   plot(gg.assignments)
   plot(gg.bias_sep)
