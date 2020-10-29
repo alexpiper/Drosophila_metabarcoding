@@ -35,7 +35,9 @@ Part 3 - Comparison
                     "picante",
                     "phytools",
                     "ggrepel",
-                    "devtools")
+                    "devtools",
+                    "ggnewscale",
+                    "ggpubr")
 .bioc_packages <- c("dada2",
                     "phyloseq", 
                     "ggtree",
@@ -123,12 +125,12 @@ exp_samples <- read_csv("data/HLVKYDMXX/SampleSheet.csv", skip = 19) %>%
   
   
 # Heatmap of abundance of pcr replicates
-gg.repmap <- exp_samples %>%
+rep_data <- exp_samples %>%
   left_join(ps1 %>% 
   speedyseq::psmelt() %>%
     filter(fcid=="HLVKYDMXX", Abundance > 0) %>%
     group_by(sample_name, extract_id, sample_id, amp_rep, fcid) %>%
-    summarise(Abundance = sum(Abundance)) %>%
+    summarise(Abundance = sum(Abundance), n_spp = n_distinct(Species)) %>%
     ungroup()) %>%
   filter(!str_detect(sample_name, "_DM1$|_DM2$|_DM3$|_DM4$|_DM5$")) %>%
   mutate(extrep = extract_id %>% str_extract("ex.*$")) %>%
@@ -142,23 +144,140 @@ gg.repmap <- exp_samples %>%
            str_replace("^D5","D05")) %>%
   #filter(!(extrep=="ex1" & amp_rep == 2)) %>%
   mutate(amp_rep = factor(amp_rep)) %>%
-  mutate(extrep = extrep %>% str_replace("ex", "Extraction Rep "))%>%
-   ggplot(aes(x = amp_rep, y = sample_name, fill = log10(Abundance))) +
+  mutate(extrep = extrep %>% str_replace("ex", "Extraction Rep "))
+
+# Summarise of replicate success
+rep_data %>%
+  ungroup() %>%
+  mutate(success = case_when(
+    Abundance > 0 ~ TRUE,
+    Abundance == 0 | is.na(Abundance) ~ FALSE
+  )) %>%
+  group_by(type) %>%
+  summarise(sum=sum(success), total = n()) %>%
+  mutate(proportion = sum / total)
+
+# Summary of sample success
+rep_data %>%
+  ungroup() %>%
+  group_by(sample_name, type) %>%
+  summarise(Abundance = sum(Abundance, na.rm = TRUE))%>%
+  ungroup() %>%
+  mutate(success = case_when(
+    Abundance > 0 ~ TRUE,
+    Abundance == 0 | is.na(Abundance) ~ FALSE
+  )) %>%
+  group_by(type) %>%
+  summarise(sum=sum(success), total = n()) %>%
+  mutate(proportion = sum / total)
+
+
+gg.repmap <- rep_data %>%
+   ggplot(aes(x = amp_rep, y = sample_name, fill = n_spp)) +
   geom_tile()+
   scale_fill_viridis_c()+
   facet_grid(extrep~type, scales="free", space="free", drop=TRUE)+
   base_theme+
+  scale_x_discrete(expand=c(0,0))+
+  scale_y_discrete(expand=c(0,0))+
   coord_flip()+
-  theme(legend.position = "right")+
+  theme(axis.text.x = element_blank(),
+        legend.position = "top")+
   labs(x = "PCR Replicate",
-       y = "Sample",
-       fill = "Total Reads\n(Log10)")
+       y = NULL,
+       fill = "N Species")
 
 gg.repmap
+
+# Get mean pairwise distance within all replicates in a sample, or number of taxa detected?
+rep_distance <- ps1 %>%
+  subset_samples(fcid=="HLVKYDMXX") %>%
+  speedyseq::tax_glom(taxrank = "Species") %>%
+  otu_table() %>%
+  as("matrix") %>%
+  as_tibble(rownames = "sample_id") %>%
+  #filter(!str_detect(sample_id, "BLANK|SynMock|POS")) %>%
+  left_join(sample_data(ps1) %>%
+              as("data.frame") %>%
+              as_tibble()%>%
+              dplyr::filter(fcid=="HLVKYDMXX") %>%
+              dplyr::select(sample_name, sample_id)  %>%
+              distinct()) %>%
+  group_by(sample_name) %>%
+  add_tally() %>%
+  filter(n > 1) %>%
+  dplyr::select(-n) %>%
+  #filter(str_detect(sample_id, "POS")) %>%
+  #group_split()
+  group_modify(~ {
+      .x %>% 
+        column_to_rownames("sample_id")%>%
+        dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "type", "fcid"))) %>%
+        dplyr::select(where(~ !(sum(.)==0))) %>%
+        as.matrix() %>%
+        vegdist(method="jac", binary = TRUE) %>%
+        as.matrix() %>%
+        as_tibble(rownames="sample_1") %>%
+        pivot_longer(-sample_1,
+                     names_to = "sample_2",
+                     values_to = "dist")%>%
+        dplyr::filter(dist > 0)
+    })
+
+gg.repjac <- rep_distance %>%
+  mutate(sample_name = sample_name %>%
+           str_remove("HLVKYDMXX_") %>%
+           str_replace("^D2","D02") %>%
+           str_replace("^D5","D05")) %>%
+  right_join(rep_data %>% dplyr::select(sample_name, type) %>% distinct()) %>%
+  mutate(type = type %>%
+           factor(levels=c("POS", "Adult Mock", "Larval Mock","FF","SPD", "DC", "ACV"))) %>%
+  #filter(!is.na(type)) %>%
+  ggplot(aes(x = sample_name, y = 1-dist, colour=1-dist))+
+  geom_boxplot(outlier.color = NA)  +
+  geom_point(alpha=0.5, position= position_jitter(width=0.2))+
+  scale_colour_viridis_c( )+
+  coord_cartesian(ylim = c(0,1))+
+  scale_y_continuous(labels = scales::percent)+
+  base_theme+
+  theme(strip.text.x = element_blank())+
+  labs(x = "Sample",
+       y = "Pairwise Jaccard similarity")+
+  facet_grid(.~type, scales="free", space="free", drop=TRUE)
+
+# pairwise distance as function of pairwise difference in sequencing depth
+gg.jacpw <- rep_distance %>%
+  mutate(sample_name = sample_name %>%
+           str_remove("HLVKYDMXX_") %>%
+           str_replace("^D2","D02") %>%
+           str_replace("^D5","D05")) %>%
+  left_join(rep_data %>%
+               dplyr::select(sample_1 = sample_id, abundance_1 = Abundance) %>%
+               distinct()) %>%
+  left_join(rep_data %>%
+               dplyr::select(sample_2 = sample_id, abundance_2 = Abundance) %>%
+               distinct()) %>%
+  mutate(diff_abund = abs(abundance_2 -abundance_1)) %>%
+  ggplot(aes(x = diff_abund, y = 1-dist, colour=1-dist)) +
+  geom_point(alpha=0.2) +
+  geom_smooth(method="lm") +
+  stat_cor(label.y = 0.95, label.x = 10,size=3,
+           aes(label = paste(..rr.label.., ..p.label.., sep = "~`,`~"))) +
+  scale_y_continuous(labels = scales::percent, position="right")+
+  scale_x_continuous(labels = scales::label_number_si())+
+  scale_colour_viridis_c( )+
+  base_theme +
+  labs(x = "Pairwise difference in seq depth",
+       y = "Pairwise Jaccard Similarity")+
+  coord_cartesian(ylim = c(0,1))
+  
+
+gg.jacpw
 
 # Mean pairwise distance between pcr replicates within extraction
 mpd_pcr <- ps1 %>%
   subset_samples(fcid=="HLVKYDMXX") %>%
+  speedyseq::tax_glom(taxrank = "Species") %>%
   otu_table() %>%
   as("matrix") %>%
   as_tibble(rownames = "sample_id") %>%
@@ -172,9 +291,11 @@ mpd_pcr <- ps1 %>%
   group_by(sample_name, extract_id) %>%
   add_tally()  %>%
   filter(n > 1) %>%
+  dplyr::select(-n) %>%
   group_modify(~ {
       .x %>% 
         dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "fcid"))) %>%
+        dplyr::select(where(~ !(sum(.)==0))) %>%
         as.matrix() %>%
         vegdist(method="jac", binary = TRUE) %>%
         as.matrix() %>%
@@ -190,6 +311,7 @@ mpd_pcr <- ps1 %>%
 mpd_extraction <- ps1 %>%
   subset_samples(fcid=="HLVKYDMXX") %>%
   merge_samples(group = "extract_id", fun="sum") %>%
+  speedyseq::tax_glom(taxrank = "Species") %>%
   otu_table() %>%
   as("matrix") %>%
   as_tibble(rownames = "extract_id") %>%
@@ -203,9 +325,11 @@ mpd_extraction <- ps1 %>%
   group_by(sample_name) %>%
   add_tally() %>%
   filter(n > 1) %>%
+  dplyr::select(-n) %>%
   group_modify(~ {
       .x %>% 
         dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "type", "fcid"))) %>%
+        dplyr::select(where(~ !(sum(.)==0))) %>%
         as.matrix() %>%
         vegdist(method="jac", binary = TRUE) %>%
         as.matrix() %>%
@@ -222,6 +346,7 @@ mpd_extraction <- ps1 %>%
 mpd_traps <- ps1 %>%
   subset_samples(fcid=="HLVKYDMXX") %>%
   merge_samples(group = "sample_name", fun="sum") %>%
+  speedyseq::tax_glom(taxrank = "Species") %>%
   otu_table() %>%
   as("matrix") %>%  
   as_tibble(rownames = "sample_name") %>%
@@ -235,9 +360,11 @@ mpd_traps <- ps1 %>%
   group_by(type) %>%
   add_tally() %>%
   filter(n > 1) %>%
+  dplyr::select(-n) %>%
   group_modify(~ {
       .x %>% 
         dplyr::select(-any_of(c("sample_id", "sample_name", "extract_id", "type", "fcid"))) %>%
+        dplyr::select(where(~ !(sum(.)==0))) %>%
         as.matrix() %>%
         vegdist(method="jac", binary = TRUE) %>%
         as.matrix() %>%
@@ -247,73 +374,88 @@ mpd_traps <- ps1 %>%
                      values_to = "dist")%>%
         dplyr::filter(dist > 0)  %>%
         summarise(dist = mean(dist), n = n_distinct(sample)) 
-    })
+    }) %>%
+  mutate(enviro = type)
 
 # Mean pairwise distance within orchard
-mpd_orchard <- ps1 %>%
-  subset_samples(fcid=="HLVKYDMXX") %>%
-  merge_samples(group = "sample_name", fun="sum") %>%
-  otu_table() %>%
-  as("matrix") %>%  
-  as_tibble(rownames = "sample_name") %>%
-  filter(!str_detect(sample_name, "BLANK|SynMock|POS")) %>%
-  left_join(sample_data(ps1) %>%
-              as("data.frame") %>%
-              as_tibble()%>%
-              dplyr::filter(fcid=="HLVKYDMXX") %>%
-              mutate(enviro = case_when(
-                str_detect(sample_name,"_T") ~ "Cherries",
-                str_detect(sample_name, "_M") ~ "Stonefruit",
-                str_detect(sample_name, "_D") ~ "Mock")) %>%
-              dplyr::select(sample_name, enviro, type)  %>%
-              distinct()) %>%
-  group_by(enviro) %>%
-  add_tally() %>%
-  filter(n > 1) %>%
-  group_modify(~ {
-      .x %>% 
-        dplyr::select(-any_of(c("sample_id", "sample_name", 
-                                "extract_id", "type", "fcid", "enviro"))) %>%
-        as.matrix() %>%
-        vegdist(method="jac", binary = TRUE) %>%
-        as.matrix() %>%
-        as_tibble()%>%
-        pivot_longer(everything(),
-                     names_to = "sample",
-                     values_to = "dist")%>%
-        dplyr::filter(dist > 0)  %>%
-        summarise(dist = mean(dist), n = n_distinct(sample)) 
-    })
-
+#mpd_orchard <- ps1 %>%
+#  subset_samples(fcid=="HLVKYDMXX") %>%
+#  merge_samples(group = "sample_name", fun="sum") %>%
+#  speedyseq::tax_glom(taxrank = "Species") %>%
+#  otu_table() %>%
+#  as("matrix") %>%  
+#  as_tibble(rownames = "sample_name") %>%
+#  filter(!str_detect(sample_name, "BLANK|SynMock|POS")) %>%
+#  left_join(sample_data(ps1) %>%
+#              as("data.frame") %>%
+#              as_tibble()%>%
+#              dplyr::filter(fcid=="HLVKYDMXX") %>%
+#              mutate(enviro = case_when(
+#                str_detect(sample_name,"_T") ~ "Cherries",
+#                str_detect(sample_name, "_M") ~ "Stonefruit",
+#                str_detect(sample_name, "_D") ~ "Mock")) %>%
+#              dplyr::select(sample_name, enviro, type)  %>%
+#              distinct()) %>%
+#  group_by(enviro) %>%
+#  add_tally() %>%
+#  filter(n > 1) %>%
+#  dplyr::select(-n) %>%
+#  group_modify(~ {
+#      .x %>% 
+#        dplyr::select(-any_of(c("sample_id", "sample_name", 
+#                                "extract_id", "type", "fcid", "enviro"))) %>%
+#      dplyr::select(where(~ !(sum(.)==0))) %>%
+#        as.matrix() %>%
+#        vegdist(method="jac", binary = TRUE) %>%
+#        as.matrix() %>%
+#        as_tibble()%>%
+#        pivot_longer(everything(),
+#                     names_to = "sample",
+#                     values_to = "dist")%>%
+#        dplyr::filter(dist > 0)  %>%
+#        summarise(dist = mean(dist), n = n_distinct(sample)) 
+#    })
+#
 # Plot together:
 gg.mpd <- do.call("list", mget(grep("mpd_",names(.GlobalEnv),value=TRUE))) %>%
   bind_rows(.id="type") %>%
   ungroup %>%
-  dplyr::select(type, dist) %>%
+  dplyr::select(sample_name, type, dist, enviro) %>%
   mutate(type = type %>% 
            str_remove("^.+_") %>%
            str_replace("orchard", "Location") %>%
-           str_replace("traps", "Sampling method") %>%
+           str_replace("traps", "Biological reps") %>%
            str_replace("extraction", "Extraction reps") %>%
            str_replace("pcr", "PCR reps") %>%
-           factor(levels = c("PCR reps", "Extraction reps", "Sampling method", "Location"))
+           factor(levels = c("PCR reps", "Extraction reps", "Biological reps", "Location"))
          ) %>%
-  ggplot(aes(x = type, y = dist, fill=type, colour=type)) + 
-  geom_boxplot(alpha=0.5, colour="black") +
-  geom_point(position=position_jitter(width = 0.2),size=2,alpha=0.8, shape=21, colour="black")+
+  mutate(Community = case_when(
+    str_detect(sample_name, "_D[0-9]|_DM|_DL") ~ "Mock",
+    enviro %in% c("Mock", "DrosLarv", "DrosMock") ~ "Mock",
+    TRUE ~ "Trap"
+  )) %>%
+  ggplot(aes(x = type, y = 1-dist, fill=Community)) + 
+  geom_point(position=position_jitter(width = 0.1),size=2, shape=21, alpha=0.8, colour="black")+
+  geom_boxplot(alpha=0.3, colour="black", fill=NA, outlier.colour = NA, show.legend = FALSE) +
   base_theme + 
-  coord_flip(ylim=c(0,1))+
+  theme(legend.position = "top")+
+  coord_cartesian(ylim=c(0,1))+
+  scale_y_continuous(labels = scales::percent, position = "right")+
+  scale_x_discrete(position = "top")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 0, vjust=0))+
+  #coord_flip(ylim=c(0,1))+
   scale_fill_viridis_d()+
   scale_colour_viridis_d()+
-  #scale_fill_brewer(palette= "Paired") +
-  #scale_colour_brewer(palette= "Paired") +
-  labs(x = "Type",
-       y = "Jaccard dissimilarity")
+  #scale_colour_brewer(palette= "Set1") +
+  labs(x = NULL,
+       y = "Mean Pairwise Jaccard similarity")
 
 gg.mpd 
 
 # Replicate figure
-gg.rep_multifig <- gg.repmap / gg.mpd + plot_layout(heights = c(2,1)) + plot_annotation(tag_levels = "A")
+gg.repfiga <- gg.repmap / gg.repjac + plot_layout(heights = c(2,1))
+gg.repfigb <- gg.mpd / gg.jacpw  + plot_layout(heights = c(2,1))
+gg.rep_multifig <-  gg.repfiga - gg.repfigb + plot_layout(widths = c(5,1)) + plot_annotation(tag_levels = "A") 
 gg.rep_multifig
 
 pdf(file="fig/Fig2_replicates.pdf", width = 11, height = 8 , paper="a4r")
@@ -359,6 +501,19 @@ ps_model <- ps_model %>%
   speedyseq::tax_glom(taxrank = "Species") %>%
   subset_samples(fcid %in% c("CB3DR", "HLVKYDMXX")) %>%
   filter_taxa( function(x) mean(x) > 0, TRUE) 
+sample_data(ps_model)$sample_name <- sample_data(ps_model)$sample_name  %>%
+  str_replace("DM1", "D100M1") %>%
+  str_replace("DM2", "D100M2") %>%
+  str_replace("DM3", "D100M3") %>%
+  str_replace("DM4", "D100M4") %>%
+  str_replace("DM5", "D100M5")
+
+sample_data(ps_model)$sample_id <- sample_data(ps_model)$sample_id  %>%
+  str_replace("DM1", "D100M1") %>%
+  str_replace("DM2", "D100M2") %>%
+  str_replace("DM3", "D100M3") %>%
+  str_replace("DM4", "D100M4") %>%
+  str_replace("DM5", "D100M5")
 
 exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
   dplyr::rename(sample_name = Sample) %>%
@@ -402,10 +557,15 @@ sam <- speedyseq::psmelt(ps_model) %>%
   janitor::clean_names() %>%
   mutate(taxon = species) %>%
   filter(fcid %in% c("CB3DR", "HLVKYDMXX"))  %>%
-  #filter(!str_detect(taxon, "__")) %>%
-  #filter(pcr_primers == "fwhF2-fwhR2n") %>%
-  #filter(abundance > 0) %>%
-  dplyr::select(otu, sample_name, extract_id, sample_id, taxon, pcr_primers,fcid, material_type = type, abundance) %>%
+  group_by(sample_id,fcid, pcr_primers)  %>%
+  dplyr::mutate(abundance_RA = abundance, total_seq = sum(abundance)) %>%
+  #mutate(abundance_RA = abundance_RA + 0.5) %>% # Add pseudocount
+  mutate_at(vars(abundance_RA), ~ . / sum(.) ) %>%
+  group_by(sample_id, fcid, pcr_primers)  %>%
+  mutate(abundance_clr = abundance_RA) %>%
+  mutate_at(vars(abundance_clr ), ~metacal::clr(.) ) %>%
+  ungroup() %>%
+  dplyr::select(otu, sample_name, extract_id, sample_id, taxon, pcr_primers,fcid, material_type = type, abundance, abundance_RA, abundance_clr,total_seq) %>%
   distinct() %>%
   group_by(sample_name, otu, fcid) %>%
   mutate(n_extract = case_when( # Need this to only count reps they were detected in!
@@ -423,7 +583,7 @@ sam <- speedyseq::psmelt(ps_model) %>%
          str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
          str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_")) %>%
   group_by(otu, sample_name, sample_id, taxon, pcr_primers, fcid, material_type, n_rep, n_extract) %>%
-  summarise(abundance = sum(abundance)) %>% 
+  summarise(abundance = sum(abundance), abundance_RA = mean(abundance_RA), abundance_clr = mean(abundance_clr), total_seq = sum(total_seq)) %>%   # I should be taking the mean of the relative abundance
   ungroup() %>%
   left_join(div_table)
 
@@ -441,19 +601,11 @@ model_df <- sam %>%
               dplyr::select(sample_name, total_abund) %>%
               distinct(), by="sample_name") %>%
   mutate(outcome = case_when(
-    abundance > 0 & is.na(expected) & type== "train" ~ 0, #False positive
-    abundance > 0 & !is.na(expected) & type== "train" ~ 1, # True positive
-    abundance == 0 & expected > 0 & type== "train" ~ 1, # False negative
-    abundance ==0 & is.na(expected) & type== "train" ~ 0 # True negative
+    abundance > 0 & is.na(expected) & type== "train" ~ 0, #False positive - only count for mocks
+    abundance > 0 & !is.na(expected) ~ 1, # True positive
+    abundance == 0 & expected > 0 ~ 1, # False negative
+    abundance ==0 & is.na(expected) & type== "train" ~ 0 # True negative - only count for mocks
   )) %>%
-  group_by(sample_id,fcid, pcr_primers)  %>%
-  dplyr::mutate(abundance_RA = abundance, total_seq = sum(abundance)) %>%
-  #mutate(abundance_RA = abundance_RA + 0.5) %>% # Add pseudocount
-  mutate_at(vars(abundance_RA), ~ . / sum(.) ) %>%
-  group_by(sample_id, fcid, pcr_primers)  %>%
-  mutate(abundance_clr = abundance_RA) %>%
-  mutate_at(vars(abundance_clr ), ~metacal::clr(.) ) %>%
-  ungroup() %>%
   dplyr::select(fcid, sample_id, sample_name, otu, taxon, abundance, abundance_clr, abundance_RA,pcr_primers, outcome, n_extract, n_rep, alpha, pd, Shannon, total_seq, total_abund, expected, expected_RA) %>%
   mutate(outcome_all = outcome) %>%
   mutate(outcome = case_when(
@@ -726,8 +878,8 @@ final_logistic_glm <- glmnet_wf  %>%
 final_predictions_glm <- final_logistic_glm %>%
   predict(new_data = model_df, type="prob") %>%
   bind_cols(model_df) %>%
-  mutate(outcome = factor(outcome, levels = c("0", "1"))) %>%
-  mutate(.pred = factor(make_two_class_pred(.pred_0, levels(outcome), threshold = .5)))%>%
+  mutate(outcome = factor(outcome, levels = c("1", "0"))) %>%
+  mutate(.pred = factor(make_two_class_pred(.pred_1, levels(outcome), threshold = .5)))%>%
   mutate(diff = !.pred == outcome_all, diff2=!outcome == outcome_all)
 
 taxon_roc <- final_predictions_glm %>%
@@ -775,19 +927,24 @@ gg.roc_curve <- taxon_roc %>%
   ggplot(aes(x = 1 - specificity, y = sensitivity, colour= taxon)) +
   geom_path(size=1, position=position_dodge(width=0.03), alpha=0.8) +
   geom_abline(lty = 3) + 
-  #facet_wrap(~taxon, ncol = 4) +
+  facet_wrap(~taxon, ncol = 4) +
   coord_equal() +
   scale_color_brewer(palette="Paired")+
   scale_x_continuous(labels = scales::percent) +
   scale_y_continuous(labels = scales::percent) +
   base_theme+
   theme(legend.text = element_text(face="italic"),
-        legend.position = "right")+
+        legend.position = "none")+
   labs(colour = "Taxon",
        x = "1 - Specificity",
        y = "Sensitivity")
 
 gg.roc_curve
+
+pdf(file="fig/supplementary/roc_curve.pdf", width = 11, height = 8 , paper="a4r")
+  plot(gg.roc_curve)
+try(dev.off(), silent=TRUE)
+
 
 final_predictions_glm %>%
     filter(pcr_primers =="fwhF2-fwhR2n") %>%
@@ -815,7 +972,7 @@ final_predictions_glm %>%
 newdat <- tidyr::crossing(
   abundance_RA= seq(0, 0.001,len=1000),
   #abundance_clr= seq(min(final_predictions_glm$abundance_clr),                                          max(final_predictions_glm$abundance_clr),len=1000),
-  n_rep = seq(0, 7,1),
+  n_rep = seq(0, 7.5,1),
   n_extract = seq(1, 2, 1),
   fcid = unique(final_predictions_glm$fcid),
   pcr_primers = unique(final_predictions_glm$pcr_primers),
@@ -823,10 +980,9 @@ newdat <- tidyr::crossing(
 # mutate(abundance_clr = seqateurs::clr(abundance_RA))
 # How to get htis into somethign reversable
 
-library(ggnewscale)
 gg.prob_surface <- bind_cols(newdat, final_logistic_glm %>%
   predict(new_data = newdat, type="prob")) %>%
-  mutate(.pred = factor(make_two_class_pred(.pred_1, c("0","1"), threshold = .5))) %>%
+  mutate(.pred = factor(make_two_class_pred(.pred_1, c("0", "1"), threshold = .5)))%>%
   filter(fcid == "HLVKYDMXX") %>%
   #mutate(abundance_RA = exp(abundance_clr)) %>%
   ggplot(aes(x = abundance_RA, y = n_rep))+
@@ -838,34 +994,109 @@ gg.prob_surface <- bind_cols(newdat, final_logistic_glm %>%
   geom_point(data=final_predictions_glm %>%
                filter(fcid == "HLVKYDMXX", abundance_RA < 0.001), aes(colour= .pred, fill=.pred_1),
              position = position_jitter(width=0, height=0.01), alpha=1,shape=21, show.legend=FALSE ) +
-  scale_colour_manual(values=c("#d7191c", "#2b83ba"))+
+  scale_colour_manual(values=c('0'="#d7191c", '1'="#2b83ba"))+
   scale_fill_viridis_c() +
-  scale_x_continuous(labels = scales::percent) +
+  scale_x_continuous(labels = scales::percent, expand = c(0,0)) +
+  #scale_y_discrete(expand = c(0,0)) +
   base_theme +
   #facet_grid(fcid~.)+
   coord_cartesian(xlim=c(0,0.001), ylim=c(1,7))+
   theme(legend.position = "right") +
   labs(x = "Relative abundance",
-       y = "Total Number of replicates") 
+       y = "Number of PCR replicates") 
 
 
 gg.prob_surface
 
 # Calculate metrics
-multimetric <- metric_set(accuracy, bal_accuracy, sens, yardstick::spec, precision, recall, ppv, npv)
-final_predictions_glm %>%
+target_det <- final_predictions_glm %>%
+    filter(fcid == "HLVKYDMXX") %>%
     filter(pcr_primers =="fwhF2-fwhR2n") %>%
   mutate(taxon = taxon %>%
            str_replace("_", " ")) %>%
   filter(taxon %in% c("Drosophila suzukii",
                              "Drosophila subpulchrella",
-                             "Drosophila biarmipes")) %>%
+                             "Drosophila biarmipes")) 
+
+#Problems ot check
+problem <- target_det %>% 
+  filter(abundance  >0) %>%
+  filter(.pred == 1 & is.na(outcome))
+
+
+# Number of samples
+target_det %>% 
+  filter(abundance  >0) %>%
+  mutate(success = case_when(
+    outcome ==1 & .pred == 1 ~ "TP",
+    outcome == 1 & .pred == 0 ~ "FN",
+    outcome == 0 & .pred == 1 ~ "FP",
+    outcome == 0 & .pred == 0 ~ "TN"
+  )) %>%
+  group_by(taxon) %>%
+  summarise(TP = sum(success=="TP", na.rm = TRUE), FN = sum(success=="FN", na.rm = TRUE), 
+            FP= sum(success == "FP", na.rm = TRUE), TN = sum(success == "TN", na.rm = TRUE),
+            total_pos = sum(success %in% c("TP", "FN")))
+
+multimetric <- metric_set(accuracy, bal_accuracy, sens, yardstick::spec, precision, recall, ppv, npv)
+final_metrics <- target_det %>%
   group_by(taxon) %>%
   multimetric(truth = outcome, estimate = .pred)
 
-pdf(file="fig/roc_curve.pdf", width = 11, height = 8 , paper="a4r")
-  plot(gg.roc_curve)
-try(dev.off(), silent=TRUE)
+final_metrics
+
+
+# Annotate these stats onto the plots
+
+# Dropouts as function of community size 
+gg.sens <- target_det %>% 
+  filter(abundance  >0) %>%
+  mutate(success = case_when(
+    outcome ==1 & .pred == 1 ~ "TP",
+    outcome == 1 & .pred == 0 ~ "FN",
+    outcome == 0 & .pred == 1 ~ "FP",
+    outcome == 0 & .pred == 0 ~ "TN"
+  )) %>%
+  mutate(community = case_when(
+    str_detect(sample_id, "_D[0-9]|_DM|_DL") ~ "Mock",
+    TRUE ~ "Trap"
+  )) %>% 
+  dplyr::filter(success %in% c("TP", "FN")) %>%
+    left_join(final_metrics  %>% 
+              filter(.metric %in% c("sens", "spec", "ppv", "npv", "bal_accuracy")) %>%
+              mutate(.estimate = scales::percent(.estimate, accuracy=0.1)) %>%
+              pivot_wider(names_from=.metric,
+                          values_from=.estimate)) %>%
+  #filter(taxon == "Drosophila suzukii") %>%
+  mutate(taxon = taxon %>%
+         factor(levels = c("Drosophila suzukii",
+                             "Drosophila subpulchrella",
+                             "Drosophila biarmipes"))) %>%
+  ggplot(aes(x = expected_RA, y=abundance_RA, colour=success, shape=community)) + 
+  geom_point(size=2, alpha=1, position=position_jitter(width=.001, height=0.001)) + 
+  geom_abline(lty = 2, colour = "gray80", size = 1) +
+  #geom_text(aes(x=0.02, y=0.15, label=paste0("Sens:", sens)), check_overlap = TRUE, hjust=0, colour="black")+
+  #geom_text(aes(x=0.02, y=0.14, label=paste0("Spec:", spec)), check_overlap = TRUE, hjust=0, colour="black")+
+  #geom_text(aes(x=0.02, y=0.13, label=paste0("PPV:", ppv)), check_overlap = TRUE, hjust=0, colour="black")+
+  #geom_text(aes(x=0.02, y=0.12, label=paste0("NPV:", npv)), check_overlap = TRUE, hjust=0, colour="black")+
+  facet_wrap(taxon~.) +
+  base_theme +
+  theme(legend.position = "right",
+        strip.text.x = element_text(face="italic"))+
+  scale_colour_viridis_d()+
+  coord_cartesian(clip = "off") +
+  scale_x_log10(labels = scales::percent)+
+  scale_y_log10(labels = scales::percent)+
+  annotation_logticks(sides="lb", outside = TRUE) +
+  #  scale_x_continuous(labels = scales::percent)+
+  #scale_y_continuous(labels = scales::percent) +
+  labs(x = "Expected relative abundance (from specimens)",
+       y = "Observed relative abundance (from sequencing)",
+       shape = "Community Type",
+       colour = "Detection Success")
+
+gg.sens
+
 
 # Filter predicted switching
 keeptab <- final_predictions_glm %>%
@@ -883,8 +1114,6 @@ keeptab <- final_predictions_glm %>%
   dplyr::select(colnames(otu_table(ps.merged))) %>%
   as.matrix()
 
-test <- final_predictions_glm %>%
-  filter(sample_name == "D100M1")
 
 #Check for disagreements
 colnames(otu_table(ps.merged))[!colnames(otu_table(ps.merged)) %in% colnames(keeptab)]
@@ -921,12 +1150,13 @@ pred_boots <- readRDS(file="output/index_switch_bootstraps.rds")
 
 group.colors <- c(TP = "#abdda4", FP = "#d7191c", FN ="#2b83ba", TN ="#cccccc")
 
-gg.bias_resolved <- pred_boots %>%
-  filter(fcid=="HLVKYDMXX") %>%
+gg.switch_resolved <- pred_boots %>%
+  #filter(fcid=="HLVKYDMXX") %>%
   group_by(est_type, outcome_post, fcid) %>%
   summarise(count = n(), count_fp = sum(outcome_post == "FP")) %>%
   group_by(est_type, fcid) %>%
   mutate_at(vars(count), ~ . / sum(.) ) %>%
+  filter(!(fcid=="CB3DR" & est_type=="pred_pos")) %>%
   mutate(est_type = est_type %>%
            str_replace("pred_logit$", "Logistic Reg") %>%
            str_replace("pred_logit_reps$", "Logistic Reg + Reps") %>%
@@ -937,8 +1167,8 @@ gg.bias_resolved <- pred_boots %>%
            str_replace("pred_index", "Unassigned indices")
          ) %>%
   mutate(fcid = case_when(
-    fcid == "HLVKYDMXX" ~ paste0("NovaSeq"," ", fcid),
-    TRUE ~ paste0("MiSeq"," ", fcid),
+    fcid == "HLVKYDMXX" ~ "NovaSeq",
+    TRUE ~ "MiSeq",
   )) %>%
   mutate(est_type = factor(est_type,
                            levels= c(
@@ -953,7 +1183,7 @@ gg.bias_resolved <- pred_boots %>%
   geom_col(position="stack", alpha = 0.8) +
   base_theme+
   coord_flip()+
-  #facet_grid(~fcid) +
+  facet_wrap(fcid~., ncol=1) +
   scale_y_continuous(labels = scales::percent)+ 
   scale_fill_manual(values=group.colors) + 
   theme(legend.position = "bottom") +
@@ -961,16 +1191,20 @@ gg.bias_resolved <- pred_boots %>%
        x = NULL,
        fill = "Outcome")
 
-gg.detection_multi <- gg.bias_resolved - ( gg.roc_curve / gg.prob_surface) + plot_annotation(tag_levels = "A") 
+#gg.detection_multi <- gg.switch_resolved - ( gg.roc_curve / gg.prob_surface) + plot_annotation(tag_levels = "A") 
+
+#gg.detection_multi
+#
+gg.detection_multi <- gg.switch_resolved - ( gg.prob_surface / gg.sens ) + plot_annotation(tag_levels = "A") + plot_layout(widths = c(1,2))
 
 gg.detection_multi
+
 
 pdf(file="fig/Fig3_detection.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.detection_multi)
 try(dev.off(), silent=TRUE)
 
 ```
-
 
 # Primer comparison
 
@@ -1072,7 +1306,16 @@ heatmap_dat <-  ps_run1 %>%
     type == "Mock" & Abundance > 0 & is.na(expected) ~ "FP",
     type == "Mock" & Abundance > 0 & !is.na(expected) ~ "TP",
     type == "Mock" & is.na(Abundance) & expected > 0 ~ "FN"
-  )) 
+  ))  
+
+#Taxa that werent detected with all
+heatmap_dat %>%
+  filter(Abundance > 0) %>% # This is ruin
+  group_by(Species) %>%
+  mutate(diff = n_distinct(pcr_primers)) %>%
+  ungroup() %>%
+  filter(diff < 4)
+
 
 # Plot tree
 keeptips <- heatmap_dat %>% 
@@ -1089,11 +1332,10 @@ tree$tip.label <- tree$tip.label %>%
   pull(Species)
 
 mock_tree <- ggtree(tree, ladderize = TRUE)
-library(ggnewscale)
-
 gg.run1_heatmap <- heatmap_dat %>%
   left_join(mock_tree$data %>% dplyr::rename(Species = label)) %>%
-  mutate(Species = factor(Species)) %>%
+  mutate(Species = factor(Species),
+         sample_name = factor(sample_name, levels= c("D100M1", "D100M2", "D100M3", "D100M4", "D100M5", "DM0-FF", "DM0Sach","DM6-SPD", "DM10-FF", "DM10-SPD"))) %>%
     ggplot(aes(x=sample_name, y=fct_reorder(Species, y), fill=Abundance)) +
     geom_tile() +
   scale_fill_viridis_c(labels = scales::percent, na.value = NA, alpha=0.9) +
@@ -1106,7 +1348,7 @@ gg.run1_heatmap <- heatmap_dat %>%
         axis.title.y = element_blank())+
     labs(x="Sample",
          y="Taxon") +
-  facet_grid(~pcr_primers,scales="free_x", drop=TRUE)
+  facet_grid(~pcr_primers, drop=TRUE)
 
 mock_tree + gg.run1_heatmap + plot_layout(widths = c(1,4))
 ```
@@ -1228,12 +1470,13 @@ boot_models <- joint %>%
     mutate(fit =  purrr::map(splits, ~lm(error_clr ~ 0 + taxon , data = .)), 
            coef =  purrr::map(fit, function(x){
              broom::tidy(x) %>% 
-               mutate(estimate = exp(estimate))})) %>%
-    int_pctl(coef) 
+               mutate(estimate = exp(estimate))}))%>%
+    int_pctl(coef)
     }) %>%
   mutate(taxon = str_remove(term, "taxon")) %>%
   dplyr::select(pcr_primers, taxon, lower = .lower, estimate = .estimate, upper = .upper)
 
+  
 # See how well bias esitmate fits data
 preds <- joint %>%
   left_join(boot_models) %>%
@@ -1256,14 +1499,14 @@ gg.bias_fits <- preds %>%
   ggplot(aes(x=logit(predicted), y=logit(observed), color = taxon))+
   geom_abline(intercept = 0, slope = 1, color = "grey") +
     geom_jitter(width = 0.1, height = 0, alpha=0.7, size=2) +
-  geom_text(aes(x=-6, y=-1, label=rmse), check_overlap = TRUE, inherit.aes = FALSE)+
+  geom_text(aes(x=-5, y=-1, label=rmse), check_overlap = TRUE, inherit.aes = FALSE)+
   facet_wrap(~pcr_primers)+
   coord_fixed()+
   scale_color_brewer(palette = "Paired")+
   base_theme +
   theme(
         panel.spacing.x = unit(1, "lines"),
-        legend.position = "bottom",
+        legend.position = "right",
         legend.text = element_text(face = "italic", size=10)
     ) +
    labs(x = "log-odds(Predicted proportion)", 
@@ -1274,10 +1517,9 @@ gg.bias_fits <- preds %>%
 gg.bias_fits
 
 # Write out bias explained for supplementary 
-pdf(file="fig/supplementary/bias_model_fit.pdf", width = 11, height = 8 , paper="a4r")
+pdf(file="fig/supplementary/bias_model_fit.pdf", width = 8, height = 6 , paper="a4r")
   plot(gg.bias_fits)
 try(dev.off(), silent=TRUE)
-
 
 # Plot bias estimates
 gg.bias <- preds %>%
@@ -1326,71 +1568,7 @@ pdf(file="fig/Fig1_primer_comparison.pdf", width = 11, height = 8 , paper="a4r")
 try(dev.off(), silent=TRUE)
 ```
 
-## Classification summary
-
-The ratio of root assigned reads to those under species level can be used as a proxy for taxonomic assignment
-
-```{r, run 1 tax summary}
-# Subset to run 1
-ps <- readRDS("output/rds/ps_idtaxaExact.rds")%>%
-  subset_samples(fcid %in% c("CB3DR")) 
-
-tax_summary <- speedyseq::psmelt(ps) %>%
-  dplyr::select(pcr_primers, sample_id, rank_names(ps), Abundance) %>%
-  pivot_longer(rank_names(ps),
-               names_to="rank",
-               values_to="name") %>%
-
-  mutate(name = replace(name, str_detect(name, "__"), NA),
-         rank = str_replace(rank, "Kingdom", "Root")) %>% 
-    mutate(detection = case_when(
-    Abundance > 0 ~ 1,
-    Abundance == 0 ~ 0
-  )) %>%
-  group_by(pcr_primers, rank) %>% 
-  #dplyr::filter(!is.na(name)) %>%
-  dplyr::summarise(reads_classified = sum(Abundance * !is.na(name)),
-                   asvs_classified = sum(detection * !is.na(name)))
-
-# Lineplot
-tax_plot_data <- tax_summary %>%
-  ungroup %>%
-  filter(!rank=="Root") %>%
-  left_join(tax_summary %>% 
-              filter(rank=="Root") %>%
-              dplyr::select(pcr_primers, root_reads = reads_classified, root_asv = asvs_classified)) %>%
-  mutate(read_prop = reads_classified / root_reads,
-         asv_prop = asvs_classified / root_asv)%>% 
-  dplyr::select(pcr_primers, rank, contains("prop"))  %>%
-  pivot_longer(contains("prop"),
-               names_to="type",
-               values_to = "value") %>%
-  mutate(type = type %>% 
-           str_replace("asv_prop", "ASVs classified") %>%
-           str_replace("read_prop", "Sequences classified")) %>%
-  mutate(rank = factor(rank, levels = rank_names(ps)[2:length(rank_names(ps))]))
-
-gg.reads_classified <- tax_plot_data  %>%
-  ggplot(aes(x=rank, y=value, fill = pcr_primers, group=pcr_primers)) +
-  geom_col(width=0.7, position=position_dodge(width = 0.8)) +
-  #geom_text(aes(label = percent(value, accuracy = 0.1)),
-  #          position=position_dodge(width = 0.8), angle=270,hjust =-0.1, colour="white", size=4 )+
-  base_theme +
-  facet_wrap(~type, nrow = 2)+
-  #facet_grid(~type, cols=1, rows=2) +
-  scale_fill_brewer(palette="Paired") +
-  scale_y_continuous(labels = scales::percent) +
-  labs(x = NULL,
-       y=NULL)
-
-
-gg.reads_classified
-```
-
-
 # Supplementary Comparison of primer replicates for detection and bias
-
-# Run 2 - comparison between replicate primers
 
 Run 2 - see the differences in bias between replicates
 
@@ -1505,9 +1683,9 @@ pdf(file="fig/supplementary/run2_biasreps.pdf", width = 6, height = 4 , paper="a
 try(dev.off(), silent=TRUE)
 ```
 
-# Trap catch analysis
+# Trap catch & Diversity
 
-## Insects trapped summary
+## Insects trapped
 
 ```{r Trapped insects}
 trapdat <- read_csv("Fieldwork/trap_data_clean.csv") %>%
@@ -1532,11 +1710,21 @@ trapdat <- read_csv("Fieldwork/trap_data_clean.csv") %>%
   mutate(type = factor(type, levels =  c("ACV","DC", "SPD", "FF"))) 
 
 
-# Average catch
+# Total catch
 trapdat %>%
   group_by(week, type, orchard, orchard_type) %>%
   dplyr::summarise(catch = sum(catch, na.rm=TRUE))
   
+# By orchard
+trapdat %>%
+  group_by(orchard) %>%
+  dplyr::summarise(catch = sum(catch, na.rm=TRUE))
+
+# By treatment
+trapdat %>%
+  group_by(type) %>%
+  dplyr::summarise(catch = sum(catch, na.rm=TRUE))
+
 ##Total catch by orchard and week
 gg.trapweek <- trapdat %>% 
   mutate(week = as.factor(week)) %>%
@@ -1571,10 +1759,53 @@ ps_run3 <- ps2 %>%
   #prune_taxa(!str_detect(Species, "Synthetic")) %>%
   filter_taxa( function(x) mean(x) > 0, TRUE)
 
-ps_run3 <-  prune_samples(sample_sums(ps_run3) >0 , ps_run3)
+ps_run3 <-  prune_samples(sample_sums(ps_run3) > 0 , ps_run3)
 
 # Need to remove synthetics
 ```
+
+
+## Number of species
+
+```{r summarise taxa}
+
+spp_stat <- speedyseq::psmelt(ps_run3) %>%
+  mutate(comm = case_when(
+    type %in% c("ACV", "DC", "FF", "SPD") ~ "Field",
+    type %in% c("DrosLarv", "DrosMock") ~ "Mock",
+    TRUE ~ type
+    )) %>%
+  filter(Abundance > 0 ) %>%
+  mutate(Genus = case_when(
+    str_detect(Genus, "__") ~ as.character(NA),
+    TRUE  ~ Species
+  )) %>%
+  mutate(Species = case_when(
+    str_detect(Species, "__") ~ as.character(NA),
+    TRUE ~ Species
+  )) 
+
+# N ASVs and samples
+spp_stat %>%
+  group_by(comm) %>%
+  summarise(n_extracts = n_distinct(extract_id), n_samples = n_distinct(sample_id), n_asv = n_distinct(OTU), n_spp = n_distinct(Species), n_genus = n_distinct(Genus))
+
+
+# Spread of Species across different types
+spp_stat %>%
+  group_by(extract_id, type) %>%
+  dplyr::filter(Abundance > 0) %>%
+  summarise(counts = n_distinct(Species)) %>%
+  ungroup() %>%
+  group_by(type) %>%
+  summarise(mean = mean(counts), 
+            se = sd(counts)/sqrt(length(counts)),
+            max = max(counts),
+            min = min(counts))
+
+```
+
+
 
 ## Alpha diversity metrics
 
@@ -1611,7 +1842,11 @@ div_table <- sespd %>%
               as("data.frame") %>%
               filter(!duplicated(sample_id)) %>%
               dplyr::select(amp_rep, sample_name = sample_id, type),
-            by = "sample_name") 
+            by = "sample_name")  %>%
+  mutate(orchard = case_when(
+    str_detect(sample_name, "_M[0-9]") ~ "Cherry",
+    str_detect(sample_name, "_T[0-9]") ~ "Stonefruit"
+  ))
 
 # Filter to just the field collected types
 div_table <- div_table %>%
@@ -1621,13 +1856,10 @@ div_table <- div_table %>%
 div_table %>%
   summarise(across(where(is.numeric), mean, na.rm=TRUE))
 
-# Difference in alpha diversity between replicates
-#report::report(aov(alpha ~amp_rep, data=div_table))
-#report::report(aov(Shannon ~amp_rep, data=div_table))
-#report::report(aov(pd ~amp_rep, data=div_table))
-#
 # Difference in alpha diversity between trap types
 report::report(aov(alpha ~type, data=div_table))
+
+
 broom::tidy(TukeyHSD(aov(alpha ~type, data=div_table)))
 
 report::report(aov(Shannon ~type, data=div_table))
@@ -1636,7 +1868,23 @@ broom::tidy(TukeyHSD(aov(Shannon ~type, data=div_table)))
 report::report(aov(pd ~type, data=div_table))
 broom::tidy(TukeyHSD(aov(pd ~type, data=div_table)))
 
-# SHould do on the original data without merging by spp
+alpha_results <- bind_rows(
+  broom::tidy(TukeyHSD(aov(alpha ~type, data=div_table))) %>% mutate(metric = "richness"),
+  broom::tidy(TukeyHSD(aov(Shannon ~type, data=div_table))) %>% mutate(metric = "shannon"),
+  broom::tidy(TukeyHSD(aov(pd ~type, data=div_table))) %>% mutate(metric = "phylogenetic")
+)
+
+write_csv(alpha_results, "output/alpha/alpha_anova.csv")
+
+# Differences in orchards
+report::report(aov(alpha ~orchard, data=div_table))
+broom::tidy(TukeyHSD(aov(alpha ~orchard, data=div_table)))
+
+report::report(aov(Shannon ~orchard, data=div_table))
+broom::tidy(TukeyHSD(aov(Shannon ~orchard, data=div_table)))
+
+report::report(aov(pd ~orchard, data=div_table))
+broom::tidy(TukeyHSD(aov(pd ~orchard, data=div_table)))
 
 # plot differences in alpha diversity
 gg.alpha <- div_table %>% 
@@ -1651,7 +1899,7 @@ gg.alpha <- div_table %>%
   mutate(type = factor(type, levels =  c("ACV","DC", "SPD", "FF"))) %>%
   ggplot(aes(x=type, y=value, colour=type)) +
   geom_jitter(size=2, alpha=0.6, width=0.2, height=0)+
-  geom_boxplot(fill=NA)+
+  geom_boxplot(fill=NA, outlier.color = NA)+
   #coord_flip()+
   base_theme+
   scale_colour_brewer(palette="Paired") +
@@ -1665,52 +1913,212 @@ pdf(file="fig/supplementary/trap_catches.pdf", width = 8, height = 6 , paper="a4
   plot(gg.alpha)
 try(dev.off(), silent=TRUE)
 
-# This could be nice really small, under the total catch
+```
 
+## Alpha diversity rarefied
+
+```{r alpha div rarefied}
+dir.create("output/alpha_rarefied")
+
+# Get a histogram of sample sums to choose rarefaction depth
+sample_sums(ps_run3) %>%
+  as_tibble(rownames = "sample") %>%
+  filter(value > 0) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram() +
+  scale_x_continuous(labels = scales::label_number_si()) +
+  labs(x = "Sequence Reads",
+       y = "Number of samples")
+
+# Choose a depth to rarefy to (everything under this will be discarded)
+raredepth <- 100000
+
+# Plot a rarefaction curve to see which samples would be lost at this depth
+rare <- otu_table(ps_run3) %>%
+  as("matrix") %>%
+  rarecurve(step=10000) %>% # Change this to be higher if you have heaps of reads to make it faster
+  purrr::map_dfr(., function(x){
+  b <- as.data.frame(x)
+  b <- data.frame(OTU = b[,1], count = rownames(b))
+  b$count <- as.numeric(gsub("N", "",  b$count))
+  nm <- names(attr(x, "Subsample"))
+  b$sample_id <- nm[!nm==""]
+  return(b)
+  })%>%
+  left_join(sample_data(ps_run3)%>%
+    as("matrix") %>%
+    as_tibble() %>%
+      dplyr::select(sample_id, fcid) %>%
+      distinct())
+
+gg.rare <- rare %>%
+  ggplot() +
+  geom_line(aes(x = count, y = OTU, group=sample_id), alpha=0.5)+
+  geom_point(data = rare %>% 
+               group_by(sample_id) %>% 
+               top_n(1, count),
+             aes(x = count, y = OTU, colour=(count > raredepth))) +
+  scale_x_continuous(labels =  scales::label_number_si()) +
+  geom_vline(xintercept=raredepth, linetype="dashed") +
+  facet_wrap(fcid~., scales="free", ncol=1)+
+  theme(legend.position = "bottom")+
+  labs(x = "Sequence reads",
+       y = "Observed ASV's",
+       colour = "Sample retained?") 
+
+gg.rare
+
+# Rarefy (make sure to set the rngseed for reproducability)
+ps_rare <- rarefy_even_depth(ps_run3, sample.size = raredepth,
+  rngseed = 532251, replace = TRUE, trimOTUs = TRUE, verbose = TRUE)
+
+rarestats <- speedyseq::psmelt(ps_rare)
+  
+# Get Alpha diversity measures
+richness_rare <- phyloseq::estimate_richness(ps_rare, measures=c("Chao1", "Shannon", "Simpson")) %>% 
+  rownames_to_column("sample_id")
+
+# Calculate Faith's phylogenetic diversity
+sespd_rare <- picante::ses.pd(as(phyloseq::otu_table(ps_rare), "matrix"),  phyloseq::phy_tree(ps_rare), null.model = "taxa.labels", include.root = F, runs = 9)
+
+# Join together
+div_table_rare <- sespd_rare %>%
+  rownames_to_column("sample_id") %>%
+  dplyr::select(sample_id, ntaxa, pd.obs) %>%
+  dplyr::rename(pd = pd.obs, alpha = ntaxa) %>%
+  left_join(richness_rare, by="sample_id") %>%
+  left_join(sample_data(ps_rare) %>% 
+              as("data.frame"),
+            by = "sample_id") 
+
+div_table_rare <- div_table_rare %>%
+  filter(type %in% c("DC", "ACV", "FF", "SPD"))
+
+# Summarise mean diversity
+div_table_rare %>%
+  summarise(across(c("alpha", "pd", "Chao1", "se.chao1", "Shannon", "Simpson"), mean, na.rm=TRUE))
+
+# Difference in alpha diversity between a factor
+# In this case we are going to use sample_name as that factor
+report::report(aov(alpha ~type, data=div_table_rare))
+broom::tidy(TukeyHSD(aov(alpha ~type, data=div_table_rare)))
+
+report::report(aov(Shannon ~type, data=div_table_rare))
+broom::tidy(TukeyHSD(aov(Shannon ~type, data=div_table_rare)))
+
+report::report(aov(pd ~type, data=div_table_rare))
+broom::tidy(TukeyHSD(aov(pd ~type, data=div_table_rare)))
+
+# plot differences in alpha diversity
+gg.alpha_rare <- div_table %>% 
+  pivot_longer(2:7,
+               names_to="metric",
+               values_to="value") %>%
+  filter(metric %in% c("alpha", "pd", "Shannon")) %>%
+  mutate(metric = metric %>% 
+           str_replace("alpha", "ASV Richness") %>%
+           str_replace("pd", "Phylogenetic Diversity") %>%
+           str_replace("Shannon", "Shannon Index")) %>%
+  mutate(type = factor(type, levels =  c("ACV","DC", "SPD", "FF"))) %>%
+  ggplot(aes(x=type, y=value, colour=type)) +
+  geom_jitter(size=2, alpha=0.6, width=0.2, height=0)+
+  geom_boxplot(fill=NA, outlier.colour = NA)+
+  #coord_flip()+
+  base_theme+
+  scale_colour_brewer(palette="Paired") +
+  facet_wrap(.~metric,ncol=1, scales="free")
+
+gg.alpha_rare
+
+# Write out results as a CSV
+alpha_results_rare <- bind_rows(
+  broom::tidy(TukeyHSD(aov(alpha ~type, data=div_table_rare))) %>% mutate(metric = "richness"),
+  broom::tidy(TukeyHSD(aov(Shannon ~type, data=div_table_rare))) %>% mutate(metric = "shannon"),
+  broom::tidy(TukeyHSD(aov(pd ~type, data=div_table_rare))) %>% mutate(metric = "phylogenetic")
+)
+
+write_csv(alpha_results, "output/alpha_rarefied/alpha_anova.csv")
 ```
 
 ## Beta diversity metrics
 
 ```{r Distances}
+#Subset to remove mocks
+ps_traps <- ps_run3 %>%
+  subset_samples(!type %in% c("DrosMock", "DrosLarv", "ACV")) %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE)
+
 # Get OTU tables
-otutab <- otu_table(ps_run3) %>%
+otutab <- ps_traps %>%
+  otu_table() %>%
   as("matrix")
+
+colSums(otutab) > 0
+
 #Impute zeroes for compositional distances
 otutab_n0 <- as.matrix(zCompositions::cmultRepl(otutab, method="CZM", output="p-counts"))
 #Root phylogenetic tree
-phy_tree(ps_run3) <- multi2di(phy_tree(ps_run3))
-phy_tree(ps_run3) <- makeNodeLabel(phy_tree(ps_run3), method="number", prefix='n')
-name.balance(phy_tree(ps_run3), tax_table(ps_run3), 'n1') #Get root
+phy_tree(ps_traps) <- multi2di(phy_tree(ps_traps))
+phy_tree(ps_traps) <- makeNodeLabel(phy_tree(ps_traps), method="number", prefix='n')
+name.balance(phy_tree(ps_traps), tax_table(ps_traps), 'n1') #Get root
 
 #Calculate different distance metrics
-metrics <- c("Bray", "Jaccard", "Aitchison", "Philr", "Unifrac", "WUnifrac")
-distlist <- vector("list", length=length(metrics))
-names(distlist) <- metrics
+distlist <- vector("list")
 
 distlist$Jaccard <- as.matrix(vegdist(otutab, method="jac",binary = T))
 distlist$Bray <- as.matrix(vegdist(otutab, method="bray"))
 distlist$Aitchison <- as.matrix(vegdist(CoDaSeq::codaSeq.clr(otutab_n0), method="euclidean"))
-distlist$Philr <- as.matrix(vegdist(philr::philr(otutab_n0, phy_tree(ps_run3),
+distlist$Philr <- as.matrix(vegdist(philr::philr(otutab_n0, phy_tree(ps_traps),
                                                 part.weights='enorm.x.gm.counts',
                                                 ilr.weights='blw.sqrt'), method="euclidean"))
-distlist$Unifrac <- as.matrix(phyloseq::UniFrac(ps_run3, weighted=FALSE, parallel = TRUE))
-distlist$WUnifrac <- as.matrix(phyloseq::UniFrac(ps_run3, weighted=TRUE, parallel = TRUE))
+distlist$Unifrac <- as.matrix(phyloseq::UniFrac(ps_traps, weighted=FALSE, parallel = TRUE))
+distlist$WUnifrac <- as.matrix(phyloseq::UniFrac(ps_traps, weighted=TRUE, parallel = TRUE))
 
-# Probably only need to use philr dist
+#Add rarefied metrics
+ps_traps_rare <- ps_rare %>%
+  subset_samples(!type %in% c("DrosMock", "DrosLarv", "ACV")) %>%
+  filter_taxa( function(x) mean(x) > 0, TRUE)
+
+# Get OTU tables
+otutab_rare <- ps_traps_rare %>%
+  otu_table() %>%
+  as("matrix")
+
+#Impute zeroes for compositional distances
+otutab_n0_rare <- as.matrix(zCompositions::cmultRepl(otutab_rare, method="CZM", output="p-counts"))
+#Root phylogenetic tree
+phy_tree(ps_traps_rare) <- multi2di(phy_tree(ps_traps_rare))
+phy_tree(ps_traps_rare) <- makeNodeLabel(phy_tree(ps_traps_rare), method="number", prefix='n')
+name.balance(phy_tree(ps_traps_rare), tax_table(ps_traps_rare), 'n1') #Get root
+
+distlist$Jaccard_rare <- as.matrix(vegdist(otutab_rare, method="jac",binary = T))
+distlist$Bray_rare <- as.matrix(vegdist(otutab_rare, method="bray"))
+distlist$Aitchison_rare <- as.matrix(vegdist(CoDaSeq::codaSeq.clr(otutab_n0_rare), method="euclidean"))
+distlist$Philr_rare <- as.matrix(vegdist(philr::philr(otutab_n0_rare, phy_tree(ps_traps_rare),
+                                                part.weights='enorm.x.gm.counts',
+                                                ilr.weights='blw.sqrt'), method="euclidean"))
+distlist$Unifrac_rare <- as.matrix(phyloseq::UniFrac(ps_traps_rare, weighted=FALSE, parallel = TRUE))
+distlist$WUnifrac_rare <- as.matrix(phyloseq::UniFrac(ps_traps_rare, weighted=TRUE, parallel = TRUE))
+
 ```
 
 # Adonis and betadisper
 
 ```{r betatest}
 # Adonis test
-metadata <- sample_data(ps_run3) %>%
-  as("data.frame")
+metadata <- sample_data(ps_traps_rare) %>%
+  as("data.frame")%>%
+  mutate(orchard = case_when(
+    str_detect(sample_id, "_M[0-9]") ~ "Cherry",
+    str_detect(sample_id, "_T[0-9]") ~ "Stonefruit"
+  ))
 
 # Test difference by community type
 adonis_results <- distlist %>%
   purrr::map(function(x) {
     bind_rows(
-    broom::tidy(adonis(x~type, method="euclidean", data=metadata)$aov.tab) #%>% dplyr::slice(1)
+    broom::tidy(adonis(x~type, method="euclidean", data=metadata)$aov.tab) %>% mutate(comparison = "type"),
+    broom::tidy(adonis(x~orchard, method="euclidean", data=metadata)$aov.tab) %>% mutate(comparison = "orchard")
     )
 })  %>%
   bind_rows(.id="dist")
@@ -1721,8 +2129,10 @@ betadisper_results <- distlist %>%
     y <- as.dist(x[metadata$sample_id, metadata$sample_id])
   bind_rows(
     as.data.frame(permutest(vegan::betadisper(y, metadata$type))$tab) %>%
-      #dplyr::slice(1) %>% 
-      mutate(term="type")
+      mutate(term="type"),
+    as.data.frame(permutest(vegan::betadisper(y, metadata$orchard))$tab) %>%
+      mutate(term="orchard")
+
   )
 })  %>%
   bind_rows(.id="dist")
@@ -1730,136 +2140,88 @@ betadisper_results <- distlist %>%
 dir.create("output/beta")
 write_csv(adonis_results, "output/beta/adonis.csv")
 write_csv(betadisper_results, "output/beta/adonis.csv")
+
+#Plot betadispersal
+z <- as.dist(distlist$Unifrac_rare[metadata$sample_id, metadata$sample_id])
+orchard_dispnest <- vegan::betadisper(z, metadata$orchard)
+plot(orchard_dispnest)
+
+sample_dispnest <- vegan::betadisper(z, metadata$type)
+plot(sample_dispnest)
+
 ```
 
 # PCA plots
 
 ```{r pca plots}
-# Get philr distance
-philr.dist <- as.dist(distlist$Philr)
+# Get distance
+plot_dist <- as.dist(distlist$Unifrac_rare)
 
-#Philr PCOA
-philr.pcoa <- ordinate(ps_run3, 'PCoA', distance=philr.dist)
+plot_pcoa <- ordinate(ps_traps_rare, 'PCoA', distance=plot_dist)
 
-gg.pca <- plot_ordination(ps_run3, philr.pcoa, color = "type") +
-  geom_point(size=3, alpha=0.8) +
+sample_data(ps_traps_rare) <- sample_data(ps_traps_rare) %>%
+  as("matrix") %>%
+  as_tibble(rownames="sample") %>%
+  mutate(orchard = case_when(
+    str_detect(sample_id, "_M[0-9]") ~ "Cherry",
+    str_detect(sample_id, "_T[0-9]") ~ "Stonefruit"
+  )) %>%
+  column_to_rownames("sample")
+  
+gg.pca <- plot_ordination(ps_traps_rare, plot_pcoa, color = "type", shape="orchard") +
+  stat_ellipse(geom = "polygon", aes(group = orchard, fill=orchard, colour=orchard), alpha=0.05) +
+  scale_fill_viridis_d()+
+  scale_colour_viridis_d()+
+   new_scale_fill() +
+  new_scale_colour() +
+  geom_point(size=4, alpha=1, aes(colour=type, shape=orchard)) +
+  stat_ellipse(geom = "polygon", aes(group = type, fill=type, colour=type), alpha=0.05) +
+  scale_colour_brewer(palette="Paired") +
+  scale_fill_brewer(palette="Paired") +
   geom_hline(yintercept = 0, linetype=2, alpha=0.5) +  
   geom_vline(xintercept = 0, linetype=2, alpha=0.5) +
   base_theme +
   #coord_fixed() +
-  scale_colour_brewer(palette="Paired") +
   theme(legend.position = "bottom") +
-  labs(colour = "Sample Type")
+  labs(colour = "Sample Type") 
 
 gg.pca
 
 # Heirarchial clustering
-dend <- hclust(philr.dist, method="average")
+dend <- as.phylo(hclust(plot_dist, method="ward.D2"))
 
-p3 <- ggtree(as.phylo(dend) ) + 
+dend$tip.label <- dend$tip.label %>%
+  str_remove("HLVKYDMXX_")
+p3 <- ggtree(dend) + 
   theme_tree2()
 
 colours_p3 <- p3$data %>%
-  left_join(as_data_frame(sample_data(ps_run3)) %>%
-              dplyr::select(sample_id, type) %>%
-  dplyr::rename(label = sample_id)
+  left_join(as_data_frame(sample_data(ps_traps_rare)) %>%
+              dplyr::select(sample_id, type, orchard) %>%
+  dplyr::rename(label = sample_id) %>%
+    mutate(label = label %>%
+  str_remove("HLVKYDMXX_"))
     )
 
 p3 <- p3 %<+% colours_p3  + 
-  geom_tippoint(aes(colour=as.factor(type)))  + 
+  geom_tippoint(aes(colour=as.factor(type), shape=as.factor(orchard)), size=3)  + 
   geom_tiplab(aes(colour=as.factor(type)))+
   scale_colour_brewer(palette="Paired") +
-    scale_x_continuous(expand=c(0, 30)) +
+  theme_void()+
+  scale_x_continuous(expand=c(0, 0.3)) +
   theme(legend.position = "none")
 
 # Plot together
-p3 + gg.pca
+gg.pca_tree <- p3 + gg.pca + plot_layout(widths = c(1,2)) + plot_annotation(tag_levels = "A")
+
+gg.pca_tree
+
+# Write out PCA plots
+pdf(file="fig/supplementary/pca_tree.pdf", width = 11, height = 8 , paper="a4r")
+  plot(gg.pca_tree)
+try(dev.off(), silent=TRUE)
 ```
 
-# Plot a heatmap of insect distances vs clustering of samples
-
-```{r Heatmap}
-#Prepare co-occurance matrix
-coocur <- ps_run3 %>%
-    otu_table %>%
-    as("matrix")
-
-# Sample tree 
-h_tree <- as.phylo(dend)
-
-# P cophenetic distance
-s_tree <- phy_tree(ps_run3)
-
-s_tree <- drop.tip(s_tree, setdiff(s_tree$tip.label, colnames(coocur)))
-coocur <- coocur[h_tree$tip.label, s_tree$tip.label]
-
-#Could do the imputing on coocur
-
-# Cophyloplot
-coocur.lut <- which(coocur >0, arr.ind=TRUE)
-assoc <- cbind(rownames(coocur)[coocur.lut[,1]], colnames(coocur)[coocur.lut[,2]])
-# Rotate the nodes using phytools
-obj <- cophylo(tr1=h_tree, tr2=s_tree, assoc=assoc, rotate=TRUE) 
-
-# Extract the goods for ggtree
-tree1 <- obj[["trees"]][[1]]
-p1 <- ggtree(tree1, ladderize=FALSE) + geom_tiplab()
-
-# OTU tree
-tree2 <- obj[["trees"]][[2]]
-p2 <- ggtree(tree2, ladderize=FALSE) + geom_tiplab()
-
-# Tanglegram
-dd <- obj$assoc %>%
-  as_data_frame() %>%
-  magrittr::set_colnames(c("label.x", "label.y")) %>%
-  left_join(p1$data %>% dplyr::select(label, y) %>% dplyr::rename(label.x = label), by="label.x") %>%
-  left_join(p2$data %>% dplyr::select(label, y) %>% dplyr::rename(label.y = label), by="label.y") %>%
-  rownames_to_column("assoc")
-
-gg.heatmap <- dd %>%
-  dplyr::rename(Sample_Name = label.x,
-                OTU = label.y,
-                pos_x = y.x,
-                pos_y = y.y) %>%
-  dplyr::select(Sample_Name, OTU, pos_x, pos_y) %>%
-  dplyr::mutate(Sample_Name = factor(Sample_Name),
-                Sample_Name = fct_reorder(Sample_Name, pos_x),
-                OTU = factor(OTU),
-                OTU = fct_reorder(OTU, pos_y)) %>%
-   ggplot(aes(x=Sample_Name, y=OTU)) +
-  geom_tile() +
-  base_theme+
-  theme(axis.text.x = element_text(angle=45, hjust=1),
-        axis.title.x = element_blank(),
-        axis.text.y = element_blank(),
-        axis.ticks.y = element_blank(),
-        axis.title.y = element_blank(),
-        legend.position = "none") 
-
-#Adjusted trees - Sca
-
-top <- wrap_elements(grid::textGrob('')) +(p1+ coord_flip() + scale_x_reverse(expand=c(0,0))+ scale_y_continuous(expand=c(0,0))) + plot_layout(widths=c(1,3)) 
-bottom <- p2+ scale_y_continuous(expand=c(0,0)) +gg.heatmap + plot_layout(widths=c(1,3))
-
-gg.treemap <- top / bottom + plot_layout(heights=c(1,3))                                                         
-
-gg.treemap
-
-gg.heatmap <- psmelt(ps_run3) %>%
-  dplyr::select(Abundance, label = sample_id, OTU, rank_names(ps_run3)) %>%
-  left_join(p3$data) %>%
-  group_by(label) %>%
-  mutate(Abundance = replace(Abundance, Abundance==0, 0.5)) %>%
-  mutate(Abundance = metacal::clr(Abundance, na.rm = TRUE)) %>%
-  ungroup %>%
-  ggplot(aes(x = label, y = Species, fill = Abundance )) +
-  geom_tile() +
-  base_theme
-  
-(p3 + coord_flip() + scale_x_reverse()) / gg.heatmap
-
-```
 
 # Phylogeny of trap catches
 
@@ -1892,7 +2254,6 @@ p1 <- gheatmap(circ, p1dat, offset=0, width=.4, color="gray20",
     scale_fill_viridis_c(option="D", name="Abundance", alpha=0.9, trans="log10", label= scales::percent) 
 
 # Also try add week? and orchard?
-library(ggnewscale)
 p2dat <- speedyseq::psmelt(ps_run3) %>%
   mutate(orchard = case_when(
     str_detect(sample_name,"^T") ~ "Stonefruit",
@@ -1930,7 +2291,7 @@ theme(legend.position = "bottom")
 gg.phylo
 
 # FInal phylo fig
-gg.Fig4 <- gg.phylo + gg.trapall + gg.alpha + plot_layout(widths = c(4,1,1)) + plot_annotation(tag_levels = "A")
+gg.Fig4 <- gg.phylo - gg.trapall - gg.alpha + plot_layout(widths = c(4,1,1)) + plot_annotation(tag_levels = "A")
 
 # Write out bias explained for supplementary 
 pdf(file="fig/Fig4_diversity.pdf", width = 11, height = 8 , paper="a4r")

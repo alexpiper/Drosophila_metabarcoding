@@ -1471,10 +1471,25 @@ try(dev.off(), silent=TRUE)
 ### Summary statistics
 
 ```{r summarise taxa}
-# N unique species and samples
+# N unique ASVs and samples
 speedyseq::psmelt(ps) %>%
-  group_by(fcid) %>%
-  summarise(n_extracts = n_distinct(extract_id), n_samples = n_distinct(sample_id))
+  mutate(comm = case_when(
+    type %in% c("ACV", "DC", "FF", "SPD") ~ "Field",
+    type %in% c("DrosLarv", "DrosMock") ~ "Mock",
+    TRUE ~ type
+    )) %>%
+  filter(Abundance > 0 ) %>%
+  mutate(Genus = case_when(
+    str_detect(Genus, "__") ~ as.character(NA),
+    TRUE  ~ Species
+  )) %>%
+  mutate(Species = case_when(
+    str_detect(Species, "__") ~ as.character(NA),
+    TRUE ~ Species
+  )) %>%
+  group_by(comm) %>%
+  summarise(n_extracts = n_distinct(extract_id), n_samples = n_distinct(sample_id), n_asv = n_distinct(OTU), n_spp = n_distinct(Species), n_genus = n_distinct(Genus))
+
 
 # Spread of reads
 speedyseq::psmelt(ps) %>%
@@ -1487,7 +1502,13 @@ speedyseq::psmelt(ps) %>%
             max = max(Abundance),
             min = min(Abundance))
 
-# Spread of ASVs
+# Total
+speedyseq::psmelt(ps) %>%
+  group_by(fcid) %>%
+  summarise(Abundance = sum(Abundance))
+
+
+# Spread of ASVs across samples
 speedyseq::psmelt(ps) %>%
   group_by(extract_id, fcid) %>%
   dplyr::filter(Abundance > 0) %>%
