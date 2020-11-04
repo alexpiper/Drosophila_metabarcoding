@@ -1411,7 +1411,7 @@ seqateurs::summarise_taxa(ps, "Genus", "sample_name") %>%
   write.csv(file = "output/csv/unfiltered/gen_sum.csv")
 
 ##Output fasta of all ASV's - Name each one by abundance + taxonomic assignment
-seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta")
+seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta", "Species")
 ```
 
 
