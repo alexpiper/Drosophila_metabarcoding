@@ -1,10 +1,9 @@
 ---
 title: "Drosophila Metabarcoding"
-title: "Bioinformatics"
+subtitle: "Bioinformatic analysis"
 author: "Alexander Piper"
 date: "`r Sys.Date()`"
 output:
-  
   html_document:
     highlighter: null
     theme: "flatly"
@@ -18,15 +17,19 @@ output:
 editor_options: 
   chunk_output_type: console
 ---
-# Setup & Packages 
 
-This pipeline requires various R packages to be installed prior to running. These are obtained from CRAN, Bioconductor and Github. The taxreturn and seqateurs packageR package also provide wrappers around other software packages for QC. For convenience we will download and install these software in a new folder called “bin”
-
-```{r setup, include=TRUE}
+```{r setup, include=FALSE}
 # Knitr global setup - change eval to true to run code
 library(knitr)
-knitr::opts_chunk$set(echo = TRUE, eval=FALSE, message=FALSE,error=FALSE,fig.show = "hold", fig.keep = "all")
+knitr::opts_chunk$set(echo = TRUE, eval=FALSE, message=FALSE,error=FALSE, fig.show = "hold", fig.keep = "all")
+opts_chunk$set(dev = 'png')
+```
 
+# Load Packages 
+
+This pipeline requires various R packages to be installed prior to running. These are obtained from CRAN, Bioconductor and Github. The taxreturn and seqateurs packages also provide wrappers around other software packages for QC. For convenience we will download and install these software in a new folder called “bin”
+
+```{r load packages, include=TRUE}
 #Set required packages
 .cran_packages <- c("ggplot2",
                     "gridExtra",
@@ -404,21 +407,31 @@ for (i in 1:length(runs)){
 
 DADA2 requires Non-biological nucleotides i.e. primers, adapters, linkers, etc to be removed. Prior to begining this workflow, samples were demultiplexed and illumina adapters were removed by the MiSeq software, however primer sequences still remain in the reads and must be removed prior to use with the DADA2 algorithm.
 
-In this study there were 2 amplicons of different size, and 3 differently tagged versions of these to indicate PCR replicates. To demultiplex these extra tags and trim these primers we will use the wrapper functions for the BBTools software contained in the seqateurs package
+In the first part of this study, four different amplicon combinations were tested. Then in the second part, 3 'twin-tagged' versions of fwhF2-fwhR2n were used to differentiate PCR replicates. To demultiplex these extra tags and trim these primers we will use the wrapper functions for BBTools Seal and BBDuk.
+
+**Forward Primers**
+
+| Name          | Illumina adapter                   | Primer sequences               |
+| :------------ | :--------------------------------  | :----------------------------- |
+| fwhF2_P5      | ACACTCTTTCCCTACACGACGCTCTTCCGATCT  | GGDACWGGWTGAACWGTWTAYCCHCC     |
+| BF1_P5        | ACACTCTTTCCCTACACGACGCTCTTCCGATCT  | ACWGGWTGRACWGTNTAYCC           |
+| SauronS878_P5 | ACACTCTTTCCCTACACGACGCTCTTCCGATCT  | GGDRCWGGWTGAACWGTWTAYCCNCC     |
+| fwhF2T1_P5    | ACACTCTTTCCCTACACGACGCTCTTCCGATCT  | GAGGDACWGGWTGAACWGTWTAYCCHCC   |
+| fwhF2T2_P5    | ACACTCTTTCCCTACACGACGCTCTTCCGATCT  | TGTGGDACWGGWTGAACWGTWTAYCCHCC  |
+| fwhF2T3_P5    | ACACTCTTTCCCTACACGACGCTCTTCCGATCT  | AGAAGGDACWGGWTGAACWGTWTAYCCHCC |
 
 
-FORWARD PRIMERS:
-    Name                    Illumina overhang adapter           Primer sequences
-    fwhF2T1_P5	ACACTCTTTCCCTACACGACGCTCTTCCGATCT	  GAGGDACWGGWTGAACWGTWTAYCCHCC
-    fwhF2T2_P5	ACACTCTTTCCCTACACGACGCTCTTCCGATCT	 TGTGGDACWGGWTGAACWGTWTAYCCHCC
-    fwhF2T3_P5	ACACTCTTTCCCTACACGACGCTCTTCCGATCT	AGAAGGDACWGGWTGAACWGTWTAYCCHCC
-    
-REVERSE PRIMERS:
-    Name                    Illumina overhang adapter           Primer sequences
-    fwhR2nT1_P7	GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT	ACGTRATWGCHCCDGCTARWACWGG
-    fwhR2nT2_P7	GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT	TCCGTRATWGCHCCDGCTARWACWGG
-    fwhR2nT3_P7	GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT	CTGCGTRATWGCHCCDGCTARWACWGG
-    
+**Reverse Primers**
+
+| Name        | Illumina adapter                   | Primer sequences            |
+| :---------- | :--------------------------------  | :-------------------------- |
+| fwhR2n_P7   | GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT | GTRATWGCHCCDGCTARWACWGG     |
+| BR1_P7      | GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT | ARYATDGTRATDGCHCCDGC        |
+| HexCOIR4_P7 | GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT | TATDGTRATDGCHCCNGC          |
+| fwhR2nT1_P7 | GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT | ACGTRATWGCHCCDGCTARWACWGG   |
+| fwhR2nT2_P7 | GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT | TCCGTRATWGCHCCDGCTARWACWGG  |
+| fwhR2nT3_P7 | GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT | CTGCGTRATWGCHCCDGCTARWACWGG |
+
 ```{r primer trimming , message=FALSE}
 #Load sample sheet
 samdf <- read.csv("sample_data/Sample_info.csv", stringsAsFactors = FALSE)
@@ -536,7 +549,7 @@ write_csv(logdf, "output/logs/logdf.csv")
 ## Plot read quality & lengths
   
   
-```{r QA plot, eval = TRUE, cache= TRUE}
+```{r QA plot}
 #Load sample sheet
 samdf <- read.csv("sample_data/Sample_info.csv", stringsAsFactors = FALSE)
 runs <- unique(samdf$fcid)
@@ -712,23 +725,18 @@ DADA2 depends on a param- eterized error model (the 16 × 41 transition probabil
 
 DADA2’s default parameter estimation method is to perform a weighted loess fit to the regularized log of the observed mismatch rates as a function of their quality, separately for each transition type (for example, A→C mismatches are fit separately from A→G mismatches).
 
-The problem with novaseq data is the binned quality scores.
-
-NovaSeq error rate conversions
-
-0-2 -> 2
-3-14 -> 12
-15-30 -> 23
-31-40 -> 37
-
-However, the error rate estimation function is a modular part of the algorithm, and users can provide their own R function to estimate the parameters of the error model from the observed mismatches if they prefer a different method.
-
 Every amplicon dataset has a different set of error rates and the DADA2 algorithm makes use of a parametric error model (err) to model this and infer real biological sequence variation from error. Following error model learning, all identical sequencing reads are dereplicated into into “Exact sequence variants” with a corresponding abundance equal to the number of reads with that unique sequence. The forward and reverse reads are then merged together by aligning the denoised forward reads with the reverse-complement of the corresponding reverse reads, and then constructing the merged “contig” sequences. Following this step, a sequence variant table is constructed and saved as an RDS file.
 
 For this analysis we will use all the reads to estimate error rate, and plot the error model for each run as a sanity check. In this plot you generally want to see if the fitted error rates (black line) reasonably fit the observations (black points) and generally decrease with increasing Q (towards right of plot)
 
-# Alternative to enforncing monotonicity:
-https://github.com/benjjneb/dada2/issues/938
+As the NovaSeq platform used for the final run has binned quality scores which can throw off error estimation:
+
+* Q0-2 -> Q2
+* Q3-14 -> Q12
+* Q15-30 -> Q23
+* Q31-40 -> Q37
+
+The estimated error matrix of nucleotide transitions was modified to enforce monotonicity as suggested by the DADA2 developers: https://github.com/benjjneb/dada2/issues/791#issuecomment-502256869
 
 ```{r Learn error rates }
 set.seed(666) # set random seed for reproducability
@@ -945,13 +953,13 @@ pdf(paste0("output/logs/seqtab_length_dist.pdf"), width = 11, height = 8 , paper
 try(dev.off(), silent=TRUE)
 ```
 
-## Assign taxonomy with IDTAXA & Exact matching
+## Assign taxonomy with IDTAXA & BLAST 
 
-We will use the IDTAXA algorithm of Murali et al 2018 - https://doi.org/10.1186/s40168-018-0521-5
+Hierarchical taxonomy was assigned to the filtered ASVs with a minimum bootstrap support of 60% using the IDTAXA algorithm (Murali et al., 2018) trained on the curated insect reference database of Piper et al. (2021).
 
-This requires training on a curated reference database - The pre-trained file can be found in the reference folder, alternatively see the taxreturn scripts to curate a reference database and train a new classifier.
+Additional species level assignment was conducted using a nucleotide BLAST search against the same reference database. To avoid over-classification errors, species identities obtained from BLAST searches were only accepted if the genus matched that predicted by IDTAXA. 
 
-Folllowing assignment with IDTAXA, we will also use exact matching with a reference database to assign more sequences (including the synthetic positive controls) to species level
+Where taxonomic clashes occurred at the species level due to ties between BLAST top hits, species occurrence records from the Atlas of Living Australia (https://www.ala.org.au/) and the Australian Faunal Directory (https://biodiversity.org.au/afd/) were used to resolve the most likely species name for the geographic location. 
 
 ```{r IDTAXA}
 seqtab_final <- readRDS("output/rds/seqtab_final.rds")
@@ -1141,6 +1149,18 @@ try(dev.off(), silent=TRUE)
 ```{r phylogenetic tree}
 tax <- readRDS("output/rds/final_tax.rds")
 
+#Rename synthetic orders
+tax[,2][which(str_detect(tax[,8], "Synthetic"))] <- "Arthropoda"
+
+# Filter taxonomy table
+tax <- tax %>% 
+  as_tibble(rownames="OTU") %>%
+  filter(Phylum %in% c("Arthropoda", "Synthetic")) %>%
+  filter(Class %in% c("Insecta", "Arachnida", "Collembola",  "Synthetic")) %>%
+  filter(!str_detect(Genus, "__")) %>%
+  column_to_rownames("OTU") %>%
+  as.matrix()
+
 seqs <- rownames(tax)
 names(seqs) <- rownames(tax)
 
@@ -1170,6 +1190,9 @@ constraint_tree <- tax2phylo(constraint_seqs, depth="Order", resolve_poly = "upp
 # View constraint tree
 ggtree(constraint_tree)
 
+# Write out constraint tree
+write.tree(constraint_tree, "output/constraint_tree.nwk")
+
 # Extract fasttree constraints from tree
 constraints <- castor::extract_fasttree_constraints(constraint_tree)$constraints
 
@@ -1191,14 +1214,13 @@ FastTree -gtr -cat 20 -nt alignment.fa > unconstrained_tree.nwk
 
 # Make a tree constrained at order level with fasttree
 FastTree -gtr -cat 20 -constraints tree_constraints.fa -nt alignment.fa > order_constrained_tree.nwk
-
 ```
 
 
 ## Make tree ultrametric
 ```{r phylogenetics}
 # Make ultrametric & Date
-tree <- read.tree("output/unconstrained_tree.nwk")
+tree <- read.tree("output/order_constrained_tree.nwk")
 
 Ntips 	<- length(tree$tip.label)
 Nnodes 	<- tree$Nnode
@@ -1207,6 +1229,18 @@ cat(sprintf("Tree has %d nodes, %d tips and %d edges\n",Nnodes,Ntips,nrow(tree$e
 # Get taxonomy again
 tax <- readRDS("output/rds/final_tax.rds")
 
+#Rename synthetic orders
+tax[,2][which(str_detect(tax[,8], "Synthetic"))] <- "Arthropoda"
+
+# Filter taxonomy table
+tax <- tax %>% 
+  as_tibble(rownames="OTU") %>%
+  filter(Phylum %in% c("Arthropoda", "Synthetic")) %>%
+  filter(Class %in% c("Insecta", "Arachnida", "Collembola",  "Synthetic")) %>%
+  filter(!str_detect(Genus, "__")) %>%
+  column_to_rownames("OTU") %>%
+  as.matrix()
+
 lineage <- tree$tip.label %>% 
   enframe() %>% 
   dplyr::rename(OTU = value) %>%
@@ -1214,73 +1248,43 @@ lineage <- tree$tip.label %>%
   left_join(tax %>% as_tibble(rownames="OTU"), by="OTU") 
 
 ## Reroot on Arachnida
-#outgroups <- lineage %>% 
-#  filter(Class == "Arachnida") %>%
-#  filter(OTU %in% tree$tip.label) %>%
-#  pull(OTU)
-#
-#library(castor)
-#newroot <- get_mrca_of_set(tree, outgroups)
-#
-#ggtree(tree, layout="circular")
-#
-#tree2 <- root_at_node(tree, newroot-Ntips)
-#
-#ggtree(tree2, layout="circular")
-#
-#cat(sprintf("New root is %d\n",find_root(tree)))
-#
-# Set names back to species
+outgroups <- lineage %>% 
+  filter(Class == "Synthetic") %>%
+  filter(OTU %in% tree$tip.label) %>%
+  pull(OTU)
+
+newroot <- get_mrca_of_set(tree, outgroups)
+
+tree2 <- root_at_node(tree, (newroot-Ntips))
+
+cat(sprintf("New root is %d\n",find_root(tree)))
 
 # create internal node labels
-tree$node.label <- NA
-if(is.na(tree$node.label)){
+
+Ntips 	<- length(tree2$tip.label)
+Nnodes 	<- tree2$Nnode
+
+tree2$node.label <- NA
+if(is.na(tree2$node.label)){
 	cat(sprintf("Adding node labels to full tree..\n"))
-	tree$node.label = paste("node.", 1:Nnodes, sep = "") # don't use underscores, because some tree readers (e.g. rncl) interpret them as spaces
+	tree2$node.label = paste("node.", 1:Nnodes, sep = "") # don't use underscores, because some tree readers (e.g. rncl) interpret them as spaces
 }
 
 # replace zero-length edges
-if(any(tree$edge.length==0)){
-  epsilon = 0.1*min(tree$edge.length[tree$edge.length>0])
+if(any(tree2$edge.length==0)){
+  epsilon = 0.1*min(tree2$edge.length[tree2$edge.length>0])
 	cat(sprintf("Note: Some edges have length zero, which may break some of the HSP routines. Replacing zero-lengths with a tiny positive length (%g)..\n",epsilon))
-	tree$edge.length[tree$edge.length==0] = epsilon
+	tree2$edge.length[tree2$edge.length==0] = epsilon
 }
 
-taxtab <- lineage %>%
-  dplyr::select(OTU, Genus, Family, Order) %>%
-  tibble::column_to_rownames("OTU") %>%
-  as.matrix()
-
-# Date usign congruify
-ref_tree <- read.tree("reference/chesters_2017_species_level_tree_ultrametric.nwk")
-ref_tree$node.label <- NA
-ref_tree$node.label = paste("node.", 1:Nnodes, sep = "") # don't use underscores, because some tree readers (e.g. rncl) interpret them as spaces
-table(ref_tree$tip.label %in% (tree$tip.label%>% str_remove("^.*\\|")))
-#38520 congruent tips
-
-# prune ref_tree to only congruent tips
-ref_tree_pruned <- drop.tip(ref_tree, ref_tree$tip.label[!ref_tree$tip.label %in% (lineage$Species%>% str_replace_all(" ", "_"))])
-
-table(ref_tree_pruned$tip.label %in% (lineage$Species%>% str_replace_all(" ", "_")))
-
-
-# Prune duplicate genera
-ref_tree_pruned2 <- drop.tip(ref_tree_pruned, ref_tree_pruned$tip.label[duplicated(ref_tree_pruned$tip.label %>%
-  str_remove("_.*$"))])
-
-#Adjust to genus
-ref_tree_pruned2$tip.label <- ref_tree_pruned2$tip.label %>%
-  str_remove("_.*$")
-
-res <- congruify.phylo(reference=ref_tree_pruned2, target=tree,taxonomy = taxtab, scale="PATHd8")
-
-write.tree(res$phy, "output/ultrametric_tree.nwk")
+# Write out rerooted tree
+write.tree(tree2, "output/order_constrained_rerooted.nwk")
 
 ```
 
 # Make Phyloseq object
 
-```{r create PS, eval = FALSE}
+```{r create PS}
 seqtab <- readRDS("output/rds/seqtab_final.rds")
 
 #Reformat sample IDs
@@ -1293,10 +1297,9 @@ rownames(seqtab)  <- rownames(seqtab) %>%
 tax <- readRDS("output/rds/final_tax.rds") 
 seqs <- DNAStringSet(colnames(seqtab))
 names(seqs) <- seqs
-phy <- read.tree("output/ultrametric_tree_order_constrained.nwk")
+phy <- read.tree("output/order_constrained_rerooted.nwk")
 
-##### Rename problematic samples
-#Could do this with the new dplyr functionality
+##### Rename mixed samples
 rownames(seqtab)  <- rownames(seqtab) %>%
  str_replace_all("D250M1-", "D250M4REP-") %>% # Works
  str_replace_all("D250M4-", "D250M2REP-") %>% # Works
@@ -1327,7 +1330,6 @@ str_replace_all("REP", "")
 
 
 # Samdf processing --------------------------------------------------------
-
 samdf <- read.csv("sample_data/sample_info.csv", header=TRUE) %>% 
   mutate(sample_id = case_when(
     fcid=="HLVKYDMXX" ~ paste0(sample_name, "_", amp_rep),
@@ -1367,8 +1369,6 @@ write_csv(samdf, "sample_data/sample_info2.csv")
 samdf <- read.csv("sample_data/sample_info2.csv", header=TRUE) %>%
   magrittr::set_rownames(.$sample_id)
 
-# Will probably need to rename the seqtabs and append the flowcell number onto the samples before they are merged
-
 ## ---- phyloseq ----
 ps <- phyloseq(tax_table(tax), 
                sample_data(samdf),
@@ -1381,19 +1381,26 @@ if(nrow(seqtab) > nrow(sample_data(ps))){warning("Warning: All samples not inclu
 rownames(samdf)[which(!rownames(sample_data(ps))  %in% rownames(samdf))]
 rownames(sample_data(ps))[which(!rownames(samdf)  %in% rownames(sample_data(ps)))]
 
+test <- speedyseq::psmelt(ps) %>%
+  dplyr::select(OTU, Genus, Order) %>%
+  distinct()
+
 # Rename all taxa
 taxa_names(ps) <- paste0("SV", seq(ntaxa(ps)),"-",tax_table(ps)[,8])
 
 #Rename synthetic orders
 tax_table(ps)[,2][which(str_detect(tax_table(ps)[,8], "Synthetic"))] <- "Arthropoda"
 
-#Subset to Drosophila (Remove carpophilus)
+#Subset to Drosophila (Remove carpophilus samples processed in same run)
 ps <- ps %>%
   subset_samples(!str_detect(sample_name, "CM[0-9]|CT[0-9]|CML[0-9]")
   ) %>%
   filter_taxa( function(x) mean(x) > 0, TRUE) 
 dir.create("output/csv")
 dir.create("output/csv/unfiltered/")
+
+# Write out renamed tree
+write.tree(phy_tree(ps), "output/renamed_tree.nwk")
 
 ##Export raw csv
 export <- speedyseq::psmelt(ps) %>%
@@ -1468,7 +1475,7 @@ try(dev.off(), silent=TRUE)
 
 ```
 
-### Summary statistics
+## Summary statistics
 
 ```{r summarise taxa}
 # N unique ASVs and samples
@@ -1561,7 +1568,7 @@ speedyseq::psmelt(ps) %>%
   arrange(rank)
 ```
 
-### Prevalence assesment
+## Prevalence assesment
 
 ```{R prevalence}
 #Prevalence matrix
@@ -1679,20 +1686,8 @@ message(nsamples(ps0) - nsamples(ps1), " Samples and ", ntaxa(ps0) - ntaxa(ps1),
 setdiff(sample_names(ps0), sample_names(ps1))
 ```
 
-
 ## Save filtered phyloseq object
 
 ```{r save filt}
 saveRDS(ps1, "output/rds/ps1.rds")
-```
-
-
-# Reproducability Receipt
-
-```{details, echo = FALSE, details.summary = 'Reproducability receipt'}
-# datetime
-Sys.time()
-#repository
-git2r::repository()
-sessioninfo::session_info()
 ```

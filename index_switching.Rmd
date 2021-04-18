@@ -1,15 +1,32 @@
 ---
 title: "Drosophila Metabarcoding"
-title: "index_switching"
+subtitle: "Determining a detection threshold"
 author: "Alexander Piper"
 date: "`r Sys.Date()`"
-output: html_document
+output:
+  html_document:
+    highlighter: null
+    theme: "flatly"
+    code_download: true
+    toc: true
+    toc_float: 
+      collapsed: false
+      smooth_scroll: true
+    df_print: paged    
+  pdf_document: default
 editor_options: 
   chunk_output_type: console
 ---
 
+```{r setup, include=FALSE}
+# Knitr global setup - change eval to true to run code
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE, eval=FALSE, message=FALSE,error=FALSE, fig.show = "hold", fig.keep = "all")
+opts_chunk$set(dev = 'png')
+```
+
 # Load packages
-```{r setup}
+```{r load packages}
 #Set required packages
 .cran_packages <- c("tidyverse",
                     "tidymodels",
@@ -52,15 +69,26 @@ source('R/themes.R')
 ```
 
 
-# Determine index switching rate
+# Introduction
 
-We will use 3 different methods to estimate the cross contamination rate:
+We will evaluate 5 different methods to estimate the cross contamination rate:
 
-* Firstly we will use the synthetic mock community positive control
-* Secondly we will use the estimate from the number of expected vs unapplied index combinations
-* Thirdly, we will use ROC analysis of false positives and false negatives for all taxa in the mocks.
+* The ‘unassigned indices’ method used the abundance ratio of valid (applied during library preparation) to invalid (pairs that could only arise due to switching) index combinations as per Wilcox et al. (2018).
 
-# Calculate from missasigned indexes
+* The ‘positive control’ method used the abundance ratio of synthetic COI sequences that were correctly assigned to the positive control libraries to those that were found in other samples. 
+
+* The ‘mock community’ method used the abundance ratio of expected to unexpected taxon observations across all mock communities. 
+
+* The ‘logistic regression’ method fit a logistic model of the per-sample RRA of each detection, trained on the expected and unexpected taxon observations within the mock communities, with the sequencing run included as an additional covariate to account for run-specific variation in contamination rates. With this method the predictive equation from the logistic model describes the probability of each observation being a true positive, and all observations with probability ≥50% were considered detections.
+
+* The final method used the same logistic regression model but included both the number of DNA extraction and PCR replicates that each observation was detected in as additional covariates. 
+
+
+To evaluate the predictive performance of each approach, all taxon observations within the mock communities will be randomly split into 80% training and 20% test sets and the logistic regression classifiers and all detection thresholds compared for their ability to remove cross contamination within the test dataset. 
+
+To ensure the comparisons were robust to whichever observations were assigned to the training and test sets, the random splitting, training, and evaluation will be repeated 1,000 times and the results averaged.
+
+# Unassigned indices
 
 ```{R switching missasigned}
 files <- "data/"
@@ -148,7 +176,7 @@ gg.switch
 
 ```
 
-# Estimate cross contamination using synthetic positive control
+# Positive control
 
 ```{r switch syns}
 ps <- readRDS("output/rds/ps_idtaxaExact.rds")
@@ -206,7 +234,7 @@ pos_switchrate
 
 ```
 
-# Estimate rate using known exp vs observed in mocks
+# Mock community
 
 From the use of the mock community we can see that the majority cross contamination must have come from DNA extraction and prior processes. Therefore we will also get an estimate 
 
@@ -348,14 +376,7 @@ mock_switchrate <- mocks %>%
 mock_switchrate 
 ```
 
-# logistic reg
-
-Predicting if a taxa is real or an artefact of index swithcing is a logistic regression problem
-it can be parameterized on:
-* Amount of reads
-* Overall switch rate (from exp vs observed in fastq) (flexible parameter that changes per run)
-* index sequence hamming distance
-* Presence of taxa in high abundance in another sample on the run - Ie there needs to be a high abundance taxa somewhere else for the switching to come from, otherwise its probably real or lab contamination
+# Logistic regression
 
 ```{r logistic regression}
 sam <- speedyseq::psmelt(ps_model) %>%
@@ -456,7 +477,7 @@ mock_cv <- vfold_cv(mock_train, strata = fcid, v = 10)
 switch_recipe <- recipe(outcome ~ abundance_RA + fcid, data = mock_train) %>%
   #update_role(sample_id, sample_name,fcid, taxon, new_role = "ID") %>%
   step_novel(all_nominal(), -all_outcomes()) %>% 
-  step_dummy(fcid, one_hot = FALSE) %>% 
+  step_dummy(fcid, one_hot = TRUE) %>% 
   step_zv(all_predictors()) %>%
   step_normalize(abundance_RA)
 
@@ -537,16 +558,16 @@ gg.roc_curve
 ```
 
 
-# Logistic + reps
+# Logistic Regression + Replicates
 
 ```{r logistic regression with replicates}
 # Create modelling recipe
 switch_recipe_reps <- recipe(outcome ~ abundance_RA + fcid + n_extract + n_rep, data = mock_train) %>%
   #update_role(sample_id, sample_name,fcid, taxon, new_role = "ID") %>%
   step_novel(all_nominal(), -all_outcomes()) %>% 
-  step_dummy(fcid) %>% 
+  step_dummy(fcid, one_hot = TRUE)  %>% 
   step_zv(all_predictors()) %>%
-  step_normalize(abundance_RA)
+  step_normalize(abundance_RA, n_rep, n_extract)
 
 # Define model
 glm_spec <- logistic_reg() %>%  #penalty = tune(), mixture = tune()
@@ -624,11 +645,12 @@ gg.roc_curve <- roc_curve(predictions_prob, truth = outcome, .pred_0) %>%
 gg.roc_curve
 ```
 
-# How well does it clean a real dataset?
+# Model comparison
 
 ```{R comparison}
 # Fit model to bootstrap resamples
-boots <- bootstraps(mock_dat, times = 1000, strata=outcome, apparent = TRUE)
+set.seed(666)
+boots <- bootstraps(mock_dat, times = 1000, strata=outcome, apparent = FALSE)
 
 fit_boots <- boots %>%
   mutate(
@@ -668,11 +690,17 @@ fit_boots <- boots %>%
     pred_mock = purrr::map(splits, function(x){
       assessment(x) %>%
         left_join(
-          mock_switchrate%>%
+          analysis(x) %>%
+          group_by(fcid, outcome) %>%
+          summarise(reads = sum(abundance))%>% 
+          pivot_wider(names_from = outcome,
+                      values_from = reads) %>%
+          mutate(switchrate = `0`/`1`) %>%
           dplyr::select(fcid, estimate = switchrate) 
         ) %>%
-        mutate(filtered = abundance_RA - estimate)%>%
+        mutate(filtered = abundance_RA - estimate) %>%
         dplyr::select(fcid, sample_id, sample_name, taxon ,abundance, abundance_RA, outcome, filtered)
+
     }),
     pred_naive = purrr::map(splits, function(x){
       assessment(x) %>%
@@ -707,20 +735,19 @@ pred_boots <- fit_boots %>%
   left_join(exp) %>%
   dplyr::select(-where(~is.list(.x))) %>%
   mutate(outcome_post= case_when(
-    filtered > 0 & is.na(expected) ~ "FP",
-    filtered > 0 & !is.na(expected) ~ "TP",
-    filtered <= 0 & expected > 0 ~ "FN",
+    filtered > 0 & is.na(expected) ~ "False Positive",
+    filtered > 0 & !is.na(expected) ~ "True Positive",
+    filtered <= 0 & expected > 0 ~ "False Negative",
     filtered <= 0 & is.na(expected) ~ as.character(NA)
   )) %>%
   filter(!is.na(outcome_post))
 
-saveRDS(pred_boots, file="output/index_switch_bootstraps.rds")
+#saveRDS(pred_boots, file="output/index_switch_bootstraps.rds")
 
-group.colors <- c(TP = "#abdda4", FP = "#d7191c", FN ="#2b83ba", TN ="#cccccc")
+group.colors <- c(`True Positive` = "#abdda4", `False Positive` = "#d7191c", `False Negative` ="#2b83ba", `True Negative` ="#cccccc")
 
 gg.bias_resolved <- pred_boots %>%
   filter(!(fcid %in% c("CB3DR", "CK3HD") & est_type == "pred_pos")) %>%
-
   group_by(est_type, outcome_post, fcid) %>%
   summarise(count = n(), count_fp = sum(outcome_post == "FP")) %>%
   group_by(est_type, fcid) %>%
@@ -735,8 +762,8 @@ gg.bias_resolved <- pred_boots %>%
            str_replace("pred_index", "Unassigned indices")
          ) %>%
   mutate(fcid = case_when(
-    fcid == "HLVKYDMXX" ~ paste0("NovaSeq"," ", fcid),
-    TRUE ~ paste0("MiSeq"," ", fcid),
+    fcid == "HLVKYDMXX" ~ "NovaSeq",
+    TRUE ~ "MiSeq",
   )) %>%
   mutate(est_type = factor(est_type,
                            levels= c(
@@ -751,7 +778,7 @@ gg.bias_resolved <- pred_boots %>%
   geom_col(position="stack", alpha = 0.8) +
   base_theme+
   coord_flip()+
-  facet_grid(~fcid) +
+  facet_grid(fcid~.) +
   scale_y_continuous(labels = scales::percent)+ 
   scale_fill_manual(values=group.colors) + 
   theme(legend.position = "bottom") +
@@ -762,7 +789,7 @@ gg.bias_resolved <- pred_boots %>%
 gg.bias_resolved
 ```
 
-# Write out figures
+# Save figures
 
 ```{R save figures}
 pdf(file="fig/supplementary/switching.pdf", width = 11, height = 8 , paper="a4r")
