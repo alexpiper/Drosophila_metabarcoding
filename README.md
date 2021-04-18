@@ -1,4 +1,4 @@
-# Drosophila_metabarcoding
+# Drosophila metabarcoding
 
 Analysis for Piper, Cunningham, Cogan & Blacket (In prep)
 This repository contains the code required for reproducing the analyses presented in our manuscript:
