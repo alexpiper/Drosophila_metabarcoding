@@ -28,6 +28,9 @@ opts_chunk$set(dev = 'png')
 ## Load packages
 
 ```{r load packages}
+# Load the Renv containing package versions
+renv::restore()
+
 #Set required packages
 .cran_packages <- c("tidyverse",
                     "tidymodels",
@@ -43,7 +46,8 @@ opts_chunk$set(dev = 'png')
                     "ggrepel",
                     "devtools",
                     "ggnewscale",
-                    "ggpubr")
+                    "ggpubr",
+                    "ggdist")
 .bioc_packages <- c("dada2",
                     "phyloseq", 
                     "ggtree",
@@ -78,9 +82,6 @@ library(taxreturn)
 library(seqateurs)
 library(CoDaSeq)
 library(metacal)
-
-#Source internal functions
-source('R/helper_functions.R')
 
 #Source themes
 source('R/themes.R')
@@ -326,8 +327,7 @@ broom::tidy(TukeyHSD(aov(dist ~type, data=rep_dist_types))) %>%
     adj.p.value < 0.05 ~ TRUE,
     TRUE ~ FALSE
   )) %>%
-  tidyr::separate(contrast, into=c("contrast_1", "contrast_2"), sep="-") %>%
-  View()
+  tidyr::separate(contrast, into=c("contrast_1", "contrast_2"), sep="-")
 
 
 # Mean pairwise distance between pcr replicates within extraction
@@ -1357,7 +1357,7 @@ gg.run1_heatmap <- heatmap_dat %>%
   scale_fill_viridis_c(labels = scales::percent, na.value = NA, alpha=0.9) +
   new_scale_fill() +
   geom_tile(aes(fill = outcome))+
-  scale_fill_manual(values=c("FP" = "#e41a1c", "FN"= "grey60")) +
+  scale_fill_manual(values=c("FP" = "#e41a1c", "FN"= "grey60"), na.value = NA) +
   base_theme+
   theme(legend.position = "right",
         axis.text.y = element_text(face="italic"),
@@ -1462,7 +1462,7 @@ gg.ratio
 # Estimate bias on geometrically centred ratios
 bias <- joint %>%
   filter(material_type=="DrosMock") %>%
-  filter(expected > 0, Abundance > 0) %>%
+  filter(expected > 0, observed > 0) %>%
   group_by(pcr_primers, material_type)  %>%
     nest() %>%
     mutate(fit = purrr::map(data, ~lm(error_clr ~ 0 + taxon , data = .)), 
@@ -1543,14 +1543,17 @@ gg.bias <- preds %>%
   ungroup() %>%
   dplyr::select(taxon, estimate, upper, lower, pcr_primers) %>%
   distinct()%>%
-  left_join(mock_tree$data %>% dplyr::mutate(taxon = label %>% str_replace(" ", "_"))) %>%
+  left_join(mock_tree$data %>% dplyr::mutate(taxon = label)) %>% # %>% str_replace(" ", "_")
+  filter(!is.na(estimate)) %>%
   mutate(taxon = taxon %>% 
            str_replace("^Drosophila_", "D. ")%>%
            str_replace("^Scaptodrosophila_", "Sca. ")) %>%
   mutate(taxon = factor(taxon))%>%
   ggplot(aes(x = fct_reorder(taxon, y), y = estimate, colour = pcr_primers, group = pcr_primers)) +
   geom_hline(yintercept = 1, alpha=0.5, colour = "grey20") +
-  geom_pointrange(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.6))+
+  stat_interval(aes(color_ramp  = stat(level)), position=position_dodge(width=0.6))+
+  stat_summary(fun = mean, size=0.2, position=position_dodge(width=0.6), colour="black")+
+  #geom_pointrange(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.6))+
   #coord_flip() +
   scale_y_log10()+
   #facet_grid(pcr_primers~.) +
@@ -1563,9 +1566,70 @@ gg.bias <- preds %>%
   theme(axis.text.x = element_text(face = "italic"),
         legend.position = "bottom")
 
+
+  #geom_pointrange(aes(ymax = estimate+std.error, ymin=estimate-std.error))+
+  #geom_interval(aes(ymax = estimate+std.error, ymin=estimate-std.error), colour = "skyblue") +
+
 gg.bias
 
 #bias is missing for BF1 biarmipes because it was under filtering threshold
+```
+
+```{R metacal}
+fit_metacal <- joint %>%
+   group_by(target_subfragment, mixture_type) %>%
+    nest() %>%
+    mutate(
+        fit = purrr::map(data, function(x){
+        obs_mat <- x %>%
+          dplyr::select(sample_id, taxon, observed)%>%
+          pivot_wider(id_cols= sample_id,
+                      names_from = "taxon",
+                      values_from = "observed",
+                      values_fill = list(observed=0))%>%    
+          column_to_rownames("sample_id") %>%
+          as.matrix() 
+        
+        exp_mat <- x %>%
+          dplyr::select(sample_id, taxon, expected)%>%
+          pivot_wider(id_cols= sample_id,
+                      names_from = "taxon",
+                      values_from = "expected",
+                      values_fill = list(expected=0))%>%    
+          column_to_rownames("sample_id") %>%
+          as.matrix() 
+                
+       fit_mc <- estimate_bias(
+          obs_mat,
+          exp_mat, 
+          margin = 1, # samples as rows
+          boot = TRUE
+        ) %>%
+         summary()
+       out <- fit_mc$coefficients %>%
+         dplyr::rename(.pred = estimate)
+       return(out)
+        })) %>%
+    unnest(fit) 
+
+
+#results
+metacal_results <- joint %>%
+  left_join(fit_metacal) %>%
+  dplyr::filter(exp_individuals> 0) %>% 
+  mutate(
+    predicted = exp_individuals * .pred,
+    estimated = .pred
+  )%>%
+  group_by(sample_id) %>%
+  mutate_at(vars(predicted), ~ . / sum(., na.rm=TRUE) ) %>%
+  ungroup() %>%
+  dplyr::select(!where(is.list))
+
+metacal_results %>%
+  group_by(target_subfragment, mixture_type) %>%
+  rmse(truth = observed, estimate = predicted)
+
 ```
 
 ## Multifig1
@@ -1780,7 +1844,6 @@ gg.trapall
 ## Number of species
 
 ```{r summarise taxa}
-
 # Subset to fwhf2-fwhr2n samples only
 
 ps2 <- readRDS("output/rds/ps_filtered.rds")
