@@ -63,7 +63,6 @@ library(speedyseq)
 library(seqateurs)
 
 #Source internal functions
-source('R/helper_functions.R')
 source('R/themes.R')
 
 ```
@@ -123,9 +122,8 @@ indices <- outlist %>%
   bind_rows()
 
 #write_rds(indices, "output/indices.rds")
-#test <- indices
 
-indices <- read_rds("output/indices.rds")
+indices <- readRDS("output/indices.rds")
 # Get all possible combinations
 combos <- indices %>% 
   dplyr::filter(!str_detect(sample_name, "Undetermined")) %>%
@@ -179,7 +177,7 @@ gg.switch
 # Positive control
 
 ```{r switch syns}
-ps <- readRDS("output/rds/ps_idtaxaExact.rds")
+ps <- readRDS("output/rds/ps_merged.rds")
 
 # plot synthetic positive controls
 Syn_taxa <- c("Synthetic Acrididae", "Synthetic Aphididae", "Synthetic Apidae", "Synthetic Cerambycidae", "Synthetic Crambidae", "Synthetic Culicidae","Synthetic Drosophilidae","Synthetic Nitidulidae","Synthetic Siricidae","Synthetic Tephritidae", "Synthetic Thripidae", "Synthetic Tortricidae", "Synthetic Triozidae")
@@ -193,7 +191,7 @@ colour.pal <- getPalette(colourCount)
 
 gg.syn <- ps %>%
   subset_samples(type=="POS") %>%
-  subset_taxa(Species %in% Syn_taxa) %>%
+  subset_taxa(Species %in% str_replace(Syn_taxa, " ", "_")) %>%
   filter_taxa(function(x) mean(x) > 0, TRUE) %>%
   speedyseq::psmelt()%>%
   dplyr::filter(fcid=="HLVKYDMXX") %>%
@@ -239,35 +237,13 @@ pos_switchrate
 From the use of the mock community we can see that the majority cross contamination must have come from DNA extraction and prior processes. Therefore we will also get an estimate 
 
 ```{r switch mocks}
-ps <- readRDS("output/rds/ps_idtaxaExact.rds")
+ps <- readRDS("output/rds/ps1.rds")
 
 # Subset to mocks
 ps_model <- ps
 
 tax_table(ps_model)[,8] <- tax_table(ps_model)[,8] %>% str_replace(" ", "_")
-# Check Drosophila_suzukii in sample D500M1 - these are definitely misplaced and ruinign the modelling
-
-#Rename taxa to match expected
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_albomicans")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_nasuta")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_hypocausta")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_pulaua")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_kohkoa")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_rubida")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_sulfurigaster")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_mauritiana/simulans")] <-
-"Drosophila_simulans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Carpophilus_dimidiatus/nr.dimidiatus")] <-
-"Carpophilus_nr.dimidiatus"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
+# Check Drosophila_suzukii in sample D500M1 - these are definitely misplaced and ruining the modelling
 
 ps_model <- ps_model %>%
   speedyseq::tax_glom(taxrank = "Species") %>%
@@ -384,7 +360,7 @@ sam <- speedyseq::psmelt(ps_model) %>%
   mutate(taxon = species) %>%
   filter(!str_detect(taxon, "__")) %>%
   filter(fcid %in% c("CB3DR", "HLVKYDMXX"))  %>%
-  filter(abundance > 0) %>%
+  #filter(abundance > 0) %>%
   dplyr::select(otu, sample_name, extract_id, sample_id, taxon, pcr_primers,fcid, material_type = type, abundance) %>%
   distinct() %>%
   group_by(sample_name, otu, fcid) %>%
@@ -429,8 +405,8 @@ mock_dat <- sam %>%
   ungroup() %>%
   dplyr::select(fcid, sample_id, sample_name, taxon, abundance, abundance_RA, abundance_clr, outcome, n_rep, n_extract) %>%
   mutate(outcome = case_when(
-    outcome == 0 & abundance_RA > 0.01 ~ as.numeric(NA), #Deal with obvious misannotated expecteds
-    outcome == 1 & abundance == 0 ~ as.numeric(NA), #Deal with total dropouts
+    outcome == 0 & abundance_RA > 0.01 ~ as.numeric(NA), #Deal with any obvious misannotated expected
+    outcome == 1 & abundance == 0 ~ as.numeric(NA), #Deal with complete dropouts
     TRUE ~ outcome
   )) %>%
   filter(!is.na(outcome)) %>%
@@ -478,8 +454,10 @@ switch_recipe <- recipe(outcome ~ abundance_RA + fcid, data = mock_train) %>%
   #update_role(sample_id, sample_name,fcid, taxon, new_role = "ID") %>%
   step_novel(all_nominal(), -all_outcomes()) %>% 
   step_dummy(fcid, one_hot = TRUE) %>% 
+  # themis::step_upsample(outcome) %>%
   step_zv(all_predictors()) %>%
-  step_normalize(abundance_RA)
+  step_log(abundance_RA, base=10, offset = 0.0001) %>%
+  step_normalize(abundance_RA) 
 
 # Define model
 glm_spec <- logistic_reg() %>% 
@@ -566,8 +544,16 @@ switch_recipe_reps <- recipe(outcome ~ abundance_RA + fcid + n_extract + n_rep, 
   #update_role(sample_id, sample_name,fcid, taxon, new_role = "ID") %>%
   step_novel(all_nominal(), -all_outcomes()) %>% 
   step_dummy(fcid, one_hot = TRUE)  %>% 
+  #themis::step_tomek(outcome) %>%
+  #step_mutate(abundance_RA = case_when(
+  #  is.nan(abundance_RA) ~ 0,
+  #  TRUE ~ abundance_RA
+  #  )) %>%
   step_zv(all_predictors()) %>%
-  step_normalize(abundance_RA, n_rep, n_extract)
+  step_log(abundance_RA, base=10, offset = 0.0001) %>%
+  step_normalize(n_rep, n_extract, abundance_RA) 
+
+juice(prep(switch_recipe_reps))
 
 # Define model
 glm_spec <- logistic_reg() %>%  #penalty = tune(), mixture = tune()
@@ -579,11 +565,24 @@ glm_reps_wf <- workflow() %>%
   add_recipe(switch_recipe_reps) %>%
   add_model(glm_spec)
 
+# Tune workflow
+#Tune grid using a latin hypercube design
+#cv <- vfold_cv(mock_train, v = 5) # Should i do group to ensure samples are kept together?
+#
+#glm_tune <- tune_grid(glm_reps_wf, resamples = cv, grid = 20)
+#tune_res <- collect_metrics(glm_tune)
+#
+#autoplot(glm_tune)
+#
+#glm_reps_wf_tuned <- finalize_workflow(glm_reps_wf, glm_tune %>% select_best("roc_auc"))
+
+glm_reps_wf_tuned <- glm_reps_wf 
+
 # Fit workflow
-logistic_glm_reps <- glm_reps_wf  %>%
+logistic_glm_reps <- glm_reps_wf_tuned  %>%
   fit(mock_train)
 
-# See how it went on the trainigng dataset
+# See how it went on the training dataset
 predictions_glm <- logistic_glm_reps %>%
   predict(new_data = mock_train) %>%
   bind_cols(bake(prep(switch_recipe), new_data =  mock_train))
@@ -626,7 +625,7 @@ multimetric(predictions_glm, truth = outcome, estimate = .pred_class)
 
 # Check for disagreements within mock
 test <- predictions_glm %>%
-  dplyr::select(.pred_class, abundance_clr, sample_id,  taxon, outcome)  %>%
+  dplyr::select(.pred_class, abundance_clr, abundance_RA, sample_id,  taxon, outcome)  %>%
   mutate(diff = !.pred_class == outcome)
 
 # Make an ROC curve
@@ -650,7 +649,7 @@ gg.roc_curve
 ```{R comparison}
 # Fit model to bootstrap resamples
 set.seed(666)
-boots <- bootstraps(mock_dat, times = 1000, strata=outcome, apparent = FALSE)
+boots <- bootstraps(mock_dat, times = 100, strata=outcome, apparent = FALSE)
 
 fit_boots <- boots %>%
   mutate(
@@ -667,7 +666,7 @@ fit_boots <- boots %>%
                       abundance_RA, abundance_clr, outcome, filtered)
     }),
     pred_logit_reps = purrr::map(splits, function(x){
-      fits <- fit(glm_reps_wf, analysis(x))
+      fits <- fit(glm_reps_wf_tuned, analysis(x))
       bind_cols(
         assessment(x), 
         predict(fits, assessment(x))) %>%

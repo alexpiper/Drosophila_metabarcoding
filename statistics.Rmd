@@ -297,6 +297,7 @@ gg.jacpw <- rep_distance %>%
   scale_x_continuous(labels = scales::label_number_si())+
   scale_colour_viridis_c( )+
   base_theme +
+  theme(axis.text.x = element_text(angle=0))+
   labs(x = "Pairwise difference in seq depth",
        y = "Pairwise Jaccard Similarity")+
   coord_cartesian(ylim = c(0,1))
@@ -458,8 +459,7 @@ gg.mpd <- do.call("list", mget(grep("mpd_",names(.GlobalEnv),value=TRUE))) %>%
   theme(legend.position = "top")+
   coord_cartesian(ylim=c(0,1))+
   scale_y_continuous(labels = scales::percent, position = "right")+
-  scale_x_discrete(position = "top")+
-  theme(axis.text.x = element_text(angle = 45, hjust = 0, vjust=0))+
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5, vjust=0.5))+
   #coord_flip(ylim=c(0,1))+
   scale_fill_viridis_d()+
   scale_colour_viridis_d()+
@@ -490,28 +490,6 @@ We will filter index switching using a logistic regression model trained on the 
 ps_model <- ps1
 
 tax_table(ps_model)[,8] <- tax_table(ps_model)[,8] %>% str_replace(" ", "_")
-
-#Rename taxa to match expected
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_albomicans")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_nasuta")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_hypocausta")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_pulaua")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_kohkoa")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_rubida")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_sulfurigaster")] <-
-"Drosophila_immigrans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Drosophila_mauritiana/simulans")] <-
-"Drosophila_simulans"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Carpophilus_dimidiatus/nr.dimidiatus")] <-
-"Carpophilus_nr.dimidiatus"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
-tax_table(ps_model)[,8][which(tax_table(ps_model)[,8]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
 
 ps_model <- ps_model %>%
   speedyseq::tax_glom(taxrank = "Species") %>%
@@ -636,6 +614,7 @@ model_df <- sam %>%
 # Get just known outcomes
 mock_dat <- model_df %>%
   filter(!is.na(outcome)) 
+  #filter(!is.na(outcome), abundance > 0) 
 
 # Create dataset split
 set.seed(seed = 42) 
@@ -651,8 +630,10 @@ mock_cv <- vfold_cv(mock_train, v = 10)
 switch_recipe <- recipe(outcome ~ abundance_RA + fcid + n_rep + n_extract, data = mock_train) %>%
   step_novel(all_nominal(), -all_outcomes()) %>% 
   step_dummy(fcid, one_hot = FALSE) %>% 
+  themis::step_upsample(outcome) %>%
   step_zv(all_predictors()) %>%
-  step_normalize(n_rep, n_extract, abundance_RA)
+  step_log(abundance_RA, base=10, offset = 0.00001) #%>%
+  #step_normalize(n_rep, n_extract, abundance_RA)
 
 juice(prep(switch_recipe))
 
@@ -703,14 +684,6 @@ gg.conf_matrix <- predictions_glm %>%
 
 gg.conf_matrix
 
-# Plot regression curve
-predictions_glm %>%
-  pull(pred_curve)
-
-pdf(file="fig/supplementary/log_curve.pdf", width = 6, height = 4 , paper="a4r")
-  plot(predictions_glm$pred_curve[[1]])
-try(dev.off(), silent=TRUE)
-  
 # Calculate performance over number of predictors
 threshold_data <- predictions_glm %>%
   unnest(train, pred_train) %>%
@@ -982,11 +955,10 @@ target_det <- final_predictions_glm %>%
                              "Drosophila subpulchrella",
                              "Drosophila biarmipes")) 
 
-#Problems ot check
+#Problematic detections check
 problem <- target_det %>% 
-  filter(abundance  >0) %>%
+  filter(abundance  > 0) %>%
   filter(.pred == 1 & is.na(outcome))
-
 
 # Number of samples
 target_det %>% 
@@ -1416,7 +1388,18 @@ sam <- speedyseq::psmelt(ps_bias) %>%
          sample_name = sample_name %>%
            str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_")) 
 
-#Join tables 
+
+# create a good pseudocount
+# this was chosen to give a proportion that is less than 1 divided by the maximum sample read depth
+# and so is expected to have negligible effect on the resulting estimates.
+pseudocount <- sam %>% 
+  group_by(sample_id) %>%
+  summarise(sum = sum(abundance)) %>%
+  pull(sum)%>% 
+  max() %>% 
+  {1 / .}
+
+#Join expected and observed tables 
 joint <- sam %>%
   filter(taxon %in% exp$taxon,
          sample_name %in% exp$sample_name) %>%
@@ -1424,21 +1407,12 @@ joint <- sam %>%
   dplyr::rename(observed = abundance) %>%
   filter(observed > 0) %>%
   mutate(expected = replace_na(expected, 0),
-         observed0 = (observed + 0.5) * (expected > 0),
+         observed0 = (observed + pseudocount) * (expected > 0),
          error = observed0 / expected) %>%
   distinct() %>%
   group_by(sample_id, pcr_primers) %>%
   mutate_at(vars(observed, expected), ~ . / sum(.) ) %>% #Convert to proportions
-  filter(observed > 0.00011) %>% #Remove under threshold
-  group_by(sample_id) %>%
-  group_modify(~{
-    clr_denom <- .x %>%
-      pull(error) %>%
-      gm_mean(na.rm = TRUE)
-    .x %>%
-      mutate(error_clr = log(error / clr_denom))
-  })
-
+  filter(observed > 0.00011) #Remove taxa under threshold
 
 # Visualise the error in all pairwise ratios
 gg.ratio <- joint %>%
@@ -1459,126 +1433,13 @@ gg.ratio <- joint %>%
 
 gg.ratio
 
-# Estimate bias on geometrically centred ratios
-bias <- joint %>%
+
+# Fit the metacal model to each pcr primer set and community type
+fit_metacal <- joint %>%
   filter(material_type=="DrosMock") %>%
   filter(expected > 0, observed > 0) %>%
   group_by(pcr_primers, material_type)  %>%
-    nest() %>%
-    mutate(fit = purrr::map(data, ~lm(error_clr ~ 0 + taxon , data = .)), 
-           tidied =  purrr::map(fit, broom::tidy),
-           aug =  purrr::map(fit, broom::augment)
-    ) %>%
-  dplyr::select(-fit) %>%
-  unnest(tidied) %>%
-  mutate(taxon = str_remove(term, "taxon"),
-         estimate = exp(estimate)) %>%
-   dplyr::select(pcr_primers, material_type, taxon, estimate)
-
-
-# Bootstrap estimation
-set.seed(606)
-boot_models <- joint %>%
-  filter(material_type=="DrosMock") %>%
-  filter(expected > 0) %>%
-  group_by(pcr_primers) %>%
-  group_modify(~{
-    bootstraps(.x, times=1000, apparant=TRUE)  %>%
-    mutate(fit =  purrr::map(splits, ~lm(error_clr ~ 0 + taxon , data = .)), 
-           coef =  purrr::map(fit, function(x){
-             broom::tidy(x) %>% 
-               mutate(estimate = exp(estimate))}))%>%
-    int_pctl(coef)
-    }) %>%
-  mutate(taxon = str_remove(term, "taxon")) %>%
-  dplyr::select(pcr_primers, taxon, lower = .lower, estimate = .estimate, upper = .upper)
-
-  
-# See how well bias esitmate fits data
-preds <- joint %>%
-  left_join(boot_models) %>%
-  dplyr::mutate(predicted = expected * estimate) %>%
-  group_by(sample_id, pcr_primers) %>%
-  mutate_at(vars(predicted), ~ . / sum(., na.rm=TRUE) ) %>%
-  filter(expected > 0) %>%
-  filter(observed > 0)
-
-# Get RMSE
-errors <- preds %>%
-  group_by(pcr_primers) %>%
-  rmse(truth = observed, estimate = predicted) %>%
-  dplyr::select(pcr_primers, rmse = .estimate)
-
-gg.bias_fits <- preds %>%
-  mutate(taxon = str_replace(taxon, "_", " ")) %>%
-  left_join(errors) %>%
-  mutate(rmse = paste0("RMSE = ", round(rmse, 2))) %>%
-  ggplot(aes(x=logit(predicted), y=logit(observed), color = taxon))+
-  geom_abline(intercept = 0, slope = 1, color = "grey") +
-    geom_jitter(width = 0.1, height = 0, alpha=0.7, size=2) +
-  geom_text(aes(x=-5, y=-1, label=rmse), check_overlap = TRUE, inherit.aes = FALSE)+
-  facet_wrap(~pcr_primers)+
-  coord_fixed()+
-  scale_color_brewer(palette = "Paired")+
-  base_theme +
-  theme(
-        panel.spacing.x = unit(1, "lines"),
-        legend.position = "right",
-        legend.text = element_text(face = "italic", size=10)
-    ) +
-   labs(x = "log-odds(Predicted proportion)", 
-     y = "log-odds(Observed proportion)",
-     colour = "Taxon") 
-
-
-gg.bias_fits
-
-# Write out bias explained for supplementary 
-pdf(file="fig/supplementary/bias_model_fit.pdf", width = 8, height = 6 , paper="a4r")
-  plot(gg.bias_fits)
-try(dev.off(), silent=TRUE)
-
-# Plot bias estimates
-gg.bias <- preds %>%
-  ungroup() %>%
-  dplyr::select(taxon, estimate, upper, lower, pcr_primers) %>%
-  distinct()%>%
-  left_join(mock_tree$data %>% dplyr::mutate(taxon = label)) %>% # %>% str_replace(" ", "_")
-  filter(!is.na(estimate)) %>%
-  mutate(taxon = taxon %>% 
-           str_replace("^Drosophila_", "D. ")%>%
-           str_replace("^Scaptodrosophila_", "Sca. ")) %>%
-  mutate(taxon = factor(taxon))%>%
-  ggplot(aes(x = fct_reorder(taxon, y), y = estimate, colour = pcr_primers, group = pcr_primers)) +
-  geom_hline(yintercept = 1, alpha=0.5, colour = "grey20") +
-  stat_interval(aes(color_ramp  = stat(level)), position=position_dodge(width=0.6))+
-  stat_summary(fun = mean, size=0.2, position=position_dodge(width=0.6), colour="black")+
-  #geom_pointrange(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.6))+
-  #coord_flip() +
-  scale_y_log10()+
-  #facet_grid(pcr_primers~.) +
-  base_theme+
-  scale_colour_brewer(palette="Paired") +
-  labs(
-    x = NULL,
-    colour="PCR primers",
-    y = "Efficiency / Geometric mean") +
-  theme(axis.text.x = element_text(face = "italic"),
-        legend.position = "bottom")
-
-
-  #geom_pointrange(aes(ymax = estimate+std.error, ymin=estimate-std.error))+
-  #geom_interval(aes(ymax = estimate+std.error, ymin=estimate-std.error), colour = "skyblue") +
-
-gg.bias
-
-#bias is missing for BF1 biarmipes because it was under filtering threshold
-```
-
-```{R metacal}
-fit_metacal <- joint %>%
-   group_by(target_subfragment, mixture_type) %>%
-    nest() %>%
+  nest() %>%
     mutate(
         fit = purrr::map(data, function(x){
         obs_mat <- x %>%
@@ -1606,30 +1467,86 @@ fit_metacal <- joint %>%
           boot = TRUE
         ) %>%
          summary()
-       out <- fit_mc$coefficients %>%
-         dplyr::rename(.pred = estimate)
+       out <- fit_mc$coefficients
        return(out)
         })) %>%
-    unnest(fit) 
+    unnest(fit) %>%
+  mutate(lower = estimate / gm_se^2, upper = estimate * gm_se^2)
 
 
-#results
-metacal_results <- joint %>%
+# See how well bias estimates fit the data
+preds <- joint %>%
   left_join(fit_metacal) %>%
-  dplyr::filter(exp_individuals> 0) %>% 
-  mutate(
-    predicted = exp_individuals * .pred,
-    estimated = .pred
-  )%>%
-  group_by(sample_id) %>%
+  dplyr::mutate(predicted = expected * estimate) %>%
+  group_by(sample_id, pcr_primers) %>%
   mutate_at(vars(predicted), ~ . / sum(., na.rm=TRUE) ) %>%
+  filter(expected > 0) %>%
+  filter(observed > 0)
+
+# Get RMSE
+errors <- preds %>%
+  group_by(pcr_primers) %>%
+  rmse(truth = observed, estimate = predicted) %>%
+  dplyr::select(pcr_primers, rmse = .estimate)
+
+gg.bias_fits <- preds %>%
+  mutate(taxon = str_replace(taxon, "_", " ")) %>%
+  left_join(errors) %>%
+  mutate(rmse = paste0("RMSE = ", scales::percent(rmse, 2))) %>%
+  ggplot(aes(x=predicted, y=observed, color = taxon))+
+  geom_abline(intercept = 0, slope = 1, color = "grey") +
+    geom_jitter(width = 0.1, height = 0, alpha=0.7, size=2) +
+  geom_text(aes(x=0.05, y=0.9, label=rmse), check_overlap = TRUE, inherit.aes = FALSE)+
+  facet_wrap(~pcr_primers)+
+  coord_fixed()+
+  scale_color_brewer(palette = "Paired")+
+  scale_x_continuous(trans = scales::pseudo_log_trans(1e-2), labels=scales::percent, breaks=c(0, 0.025, 0.05, 0.1, 0.25, 0.5, 1), limits=c(0,1))+
+  scale_y_continuous(trans = scales::pseudo_log_trans(1e-2), labels=scales::percent, breaks=c(0, 0.025, 0.05, 0.1, 0.25, 0.5, 1), limits=c(0,1))+
+  base_theme +
+  theme(
+        panel.spacing.x = unit(1, "lines"),
+        legend.position = "right",
+        legend.text = element_text(face = "italic", size=10)
+    ) +
+   labs(x = "log-odds(Predicted proportion)", 
+     y = "log-odds(Observed proportion)",
+     colour = "Taxon") 
+
+
+gg.bias_fits
+
+# Write out bias explained for supplementary 
+pdf(file="fig/supplementary/bias_model_fit.pdf", width = 8, height = 6 , paper="a4r")
+  plot(gg.bias_fits)
+try(dev.off(), silent=TRUE)
+
+# Plot bias estimates
+gg.bias <- preds %>%
   ungroup() %>%
-  dplyr::select(!where(is.list))
+  dplyr::select(taxon, estimate, upper, lower, pcr_primers) %>%
+  distinct()%>%
+  left_join(mock_tree$data %>% dplyr::mutate(taxon = label %>% str_replace(" ", "_")))%>%
+  filter(!is.na(estimate)) %>%
+  mutate(taxon = taxon %>% 
+           str_replace("^Drosophila_", "D. ")%>%
+           str_replace("^Scaptodrosophila_", "Sca. ")) %>%
+  mutate(taxon = factor(taxon))%>%
+  ggplot(aes(x = fct_reorder(taxon, y), y = estimate, colour = pcr_primers, group = pcr_primers)) +
+  geom_hline(yintercept = 1, alpha=0.5, colour = "grey20") +
+  geom_pointrange(aes(ymin = lower, ymax = upper), position=position_dodge(width=0.6))+
+  scale_y_log10()+
+  base_theme+
+  scale_colour_brewer(palette="Paired") +
+  labs(
+    x = NULL,
+    colour="PCR primers",
+    y = "Efficiency / Geometric mean") +
+  theme(axis.text.x = element_text(face = "italic"),
+        legend.position = "bottom")
 
-metacal_results %>%
-  group_by(target_subfragment, mixture_type) %>%
-  rmse(truth = observed, estimate = predicted)
+gg.bias
 
+#bias is missing for BF1 biarmipes because it was under filtering threshold
 ```
 
 ## Multifig1
@@ -1655,7 +1572,7 @@ Run 2 - see the differences in bias between replicates
 
 ```{R run2}
 # RUN 2
-ps_run2 <- readRDS("output/rds/ps_idtaxaExact.rds") %>%
+ps_run2 <- ps1 %>%
   subset_samples(fcid %in% c("CK3HD")) %>%
   filter_taxa( function(x) mean(x) > 0, TRUE) %>%
   speedyseq::tax_glom(taxrank="Species")
@@ -1673,8 +1590,7 @@ exp <- read_csv("sample_data/expected_quant_merged.csv") %>%
   distinct()
 
 #Get observed
-
-sam <- ps_run2%>%
+sam <- ps_run2 %>%
   speedyseq::psmelt() %>%
   janitor::clean_names() %>%
   mutate(taxon = species) %>%
@@ -1683,6 +1599,17 @@ sam <- ps_run2%>%
   mutate(sample_name = sample_name %>%
            str_remove_all("BF1-BR1-|SauronS878-HexCOIR4-|fwhF2-HexCOIR4-|fwhF2-fwhR2n-") %>%
            str_remove_all("HLVKYDMXX_|CK3HD_|CB3DR_|CJKFJ_"))
+
+
+# create a good pseudocount
+# this was chosen to give a proportion that is less than 1 divided by the maximum sample read depth
+# and so is expected to have negligible effect on the resulting estimates.
+pseudocount <- sam %>% 
+  group_by(sample_id) %>%
+  summarise(sum = sum(abundance)) %>%
+  pull(sum)%>% 
+  max() %>% 
+  {1 / .}
 
 #Join tables 
 joint <- sam %>%
@@ -1697,36 +1624,51 @@ joint <- sam %>%
   distinct() %>%
   group_by(sample_id) %>%
   mutate_at(vars(observed, expected), ~ . / sum(.) ) %>% #Convert to proportions
-  ungroup() %>%
-  group_by(sample_id) %>%
-  group_modify(~{
-    clr_denom <- .x %>%
-      pull(error) %>%
-      gm_mean(na.rm = TRUE)
-    .x %>%
-      mutate(error_clr = log(error / clr_denom))
-  })
+  ungroup() 
 
-# Bootstrap estimation
-set.seed(606)
-boot_models <- joint %>%
+# Fit the metacal model to each pcr primer set and amplification rep
+fit_metacal <- joint %>%
   filter(material_type=="DrosMock") %>%
   filter(expected > 0) %>%
   group_by(pcr_primers, amp_rep) %>%
-  group_modify(~{
-    bootstraps(.x, times=1000, apparant=TRUE)  %>%
-    mutate(fit =  purrr::map(splits, ~lm(error_clr ~ 0 + taxon , data = .)), 
-           coef =  purrr::map(fit, function(x){
-             broom::tidy(x) %>% 
-               mutate(estimate = exp(estimate))})) %>%
-    int_pctl(coef) %>%
-    mutate(taxon = str_remove(term, "taxon"))
-    }) %>%
-  dplyr::select(pcr_primers, amp_rep, taxon, lower = .lower, estimate = .estimate, upper = .upper)
+  nest() %>%
+    mutate(
+        fit = purrr::map(data, function(x){
+        obs_mat <- x %>%
+          dplyr::select(sample_id, taxon, observed)%>%
+          pivot_wider(id_cols= sample_id,
+                      names_from = "taxon",
+                      values_from = "observed",
+                      values_fill = list(observed=0))%>%    
+          column_to_rownames("sample_id") %>%
+          as.matrix() 
+        
+        exp_mat <- x %>%
+          dplyr::select(sample_id, taxon, expected)%>%
+          pivot_wider(id_cols= sample_id,
+                      names_from = "taxon",
+                      values_from = "expected",
+                      values_fill = list(expected=0))%>%    
+          column_to_rownames("sample_id") %>%
+          as.matrix() 
+                
+       fit_mc <- estimate_bias(
+          obs_mat,
+          exp_mat, 
+          margin = 1, # samples as rows
+          boot = TRUE
+        ) %>%
+         summary()
+       out <- fit_mc$coefficients
+       return(out)
+        })) %>%
+    unnest(fit) %>%
+  mutate(lower = estimate / gm_se^2, upper = estimate * gm_se^2)
+
 
 # See how well bias estiamte fits data
 preds <- joint %>%
-  left_join(boot_models) %>%
+  left_join(fit_metacal) %>%
   dplyr::mutate(predicted = expected * estimate) %>%
   group_by(sample_id) %>%
   mutate_at(vars(predicted), ~ . / sum(., na.rm=TRUE) ) %>%
@@ -1845,7 +1787,6 @@ gg.trapall
 
 ```{r summarise taxa}
 # Subset to fwhf2-fwhr2n samples only
-
 ps2 <- readRDS("output/rds/ps_filtered.rds")
 ps_run3 <- ps2 %>%
   subset_samples(pcr_primers =="fwhF2-fwhR2n") %>%
