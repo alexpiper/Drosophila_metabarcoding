@@ -743,11 +743,70 @@ set.seed(666) # set random seed for reproducability
 samdf <- read.csv("sample_data/Sample_info.csv", stringsAsFactors = FALSE)
 runs <- unique(samdf$fcid)
 
-# Set parameters
-nbases = 1e+9 # Minimum number of total bases to use for error rate - increase if samples are deep sequenced (>1M reads per sample)
-randomize = TRUE # Pick samples randomly to learn errors
-pool = "pseudo" # Higher accuracy for low abundance at expense of runtime. Set to FALSE for a faster run
+# Define custom error function that takes the log10 of the loess weights
+loessErrfun_mod4 <- function(trans) {
+  qq <- as.numeric(colnames(trans))
+  est <- matrix(0, nrow=0, ncol=length(qq))
+  for(nti in c("A","C","G","T")) {
+    for(ntj in c("A","C","G","T")) {
+      if(nti != ntj) {
+        errs <- trans[paste0(nti,"2",ntj),]
+        tot <- colSums(trans[paste0(nti,"2",c("A","C","G","T")),])
+        rlogp <- log10((errs+1)/tot)  # 1 psuedocount for each err, but if tot=0 will give NA
+        rlogp[is.infinite(rlogp)] <- NA
+        df <- data.frame(q=qq, errs=errs, tot=tot, rlogp=rlogp)
 
+        # original
+        # ###! mod.lo <- loess(rlogp ~ q, df, weights=errs) ###!
+        # mod.lo <- loess(rlogp ~ q, df, weights=tot) ###!
+        # #        mod.lo <- loess(rlogp ~ q, df)
+
+        # Gulliem Salazar's solution
+        # https://github.com/benjjneb/dada2/issues/938
+        # mod.lo <- loess(rlogp ~ q, df, weights = log10(tot),span = 2)
+
+        # only change the weights
+        mod.lo <- loess(rlogp ~ q, df, weights = log10(tot))
+
+        pred <- predict(mod.lo, qq)
+        maxrli <- max(which(!is.na(pred)))
+        minrli <- min(which(!is.na(pred)))
+        pred[seq_along(pred)>maxrli] <- pred[[maxrli]]
+        pred[seq_along(pred)<minrli] <- pred[[minrli]]
+        est <- rbind(est, 10^pred)
+      } # if(nti != ntj)
+    } # for(ntj in c("A","C","G","T"))
+  } # for(nti in c("A","C","G","T"))
+
+  # HACKY
+  MAX_ERROR_RATE <- 0.25
+  MIN_ERROR_RATE <- 1e-7
+  est[est>MAX_ERROR_RATE] <- MAX_ERROR_RATE
+  est[est<MIN_ERROR_RATE] <- MIN_ERROR_RATE
+
+  # enforce monotonicity
+  # https://github.com/benjjneb/dada2/issues/791
+  estorig <- est
+  est <- est %>%
+    data.frame() %>%
+    mutate_all(funs(case_when(. < X40 ~ X40,
+                              . >= X40 ~ .))) %>% as.matrix()
+  rownames(est) <- rownames(estorig)
+  colnames(est) <- colnames(estorig)
+
+  # Expand the err matrix with the self-transition probs
+  err <- rbind(1-colSums(est[1:3,]), est[1:3,],
+               est[4,], 1-colSums(est[4:6,]), est[5:6,],
+               est[7:8,], 1-colSums(est[7:9,]), est[9,],
+               est[10:12,], 1-colSums(est[10:12,]))
+  rownames(err) <- paste0(rep(c("A","C","G","T"), each=4), "2", c("A","C","G","T"))
+  colnames(err) <- colnames(trans)
+  # Return
+  return(err)
+}
+
+
+# Set parameters
 dada_out <- vector("list", length=length(runs))
 i=1
 for (i in 1:length(runs)){
@@ -764,33 +823,24 @@ for (i in 1:length(runs)){
   # Load reverse reads
   filtRs <- list.files(filtpath, pattern="R2_001.*", full.names = TRUE)
   filtRs <- filtRs[!str_detect(filtRs, "Undetermined")]
+  
+      # Learn error rates from a subset of the samples and reads (rather than running self-consist with full dataset)
+    errF <- learnErrors(filtFs,
+                        multithread = TRUE, 
+                        nbases = 1e+9, 
+                        randomize = TRUE, 
+                        qualityType = "FastqQuality", 
+                        errorEstimationFunction = loessErrfun_mod4,
+                        verbose=TRUE)
+  
+    errR <- learnErrors(filtFs,
+                      multithread = TRUE, 
+                      nbases = 1e+9,
+                      randomize = TRUE, 
+                      qualityType = "FastqQuality", 
+                      errorEstimationFunction = loessErrfun_mod4,
+                      verbose=TRUE)
  
-  # Learn error rates from a subset of the samples and reads (rather than running self-consist with full dataset)
-  errF <- learnErrors(filtFs, multithread = TRUE, nbases = nbases, randomize = randomize, qualityType = "FastqQuality", verbose=TRUE)
-  errR <- learnErrors(filtRs, multithread = TRUE, nbases = nbases, randomize = randomize, qualityType = "FastqQuality", verbose=TRUE)
-  
-  #check if any run uses a platform with binned quality scores - if so enforce monotonicity
-  binnedqual <-  any(str_detect(run_data$InstrumentName, "^A|^N")) #Novaseq starts with A, Nextseq with N
-  if (binnedqual == TRUE){
-  enforce_mono <- function(err){
-    err.mat <- getErrors(err, detailed=TRUE)
-    for(trans in c("A2C", "A2G", "A2T", "C2A", "C2G", "C2T", "G2A", "G2C", "G2T", "T2A", "T2C", "T2G")) {
-      #Transform each error rate that is below the model value at the max Q score (40) to the model value at that max Q score.
-      err.mat$err_out[trans,] <- pmax(err.mat$err_out[trans,], err.mat$err_out[trans,ncol(err.mat$err_out)])
-    }
-    return(err.mat)
-  }
-  
-  mono.errmatF <- enforce_mono(errF)
-  mono.errmatR <- enforce_mono(errR)
-  
-  print(plotErrors(mono.errmatF, nominalQ=TRUE)+ ggtitle("Monotonicity enforced Forward Reads"))
-  print(plotErrors(mono.errmatR, nominalQ=TRUE)+ ggtitle("Monotonicity enforced Reverse Reads"))
-
-  errF <- mono.errmatF
-  errR <- mono.errmatR
-  }
-  
   #write out errors for diagnostics
   write_csv(as.data.frame(errF$trans), paste0("output/logs/", runs[i],"/",runs[i],"_errF_observed_transitions.csv"))
   write_csv(as.data.frame(errF$err_out), paste0("output/logs/", runs[i],"/",runs[i],"_errF_inferred_errors.csv"))
@@ -806,13 +856,14 @@ for (i in 1:length(runs)){
   try(dev.off(), silent=TRUE)
   
    #Error inference and merger of reads
-  dadaFs <- dada(filtFs, err = errF, multithread = TRUE, pool = pool, verbose = TRUE)
-  dadaRs <- dada(filtRs, err = errR, multithread = TRUE, pool = pool, verbose = TRUE)
+  dadaFs <- dada(filtFs, err = errF, multithread = TRUE, pool = FALSE, verbose = TRUE)
+  dadaRs <- dada(filtRs, err = errR, multithread = TRUE, pool = FALSE, verbose = TRUE)
   saveRDS(dadaFs, paste0("output/logs/", runs[i],"/", runs[i], "_dadaFs.rds"))
   saveRDS(dadaRs, paste0("output/logs/", runs[i],"/", runs[i], "_dadaRs.rds"))
 
   # merge reads
   mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose = TRUE, minOverlap = 12, trimOverhang = TRUE) 
+  mergers <- mergers[sapply(mergers, nrow) > 0]
   bind_rows(mergers, .id="Sample") %>%
     mutate(Sample = str_replace(Sample, pattern="_S.*$", replacement="")) %>%
     write_csv(paste0("output/logs/",runs[i],"/",runs[i], "_mergers.csv"))
@@ -860,6 +911,8 @@ if(length(seqtabs) > 1){
   st_all <- readRDS(seqtabs)
 }
 
+#test <- readRDS("output/rds/seqtab_final.rds")
+
 #Remove chimeras
 seqtab_nochim <- removeBimeraDenovo(st_all, method="consensus", multithread=TRUE, verbose=TRUE)
 message(paste(sum(seqtab_nochim)/sum(st_all),"of the abundance remaining after chimera removal"))
@@ -874,16 +927,23 @@ message(paste0("Identified ",
 message(paste(sum(seqtab_cut)/sum(seqtab_nochim),"of the abundance remaining after cutting to expected size"))
 saveRDS(seqtab_cut, "output/rds/seqtab_cut.rds")
 
-
 #Filter for homology with the target marker
-fwh_ref <-  ape::read.dna("reference/fwh_insecta_aligned_curated.fasta", format="fasta")
-model <- aphid::derivePHMM(fwh_ref)
-
-seqs <- as.DNAbin(DNAStringSet(colnames(seqtab_cut)))
+model <- taxreturn::subset_model(readRDS("reference/folmer_fullength_model.rds"),
+                                 primers = c("ACWGGWTGRACWGTNTAYCC", "ARYATDGTRATDGCHCCDGC")) #BF1-BR1
+seqs <- DNAStringSet(colnames(seqtab_cut))
 names(seqs) <- colnames(seqtab_cut)
-phmm_filt <- taxreturn::map_to_model(seqs, model = model, minscore = 100, shave = FALSE, check_indels = TRUE) 
 
-seqtab_final <- seqtab_cut[,colnames(seqtab_cut) %in% names(phmm_filt)]
+phmm_filt <- taxreturn::map_to_model(seqs, model = model, min_score = 100, min_length = 100, shave = FALSE, check_frame = TRUE, kmer_threshold = 0.5, k=5, extra = "fill")
+codon_filt <- taxreturn::codon_filter(phmm_filt, genetic_code = "SGC4")
+
+seqtab_final <- seqtab_cut[,colnames(seqtab_cut) %in% names(codon_filt)]
+seqtab_final <- collapseNoMismatch(seqtab_final)
+
+message(paste0("Removed ",
+               length(colnames(seqtab_cut))  - length(colnames(seqtab_final)),
+               " sequences that didnt match PHMM or contained stop codons out of ", length(colnames(seqtab_cut)) , " input sequences."))
+message(paste(sum(seqtab_final)/sum(seqtab_cut),"of the abundance remaining after removing seqs with stop codons "))
+
 saveRDS(seqtab_final, "output/rds/seqtab_final.rds")
 
 # summarise cleanup
@@ -951,6 +1011,7 @@ gg.unique <- ggplot(cleanup, aes(x=length, fill=type))+
 pdf(paste0("output/logs/seqtab_length_dist.pdf"), width = 11, height = 8 , paper="a4r")
   plot(gg.abundance / gg.unique)
 try(dev.off(), silent=TRUE)
+  
 ```
 
 ## Assign taxonomy with IDTAXA & BLAST 
@@ -971,7 +1032,7 @@ trainingSet <- readRDS("reference/classifiers/idtaxa_bftrimmed.rds")
 #Classify using IDTAXA
 #trainingSet <- readRDS("reference/idtaxa.rds")
 dna <- DNAStringSet(getSequences(seqtab_final)) # Create a DNAStringSet from the ASVs
-ids <- IdTaxa(dna, trainingSet, processors=8, threshold = 60, verbose=TRUE) 
+ids <- IdTaxa(dna, trainingSet, processors=8, threshold = 50, verbose=TRUE) 
 saveRDS(ids, "ids.rds")
 
 # Output plot of ids
@@ -994,16 +1055,16 @@ magrittr::set_rownames(getSequences(seqtab_final)) %T>%
   mutate_all(str_replace,pattern="(?:.(?!_))+$", replacement="") %>%
   magrittr::set_rownames(getSequences(seqtab_final)) 
 
-saveRDS(tax, "output/rds/tax_IdTaxa.rds")
+saveRDS(tax, "output/rds/tax_IdTaxa50.rds")
 
-tax <- readRDS("output/rds/tax_IdTaxa.rds")
+tax <- readRDS("output/rds/tax_IdTaxa50.rds")
 
 # Extra species level assignment using BLAST
-seqs <- insect::char2dna(colnames(seqtab_final))
+seqs <- taxreturn::char2DNAbin(colnames(seqtab_final))
 names(seqs) <- colnames(seqtab_final)
 
 # Top hit with BLAST
-blast_spp <- blast_assign_species(query=seqs,db="reference/classifiers/insecta_hierarchial_bftrimmed.fa.gz", identity=97, coverage=95, evalue=1e06, maxtargetseqs=5, maxhsp=5, ranks=c("Root", "Kingdom", "Phylum","Class", "Order", "Family", "Genus","Species"), delim=";") %>%
+blast_spp <- blast_assign_species(query=seqs,db="reference/classifiers/insecta_hierarchial_bftrimmed.fa", identity=97, coverage=95, evalue=1e06, max_target_seqs=5, max_hsp=5, ranks=c("Root", "Kingdom", "Phylum","Class", "Order", "Family", "Genus","Species"), delim=";") %>%
   dplyr::rename(blast_genus = Genus, blast_spp = Species) %>%
   dplyr::filter(!is.na(blast_spp))
 
@@ -1021,10 +1082,10 @@ tax_blast <- tax %>%
   dplyr::select(OTU, all_of(ranks)) 
 
 # Assign synthetic controls
-seqs <- insect::char2dna(colnames(seqtab_final))
+seqs <- taxreturn::char2DNAbin(colnames(seqtab_final))
 names(seqs) <- colnames(seqtab_final)
 
-synthetics <- blast_assign_species(query=seqs, db="reference/synthetics.fa", identity=95, coverage=95, evalue=1e06, maxtargetseqs=5, maxhsp=5, ranks=c("Genus", "Species"), delim=" ")%>%
+synthetics <- blast_assign_species(query=seqs, db="reference/synthetics.fa", identity=95, coverage=95, evalue=1e06, max_target_seqs=5, max_hsp=5, ranks=c("Genus", "Species"), delim=" ")%>%
   dplyr::rename(syn_genus = Genus, syn_species = Species )
 
 syn_tax <- tax_blast %>% 
@@ -1043,47 +1104,65 @@ syn_tax <- tax_blast %>%
   as.matrix() %>%
   seqateurs::na_to_unclassified(rownames=TRUE)
 
-# Manually resolve taxonomic clashes at species level
+
 syn_tax %>% 
   as_tibble(rownames="OTU") %>%
   filter(str_detect(Species, "/")) %>%
   pull(Species) %>%
-  unique()
+  unique() %>%
+  sort()
  
 replacements <- syn_tax %>% 
   as_tibble(rownames="OTU") %>%
   #filter(str_detect(Species, "/")) %>%
   dplyr::select(OTU, Species) %>%
   mutate(replacement = case_when(
-    Species == "Drosophila buzzatii/koepferae" ~ "Drosophila buzzatii",
-    Species ==  "Sarcophaga assimilis/furcata" ~ "Sarcophaga assimilis",
+  # Manually resolve taxonomic clashes at species level
+    Species ==  "Bactrocera aquilonis/melas/tryoni" ~ "Bactrocera tryoni",
+    Species ==  "Bactrocera aquilonis/neohumeralis/tryoni" ~ "Bactrocera tryoni",
     Species ==  "Bactrocera melas/tryoni" ~ "Bactrocera tryoni",
+    Species ==  "Calliphora augur/dubia" ~ "Calliphora augur/dubia", #Probably a synonym
+    Species ==  "Culex molestus/quinquefasciatus" ~ "Culex quinquefasciatus",
+    Species ==  "Dendrolaelaps longiscutatus/longiusculus" ~ "Dendrolaelaps longiusculus",
+    Species ==  "Drosophila albomicans/nasuta/sulfurigaster" ~ "Drosophila albomicans",
+    Species ==  "Drosophila albomicans/neohypocausta/neonasuta" ~ "Drosophila albomicans",
+    Species ==  "Drosophila albomicans/pulaua" ~ "Drosophila albomicans",
+    Species ==  "Drosophila albomicans/sulfurigaster" ~ "Drosophila albomicans",
+    Species ==  "Drosophila albomicans/kepulauana/nasuta/sulfurigaster" ~ "Drosophila albomicans",
+    Species ==  "Drosophila buzzatii/koepferae" ~ "Drosophila buzzatii",
+    Species ==  "Drosophila hypocausta/rubida" ~ "Drosophila rubida",
+    Species ==  "Drosophila kepulauana/kohkoa/nasuta/sulfurigaster" ~ "Drosophila sulfurigaster",
     Species ==  "Drosophila kepulauana/kohkoa/sulfurigaster" ~ "Drosophila sulfurigaster",
     Species ==  "Drosophila kepulauana/sulfurigaster" ~ "Drosophila sulfurigaster",
-    Species ==  "Bactrocera aquilonis/neohumeralis/tryoni" ~ "Bactrocera tryoni",
-    Species ==  "Drosophila albomicans/pulaua" ~ "Drosophila albomicans",
-    Species ==  "Drosophila albomicans/sulfurigaster" ~ "Drosophila sulfurigaster",
-    Species ==  "Drosophila albomicans/nasuta/sulfurigaster" ~ "Drosophila albomicans",
-    Species ==  "Bactrocera aquilonis/melas/tryoni" ~ "Bactrocera tryoni",
-    Species ==  "Megaselia abdita/scalaris" ~ "Megaselia scalaris",
-    Species ==  "Lonchoptera bifurcata/uniseta" ~ "Lonchoptera bifurcata",
-    Species ==  "Nylanderia braueri/glabrior/tasmaniensis" ~ "Nylanderia tasmaniensis/braueri", #Probably a synonym
+    Species ==  "Drosophila nasuta/pulaua" ~ "Drosophila albomicans",
     Species ==  "Epiphyas dotatana/postvittana" ~ "Epiphyas postvittana",
-    Species ==  "Drosophila kepulauana/nasuta" ~ "Drosophila nasuta",
-    Species ==  "Calliphora augur/dubia" ~ "Calliphora augur/dubia", #Probably a synonym
-    Species ==  "Dendrolaelaps longiscutatus/longiusculus" ~ "Dendrolaelaps longiusculus",
-    Species ==  "Culex molestus/quinquefasciatus" ~ "Culex quinquefasciatus",
-    Species ==  "Drosophila albomicans/neohypocausta/neonasuta" ~ "Drosophila albomicans",
-    Species ==  "Carpophilus bakewelli/planatus" ~ "Carpophilus bakewelli",
-    Species ==  "Frankliniella borinquen/occidentalis" ~ "Frankliniella occidentalis",
-    Species ==  "Drosophila nasuta/pulaua" ~ "Drosophila nasuta",
-    Species ==  "Iridomyrmex purpureus/spadius" ~ "Iridomyrmex purpureus",
-    Species ==  "Brachypeplus_Sp1" ~ "Brachypeplus_Sp", 
-    Species ==  "Brachypeplus_Sp2" ~ "Brachypeplus_Sp"
-    )) %>%
+    Species ==  "Nylanderia braueri/glabrior/tasmaniensis" ~ "Nylanderia tasmaniensis/braueri", #Probably a synonym
+    Species ==  "Sarcophaga assimilis/furcata" ~ "Sarcophaga assimilis",
+    TRUE ~ NA_character_
+    ),
+  replacement = case_when(
+  # Resolve taxa in field communities that were assigned incorrectly, or taxonomy has changed since
+    Species ==  "Bactrocera neohumeralis" ~ "Bactrocera tryoni",
+    Species ==  "Drosophila mauritiana" ~ "Drosophila simulans",
+    Species ==  "Brachypeplus Sp1" ~ "Brachypeplus Sp", 
+    Species ==  "Brachypeplus Sp2" ~ "Brachypeplus Sp",
+    Species ==  "Carpophilus nr.dimidiatus" ~ "Carpophilus truncatus",
+    TRUE ~ replacement
+  ),
+  replacement = case_when(
+  # Resolve taxa in mock communities that were mislabelled as immigrans
+    Species ==  "Drosophila albomicans" ~ "Drosophila immigrans",
+    Species ==  "Drosophila nasuta" ~ "Drosophila immigrans",
+    Species ==  "Drosophila hypocausta" ~ "Drosophila immigrans",
+    Species ==  "Drosophila pulaua" ~ "Drosophila immigrans",
+    Species ==  "Drosophila kohkoa" ~ "Drosophila immigrans",
+    Species ==  "Drosophila rubida" ~ "Drosophila immigrans",
+    Species ==  "Drosophila sulfurigaster" ~ "Drosophila immigrans",
+    TRUE ~ replacement
+  )) %>%
   filter(!is.na(replacement))
 
-# Replace taxonomy
+# Update taxonomy table
 final_tax <- syn_tax %>%
   as_tibble(rownames="OTU") %>%
   left_join(replacements, by=c("OTU", "Species")) %>%
@@ -1095,6 +1174,14 @@ final_tax <- syn_tax %>%
   column_to_rownames("OTU") %>%
   as.matrix()
 
+# Check they were all successful
+final_tax %>% 
+  as_tibble(rownames="OTU") %>%
+  filter(str_detect(Species, "/")) %>%
+  pull(Species) %>%
+  unique() %>%
+  sort()
+
 # Write taxonomy table to disk
 saveRDS(final_tax, "output/rds/final_tax.rds") 
 ```
@@ -1104,10 +1191,10 @@ saveRDS(final_tax, "output/rds/final_tax.rds")
 ```{R top hit dist}
 seqtab_final <- readRDS("output/rds/seqtab_final.rds")
 
-seqs <- insect::char2dna(colnames(seqtab_final))
+seqs <- taxreturn::char2DNAbin(colnames(seqtab_final))
 names(seqs) <- colnames(seqtab_final)
 
-out <- blast_top_hit(query=seqs, db="reference/classifiers/insecta_hierarchial_bftrimmed.fa.gz", identity=60, coverage=90 )
+out <- blast_top_hit(query=seqs, db="reference/classifiers/insecta_hierarchial_bftrimmed.fa", identity=60, coverage=90 )
 saveRDS(out, "output/rds/blast_distances.rds")
 
 # Colour by IDTAXA assignment
@@ -1120,7 +1207,15 @@ joint <- out %>%
   left_join(tax %>% 
               seqateurs::unclassified_to_na(rownames=FALSE) %>%
               mutate(lowest = lowest_classified(.)), by="OTU") %>%
-  filter(!Kingdom=="Synthetic")
+  filter(!Kingdom=="Synthetic") %>%
+  left_join(as_tibble(seqtab_final, rownames = "sample_id") %>%
+              pivot_longer(-sample_id,
+                           names_to="OTU",
+                           values_to="Abundance") %>%
+              group_by(OTU) %>%
+              summarise(Abundance = sum(Abundance)))
+              
+            
 
 #Write out comparison between BLAST and IDTAXA
 write_csv(joint, "output/logs/tax_assignment_comparison.csv")
@@ -1142,6 +1237,37 @@ pdf(paste0("output/logs/top_hit_comparison.pdf"), width = 11, height = 8 , paper
   gg.tophit
 try(dev.off(), silent=TRUE)
 
+# Plot haplotype curves per species
+test <- joint %>%
+  dplyr::select(OTU, Species, Abundance) %>%
+  group_by(Species) %>%
+  mutate(prop = Abundance) %>%
+  mutate_at(c("prop"),  ~ . / sum(., na.rm = TRUE) ) %>%
+  arrange(-prop) %>%
+  mutate(rank = row_number()) %>%
+  ungroup() %>%
+  filter(!is.na(Species)) 
+  
+test %>%
+  ggplot(aes(x = rank, y = prop, colour=Species)) +# Relative abundance?
+  geom_line() +
+  theme(legend.position = "none")
+
+
+# Look at the tax unclassified at higher levels
+joint %>%
+  filter(pident == 100, !lowest=="Species") %>% 
+  pull(OTU)
+
+test <- joint %>%
+  filter(Species == "Ahasverus advena")
+
+# write out
+seqs <- taxreturn::char2DNAbin(test$OTU)
+names(seqs) <- test$Species %>% str_replace_all(" ", "_")
+
+write.FASTA(seqs, "test.fa")
+
 ``` 
 
 ## Make phylogenetic tree
@@ -1150,7 +1276,7 @@ try(dev.off(), silent=TRUE)
 tax <- readRDS("output/rds/final_tax.rds")
 
 #Rename synthetic orders
-tax[,2][which(str_detect(tax[,8], "Synthetic"))] <- "Arthropoda"
+#tax[,2][which(str_detect(tax[,8], "Synthetic"))] <- "Arthropoda"
 
 # Filter taxonomy table
 tax <- tax %>% 
@@ -1161,23 +1287,27 @@ tax <- tax %>%
   column_to_rownames("OTU") %>%
   as.matrix()
 
-seqs <- rownames(tax)
+seqs <- taxreturn::char2DNAbin(rownames(tax))
 names(seqs) <- rownames(tax)
 
 # Align to PHMM of coi
-fwh_ref <-  ape::read.dna("reference/fwh_insecta_aligned_curated.fasta", format="fasta")
-model <- aphid::derivePHMM(fwh_ref)
-alignment <- taxreturn::map_to_model(DNAStringSet(seqs), model = model, minscore = 100, shave = TRUE, extra="fill")
+#Filter for homology with the target marker
+model <- taxreturn::subset_model(readRDS("reference/folmer_fullength_model.rds"),
+                                 primers = c("ACWGGWTGRACWGTNTAYCC", "ARYATDGTRATDGCHCCDGC")) #BF1-BR1
+
+alignment <- taxreturn::map_to_model(seqs, model = model, min_score = 100, min_length = 100, shave = FALSE, check_frame = TRUE, kmer_threshold = 0.5, k=5, extra = "fill")
+
 
 # Drop positions with > 95% gaps
 nogaps <- as.list(ape::del.colgapsonly(as.matrix(alignment), threshold=0.95))
 
 # Write out an alignment
-insect::writeFASTA(nogaps, "output/alignment.fa", compress = FALSE)
+taxreturn::write_fasta(nogaps, "output/alignment.fa", compress = FALSE)
 
 # Constrain by taxonomy at the order level and Force multifurcations to bifurications 
 tax_constraints <- tax %>%
   as_tibble(rownames="OTU") %>%
+  mutate()
   dplyr::select(-Root) %>%
   unite("tax", 2:ncol(.), sep=";") %>%
   mutate(names=paste0(OTU, "|TEST", ";", tax))
@@ -1220,7 +1350,7 @@ FastTree -gtr -cat 20 -constraints tree_constraints.fa -nt alignment.fa > order_
 ## Make tree ultrametric
 ```{r phylogenetics}
 # Make ultrametric & Date
-tree <- read.tree("output/order_constrained_tree.nwk")
+tree <- read.tree("output/unconstrained_tree.nwk")
 
 Ntips 	<- length(tree$tip.label)
 Nnodes 	<- tree$Nnode
@@ -1229,8 +1359,12 @@ cat(sprintf("Tree has %d nodes, %d tips and %d edges\n",Nnodes,Ntips,nrow(tree$e
 # Get taxonomy again
 tax <- readRDS("output/rds/final_tax.rds")
 
+
+# 
+#table(tax[,4])
+
 #Rename synthetic orders
-tax[,2][which(str_detect(tax[,8], "Synthetic"))] <- "Arthropoda"
+#tax[,2][which(str_detect(tax[,8], "Synthetic"))] <- "Arthropoda"
 
 # Filter taxonomy table
 tax <- tax %>% 
@@ -1247,9 +1381,9 @@ lineage <- tree$tip.label %>%
   dplyr::select(-name) %>%
   left_join(tax %>% as_tibble(rownames="OTU"), by="OTU") 
 
-## Reroot on Arachnida
+## Reroot on Synthetics
 outgroups <- lineage %>% 
-  filter(Class == "Synthetic") %>%
+  filter(Class == "Arachnida") %>%
   filter(OTU %in% tree$tip.label) %>%
   pull(OTU)
 
@@ -1257,7 +1391,10 @@ newroot <- get_mrca_of_set(tree, outgroups)
 
 tree2 <- root_at_node(tree, (newroot-Ntips))
 
-cat(sprintf("New root is %d\n",find_root(tree)))
+cat(sprintf("New root is %d, expected at %d\n",find_root(tree2), newroot))
+
+
+cat(sprintf("New root is %d\n",find_root(tree2)))
 
 # create internal node labels
 
@@ -1278,7 +1415,7 @@ if(any(tree2$edge.length==0)){
 }
 
 # Write out rerooted tree
-write.tree(tree2, "output/order_constrained_rerooted.nwk")
+write.tree(tree2, "output/unconstrained_tree_rerooted.nwk")
 
 ```
 
@@ -1297,7 +1434,7 @@ rownames(seqtab)  <- rownames(seqtab) %>%
 tax <- readRDS("output/rds/final_tax.rds") 
 seqs <- DNAStringSet(colnames(seqtab))
 names(seqs) <- seqs
-phy <- read.tree("output/order_constrained_rerooted.nwk")
+phy <- ape::read.tree("output/unconstrained_tree_rerooted.nwk")
 
 ##### Rename mixed samples
 rownames(seqtab)  <- rownames(seqtab) %>%
@@ -1400,7 +1537,7 @@ dir.create("output/csv")
 dir.create("output/csv/unfiltered/")
 
 # Write out renamed tree
-write.tree(phy_tree(ps), "output/renamed_tree.nwk")
+write.tree(phy_tree(ps), "output/renamed_unconstrained_rerooted.nwk")
 
 ##Export raw csv
 export <- speedyseq::psmelt(ps) %>%
@@ -1419,6 +1556,10 @@ seqateurs::summarise_taxa(ps, "Genus", "sample_name") %>%
 
 ##Output fasta of all ASV's - Name each one by abundance + taxonomic assignment
 seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta", "Species")
+
+# Align the all_taxa
+
+
 ```
 
 
