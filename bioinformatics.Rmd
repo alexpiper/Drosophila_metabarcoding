@@ -25,6 +25,21 @@ knitr::opts_chunk$set(echo = TRUE, eval=FALSE, message=FALSE,error=FALSE, fig.sh
 opts_chunk$set(dev = 'png')
 ```
 
+# Run R on the cluster
+```{bash}
+# Create new interactive SLURM session
+sinteractive --ntasks=1 --cpus-per-task=10 --mem-per-cpu=10GB --time=72:00:00
+
+module load R/4.1.0-foss-2021a
+module load pkgconfig/1.5.1-GCCcore-9.3.0-Python-3.8.2
+module load GDAL/3.3.0-foss-2021a
+module load BLAST+/2.11.0-gompi-2020a
+module load Pandoc/2.5
+
+# Load R
+R
+```
+
 # Load Packages 
 
 This pipeline requires various R packages to be installed prior to running. These are obtained from CRAN, Bioconductor and Github. The taxreturn and seqateurs packages also provide wrappers around other software packages for QC. For convenience we will download and install these software in a new folder called “bin”
@@ -112,12 +127,11 @@ module load bcl2fastq2/2.20.0-foss-2018b
 #raise amount of available file handles
 ulimit -n 4000
 
-
 #Miseq Run CB3DR - Primer testing
 #Set up input and outputs
 inputdir=/group/sequencing/190331_M03633_0310_000000000-CB3DR
 outputdir=/group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/CB3DR 
-samplesheet=/group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/CB3DR/SampleSheet.csv 
+samplesheet=/group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/CB3DR/SampleSheet_CB3DR.csv 
 
 # convert samplesheet to unix format
 dos2unix $samplesheet
@@ -151,41 +165,7 @@ done
 #Set up input and outputs
 inputdir=/group/sequencing/190628_M03633_0331_000000000-CK3HD
 outputdir=/group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/CK3HD 
-samplesheet=/group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/CK3HD/SampleSheet.csv 
-
-# convert samplesheet to unix format
-dos2unix $samplesheet
-
-#Demultiplex
-bcl2fastq -p 12 --runfolder-dir $inputdir \
---output-dir $outputdir \
---sample-sheet $samplesheet \
---no-lane-splitting --barcode-mismatches 0
-
-# Copy other necessary files and move fastqs
-cd $outputdir
-cp -r $inputdir/InterOp $outputdir
-cp $inputdir/RunInfo.xml $outputdir
-cp $inputdir/runParameters.xml $outputdir
-cp $samplesheet $outputdir
-mv **/*.fastq.gz $outputdir
-
-# Append fcid to start of sample names if missing
-fcid=$(echo $inputdir | sed 's/^.*-//')
-for i in *.fastq.gz; do
-  if ! [[ $i == $fcid* ]]; then
-  new=$(echo ${fcid} ${i}) #append together
-  new=$(echo ${new// /_}) #remove any whitespace
-  mv -v "$i" "$new"
-  fi
-done
-
-
-#Miseq Run CJKFJ - Ladder spike ins
-#Set up input and outputs
-inputdir=/group/sequencing/190722_M03633_0336_000000000-CJKFJ
-outputdir=/group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/CJKFJ 
-samplesheet=/group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/CJKFJ/SampleSheet.csv 
+samplesheet=/group/pathogens/Alexp/Metabarcoding/dros_metabarcoding/data/CK3HD/SampleSheet_CK3HD.csv 
 
 # convert samplesheet to unix format
 dos2unix $samplesheet
@@ -232,7 +212,7 @@ REVERSE PRIMER:
     
 ```{r create samplesheet}
 runs <- dir("data/") #Find all directories within data
-SampleSheet <- list.files(paste0("data/", runs), pattern= "SampleSheet", full.names = TRUE)
+SampleSheet <- list.files(paste0("data/", runs), pattern= "SampleSheet_", full.names = TRUE)
 runParameters <- list.files(paste0("data/", runs), pattern= "RunParameters.xml", full.names = TRUE)
 
 # Create samplesheet containing samples and run parameters for all runs
@@ -241,7 +221,7 @@ samdf <- create_samplesheet(SampleSheet = SampleSheet, runParameters = runParame
 
 # Complete missing sample data fields
 samdf <- samdf %>%
-  select(-amp_rep) %>%
+  dplyr::select(-amp_rep) %>%
   mutate(count =3 ) %>% #Replicate the samples
   uncount(count) %>%
   rownames_to_column("amp_rep") %>%
@@ -303,10 +283,7 @@ samdf <- samdf %>%
     ),
     operator_name = "Alexander Piper",
     assay = "Metabarcoding"
-) %>%
-  mutate(sample_id = paste0(fcid, "_", sample_id) %>%
-           str_remove("Sample_HLVKYDMXX_")
-           )
+)
 
 # Create logfile containing samples and run parameters for all runs
 logdf <- create_logsheet(SampleSheet = SampleSheet, runParameters = runParameters) %>%
@@ -328,6 +305,29 @@ logdf <- create_logsheet(SampleSheet = SampleSheet, runParameters = runParameter
 if(!nrow(samdf) == nrow(logdf)){
   warning("Samdf and logdf do not contain the same number of rows!")
 }
+
+# Check if samples match samplesheet
+fastqFs <- purrr::map(list.dirs("data", recursive=FALSE),
+                      list.files, pattern="_R1_", full.names = TRUE) %>%
+  unlist() %>%
+  str_remove(pattern = "^(.*)\\/") %>%
+  str_remove(pattern = "(?:.(?!_S))+$")
+fastqFs <- fastqFs[!str_detect(fastqFs, "Undetermined")]
+
+#Check missing in samplesheet
+if (length(setdiff(fastqFs, samdf$sample_id)) > 0) {warning("The fastq file/s: ", setdiff(fastqFs, samdf$sample_id), " are not in the sample sheet") }
+
+#Check missing fastqs
+if (length(setdiff(samdf$sample_id, fastqFs)) > 0) {
+  warning(paste0("The fastq file: ",
+                 setdiff(samdf$sample_id, fastqFs),
+                 " is missing, dropping from samplesheet \n")) 
+  samdf <- samdf %>%
+    filter(!sample_id %in% setdiff(samdf$sample_id, fastqFs))
+  logdf <- logdf %>%
+    filter(!sample_id %in% setdiff(logdf$sample_id, fastqFs))
+}
+
 
 #Write out updated sample CSV for use
 write_csv(samdf, "sample_data/Sample_info.csv")
@@ -466,10 +466,13 @@ for (i in 1:length(runs)){
       primer_data <- run_data %>% dplyr::filter(pcr_primers == primer_runs[p])
       
       fastqFs <- sort(list.files(path, pattern="R1_001.*", full.names = TRUE))
-      fastqFs <- fastqFs[str_detect(fastqFs, primer_runs[p])]
       fastqRs <- sort(list.files(path, pattern="R2_001.*", full.names = TRUE))
-      fastqRs <- fastqRs[str_detect(fastqRs, primer_runs[p])]
       
+      if(!any(str_detect(fastqFs, "HLVKYDMXX"))){
+        fastqFs <- fastqFs[str_detect(fastqFs, primer_runs[p])]
+        fastqRs <- fastqRs[str_detect(fastqRs, primer_runs[p])]
+      }
+    
       demux[[i]] <- bbdemux(install="bin/bbmap", fwd=fastqFs, rev=fastqRs, Fbarcodes = unique(primer_data$twintagF),
                     Rbarcodes = unique(primer_data$twintagR), degenerate=TRUE, out.dir=demuxpath, threads=1 ,
                     mem=4,  hdist=0, force=TRUE)
@@ -1436,36 +1439,6 @@ seqs <- DNAStringSet(colnames(seqtab))
 names(seqs) <- seqs
 phy <- ape::read.tree("output/unconstrained_tree_rerooted.nwk")
 
-##### Rename mixed samples
-rownames(seqtab)  <- rownames(seqtab) %>%
- str_replace_all("D250M1-", "D250M4REP-") %>% # Works
- str_replace_all("D250M4-", "D250M2REP-") %>% # Works
- str_replace_all("D250M5-", "D250M3REP-") %>% #FAILED library
- str_replace_all("D250M3-", "D250M1REP-") %>% #FP suzukii - low reads
- str_replace_all("D250M2-", "D250M5REP-") %>% #Works
- str_replace_all("D500M1-", "D500M4REP-") %>% #Works 
- str_replace_all("D500M4-", "D500M1REP-") %>% #FP Suzukii
- str_replace_all("D500M5-", "D500M2REP-") %>% #Works
- str_replace_all("D500M3-", "D500M3REP-") %>% #Works but low reads for Suz + Biarmipes 
- str_replace_all("D500M2-", "D500M5REP-") %>% #Works
- str_replace_all("D1000M1-", "D1000M3REP-") %>% #Works
- str_replace_all("D1000M4-", "D1000M1REP-") %>% #Works
- str_replace_all("D1000M5-", "D1000M2REP-") %>% #Works
- str_replace_all("D1000M3-", "D1000M5REP-") %>% #Works
- str_replace_all("D1000M2-", "D1000M4REP-") %>% #Works
- str_replace_all("CM10-", "CM9REP-") %>%
- str_replace_all("CM11-", "CM10REP-") %>%
- str_replace_all("CM9-", "CM11REP-") %>%
- str_replace_all("CML2-", "CML6REP-")%>%
- str_replace_all("CML3-", "CML2REP-")%>%
- str_replace_all("CML4-", "CML3REP-")%>%
- str_replace_all("CML5-", "CML4REP-")%>%
- str_replace_all("CML6-", "CML5REP-")%>%
- str_replace_all("CT5-", "CT4REP-")%>%
- str_replace_all("CT4-", "CT5REP-") %>%
-str_replace_all("REP", "")
-
-
 # Samdf processing --------------------------------------------------------
 samdf <- read.csv("sample_data/sample_info.csv", header=TRUE) %>% 
   mutate(sample_id = case_when(
@@ -1831,4 +1804,21 @@ setdiff(sample_names(ps0), sample_names(ps1))
 
 ```{r save filt}
 saveRDS(ps1, "output/rds/ps1.rds")
+```
+
+## Look at accumulation of errors in synthetics
+
+
+```{r}
+ps <- readRDS("output/rds/ps.rds")
+
+# plot synthetic positive controls
+Syn_taxa <- c("Synthetic Acrididae", "Synthetic Aphididae", "Synthetic Apidae", "Synthetic Cerambycidae", "Synthetic Crambidae", "Synthetic Culicidae","Synthetic Drosophilidae","Synthetic Nitidulidae","Synthetic Siricidae","Synthetic Tephritidae", "Synthetic Thripidae", "Synthetic Tortricidae", "Synthetic Triozidae")
+
+
+ps_syn <- ps %>%
+  subset_samples(type=="POS") %>%
+  subset_taxa(Genus == "Synthetic") %>%
+  filter_taxa(function(x) mean(x) > 0, TRUE) %>%
+  speedyseq::psmelt()
 ```
