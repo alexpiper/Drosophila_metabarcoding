@@ -219,62 +219,37 @@ runParameters <- list.files(paste0("data/", runs), pattern= "RunParameters.xml",
 samdf <- create_samplesheet(SampleSheet = SampleSheet, runParameters = runParameters, template = "V4") %>%
   distinct()
 
-# Complete missing sample data fields
 samdf <- samdf %>%
-  dplyr::select(-amp_rep) %>%
-  mutate(count =3 ) %>% #Replicate the samples
-  uncount(count) %>%
-  rownames_to_column("amp_rep") %>%
-  mutate(amp_rep = case_when(
-    str_detect(amp_rep, "\\.1") ~ 2,
-    str_detect(amp_rep, "\\.2") ~ 3,
-    TRUE ~ 1
-  )) %>%
-  filter(!(fcid == "CB3DR" & amp_rep > 1)) %>% #First flowcell didnt use replication
   mutate(
     for_primer_seq = case_when(
-    str_detect(sample_id, "fwhF2") & amp_rep == 1 & fcid == "CB3DR"  ~  "GGDACWGGWTGAACWGTWTAYCCHCC",
-    str_detect(sample_id, "BF1") & amp_rep == 1 & fcid == "CB3DR"  ~  "ACWGGWTGRACWGTNTAYCC",
-    str_detect(sample_id, "SauronS878") & amp_rep == 1 & fcid == "CB3DR"  ~  "GGDRCWGGWTGAACWGTWTAYCCNCC",
-    #Replicated samples
-    str_detect(sample_id, "fwhF2") & amp_rep == 1 & !fcid == "CB3DR"  ~ "GAGGDACWGGWTGAACWGTWTAYCCHCC",
-    str_detect(sample_id, "fwhF2") & amp_rep == 2 & !fcid == "CB3DR" ~  "TGTGGDACWGGWTGAACWGTWTAYCCHCC",
-    str_detect(sample_id, "fwhF2") & amp_rep == 3 & !fcid == "CB3DR" ~  "AGAAGGDACWGGWTGAACWGTWTAYCCHCC",
-    # final runs - samples werent named with primers
-    amp_rep == 1 & fcid %in% c("CJKFJ", "HLVKYDMXX") ~  "GAGGDACWGGWTGAACWGTWTAYCCHCC",
-    amp_rep == 2 & fcid %in% c("CJKFJ", "HLVKYDMXX") ~  "TGTGGDACWGGWTGAACWGTWTAYCCHCC",
-    amp_rep == 3 & fcid %in% c("CJKFJ", "HLVKYDMXX") ~  "AGAAGGDACWGGWTGAACWGTWTAYCCHCC",
+      str_detect(sample_id, "fwhF2") & fcid == "CB3DR"  ~  "GGDACWGGWTGAACWGTWTAYCCHCC",
+      str_detect(sample_id, "BF1") & fcid == "CB3DR"  ~  "ACWGGWTGRACWGTNTAYCC",
+      str_detect(sample_id, "SauronS878") & fcid == "CB3DR"  ~  "GGDRCWGGWTGAACWGTWTAYCCNCC",
+      #Replicated samples
+      str_detect(sample_id, "fwhF2") & fcid == "CK3HD"  ~ "GAGGDACWGGWTGAACWGTWTAYCCHCC;TGTGGDACWGGWTGAACWGTWTAYCCHCC;AGAAGGDACWGGWTGAACWGTWTAYCCHCC",
+      # final runs - samples werent named with primers
+      fcid == "HLVKYDMXX" ~  "GAGGDACWGGWTGAACWGTWTAYCCHCC;TGTGGDACWGGWTGAACWGTWTAYCCHCC;AGAAGGDACWGGWTGAACWGTWTAYCCHCC"
     ),
-    rev_primer_seq = case_when(
-    str_detect(sample_id, "fwhR2n") & amp_rep == 1 & fcid == "CB3DR"  ~  "GTRATWGCHCCDGCTARWACWGG",
-    str_detect(sample_id, "BR1") & amp_rep == 1 & fcid == "CB3DR"  ~  "ARYATDGTRATDGCHCCDGC",
-    str_detect(sample_id, "HexCOIR4") & amp_rep == 1 & fcid == "CB3DR"  ~  "TATDGTRATDGCHCCNGC",
-    #Replicated samples
-    str_detect(sample_id, "fwhR2n") & amp_rep == 1 & !fcid == "CB3DR"  ~ "ACGTRATWGCHCCDGCTARWACWGG",
-    str_detect(sample_id, "fwhR2n") & amp_rep == 2 & !fcid == "CB3DR" ~  "TCCGTRATWGCHCCDGCTARWACWGG",
-    str_detect(sample_id, "fwhR2n") & amp_rep == 3 & !fcid == "CB3DR" ~  "CTGCGTRATWGCHCCDGCTARWACWGG",
-    str_detect(sample_id, "HexCOIR4") & amp_rep == 1 & !fcid == "CB3DR"  ~ "GCTATDGTRATDGCHCCNGC",
-    str_detect(sample_id, "HexCOIR4") & amp_rep == 2 & !fcid == "CB3DR" ~  "AGGTATDGTRATDGCHCCNGC",
-    str_detect(sample_id, "HexCOIR4") & amp_rep == 3 & !fcid == "CB3DR" ~  "CACGTATDGTRATDGCHCCNGC",
-    # final runs - samples werent named with primers
-    amp_rep == 1 & fcid %in% c("CJKFJ", "HLVKYDMXX") ~  "ACGTRATWGCHCCDGCTARWACWGG",
-    amp_rep == 2 & fcid %in% c("CJKFJ", "HLVKYDMXX") ~  "TCCGTRATWGCHCCDGCTARWACWGG",
-    amp_rep == 3 & fcid %in% c("CJKFJ", "HLVKYDMXX") ~  "CTGCGTRATWGCHCCDGCTARWACWGG",
-    ),
-    twintagF = case_when(
-      !fcid == "CB3DR"~ substr(for_primer_seq, 1, 8), # Use first 8 characters of F primer as F tag
-      fcid == "CB3DR" ~ as.character(NA)
-    ),
-    twintagR = case_when(
-      !fcid == "CB3DR"~ substr(rev_primer_seq, 1, 8), # Use first 8 characters of R primer as R tag
-      fcid == "CB3DR" ~ as.character(NA)
+      rev_primer_seq = case_when(
+      str_detect(sample_id, "fwhR2n") & fcid == "CB3DR"  ~  "GTRATWGCHCCDGCTARWACWGG",
+      str_detect(sample_id, "BR1") & fcid == "CB3DR"  ~  "ARYATDGTRATDGCHCCDGC",
+      str_detect(sample_id, "HexCOIR4") & fcid == "CB3DR"  ~  "TATDGTRATDGCHCCNGC",
+      #Replicated samples
+      str_detect(sample_id, "fwhR2n") & fcid == "CK3HD"  ~ "ACGTRATWGCHCCDGCTARWACWGG;TCCGTRATWGCHCCDGCTARWACWGG;CTGCGTRATWGCHCCDGCTARWACWGG",
+      str_detect(sample_id, "HexCOIR4") & fcid == "CK3HD"  ~ "GCTATDGTRATDGCHCCNGC;AGGTATDGTRATDGCHCCNGC;CACGTATDGTRATDGCHCCNGC",
+      # final runs - samples werent named with primers
+      fcid == "HLVKYDMXX" ~  "ACGTRATWGCHCCDGCTARWACWGG;TCCGTRATWGCHCCDGCTARWACWGG;CTGCGTRATWGCHCCDGCTARWACWGG"
     ),
     pcr_primers  = case_when(
-      str_detect(sample_id, "fwhF2-fwhR2n") ~ "fwhF2-fwhR2n",
-      str_detect(sample_id, "BF1-BR1") ~ "BF1-BR1",
-      str_detect(sample_id, "SauronS878-HexCOIR4") ~ "SauronS878-HexCOIR4",     
-      str_detect(sample_id, "fwhF2-HexCOIR4") ~ "fwhF2-HexCOIR4",  
-      TRUE ~ "fwhF2-fwhR2n"
+      str_detect(sample_id, "fwhF2-fwhR2n") & fcid == "CB3DR"  ~  "fwhF2-fwhR2n",
+      str_detect(sample_id, "BF1-BR1") & fcid == "CB3DR"  ~  "BF1-BR1",
+      str_detect(sample_id, "SauronS878-HexCOIR4") & fcid == "CB3DR"  ~ "SauronS878-HexCOIR4",
+      str_detect(sample_id, "fwhF2-HexCOIR4") & fcid == "CB3DR" ~ "fwhF2-HexCOIR4",  
+      #Replicated samples
+      str_detect(sample_id, "fwhF2-fwhR2n") & fcid == "CK3HD"  ~ "fwhF2-fwhR2n-pcr1;fwhF2-fwhR2n-pcr2;fwhF2-fwhR2n-pcr3",
+      str_detect(sample_id, "fwhF2-HexCOIR4") & fcid == "CK3HD"  ~ "fwhF2-HexCOIR4-pcr1;fwhF2-HexCOIR4-pcr2;fwhF2-HexCOIR4-pcr3",
+      # final runs - samples werent named with primers
+      fcid == "HLVKYDMXX" ~ "fwhF2-fwhR2n-pcr1;fwhF2-fwhR2n-pcr2;fwhF2-fwhR2n-pcr3"
     ),
     extraction_rep = case_when(
       str_detect(sample_id, "-ex1") ~ 1,
@@ -284,6 +259,73 @@ samdf <- samdf %>%
     operator_name = "Alexander Piper",
     assay = "Metabarcoding"
 )
+
+
+# Complete missing sample data fields
+#samdf <- samdf %>%
+#  dplyr::select(-amp_rep) %>%
+#  mutate(count =3 ) %>% #Replicate the samples
+#  uncount(count) %>%
+#  rownames_to_column("amp_rep") %>%
+#  mutate(amp_rep = case_when(
+#    str_detect(amp_rep, "\\.1") ~ 2,
+#    str_detect(amp_rep, "\\.2") ~ 3,
+#    TRUE ~ 1
+#  )) %>%
+#  filter(!(fcid == "CB3DR" & amp_rep > 1)) %>% #First flowcell didnt use replication
+#  mutate(
+#    for_primer_seq = case_when(
+#    str_detect(sample_id, "fwhF2") & amp_rep == 1 & fcid == "CB3DR"  ~  "GGDACWGGWTGAACWGTWTAYCCHCC",
+#    str_detect(sample_id, "BF1") & amp_rep == 1 & fcid == "CB3DR"  ~  "ACWGGWTGRACWGTNTAYCC",
+#    str_detect(sample_id, "SauronS878") & amp_rep == 1 & fcid == "CB3DR"  ~  "GGDRCWGGWTGAACWGTWTAYCCNCC",
+#    #Replicated samples
+#    str_detect(sample_id, "fwhF2") & amp_rep == 1 & !fcid == "CB3DR"  ~ "GAGGDACWGGWTGAACWGTWTAYCCHCC",
+#    str_detect(sample_id, "fwhF2") & amp_rep == 2 & !fcid == "CB3DR" ~  "TGTGGDACWGGWTGAACWGTWTAYCCHCC",
+#    str_detect(sample_id, "fwhF2") & amp_rep == 3 & !fcid == "CB3DR" ~  "AGAAGGDACWGGWTGAACWGTWTAYCCHCC",
+#    # final runs - samples werent named with primers
+#    amp_rep == 1 & fcid %in% c("CJKFJ", "HLVKYDMXX") ~  "GAGGDACWGGWTGAACWGTWTAYCCHCC",
+#    amp_rep == 2 & fcid %in% c("CJKFJ", "HLVKYDMXX") ~  "TGTGGDACWGGWTGAACWGTWTAYCCHCC",
+#    amp_rep == 3 & fcid %in% c("CJKFJ", "HLVKYDMXX") ~  "AGAAGGDACWGGWTGAACWGTWTAYCCHCC",
+#    ),
+#    rev_primer_seq = case_when(
+#    str_detect(sample_id, "fwhR2n") & amp_rep == 1 & fcid == "CB3DR"  ~  "GTRATWGCHCCDGCTARWACWGG",
+#    str_detect(sample_id, "BR1") & amp_rep == 1 & fcid == "CB3DR"  ~  "ARYATDGTRATDGCHCCDGC",
+#    str_detect(sample_id, "HexCOIR4") & amp_rep == 1 & fcid == "CB3DR"  ~  "TATDGTRATDGCHCCNGC",
+#    #Replicated samples
+#    str_detect(sample_id, "fwhR2n") & amp_rep == 1 & !fcid == "CB3DR"  ~ "ACGTRATWGCHCCDGCTARWACWGG",
+#    str_detect(sample_id, "fwhR2n") & amp_rep == 2 & !fcid == "CB3DR" ~  "TCCGTRATWGCHCCDGCTARWACWGG",
+#    str_detect(sample_id, "fwhR2n") & amp_rep == 3 & !fcid == "CB3DR" ~  "CTGCGTRATWGCHCCDGCTARWACWGG",
+#    str_detect(sample_id, "HexCOIR4") & amp_rep == 1 & !fcid == "CB3DR"  ~ "GCTATDGTRATDGCHCCNGC",
+#    str_detect(sample_id, "HexCOIR4") & amp_rep == 2 & !fcid == "CB3DR" ~  "AGGTATDGTRATDGCHCCNGC",
+#    str_detect(sample_id, "HexCOIR4") & amp_rep == 3 & !fcid == "CB3DR" ~  "CACGTATDGTRATDGCHCCNGC",
+#    # final runs - samples werent named with primers
+#    amp_rep == 1 & fcid %in% c("CJKFJ", "HLVKYDMXX") ~  "ACGTRATWGCHCCDGCTARWACWGG",
+#    amp_rep == 2 & fcid %in% c("CJKFJ", "HLVKYDMXX") ~  "TCCGTRATWGCHCCDGCTARWACWGG",
+#    amp_rep == 3 & fcid %in% c("CJKFJ", "HLVKYDMXX") ~  "CTGCGTRATWGCHCCDGCTARWACWGG",
+#    ),
+#    twintagF = case_when(
+#      !fcid == "CB3DR"~ substr(for_primer_seq, 1, 8), # Use first 8 characters of F primer as F tag
+#      fcid == "CB3DR" ~ as.character(NA)
+#    ),
+#    twintagR = case_when(
+#      !fcid == "CB3DR"~ substr(rev_primer_seq, 1, 8), # Use first 8 characters of R primer as R tag
+#      fcid == "CB3DR" ~ as.character(NA)
+#    ),
+#    pcr_primers  = case_when(
+#      str_detect(sample_id, "fwhF2-fwhR2n") ~ "fwhF2-fwhR2n",
+#      str_detect(sample_id, "BF1-BR1") ~ "BF1-BR1",
+#      str_detect(sample_id, "SauronS878-HexCOIR4") ~ "SauronS878-HexCOIR4",     
+#      str_detect(sample_id, "fwhF2-HexCOIR4") ~ "fwhF2-HexCOIR4",  
+#      TRUE ~ "fwhF2-fwhR2n"
+#    ),
+#    extraction_rep = case_when(
+#      str_detect(sample_id, "-ex1") ~ 1,
+#      str_detect(sample_id, "-ex2") ~ 2,
+#      TRUE ~ 1
+#    ),
+#    operator_name = "Alexander Piper",
+#    assay = "Metabarcoding"
+#)
 
 # Create logfile containing samples and run parameters for all runs
 logdf <- create_logsheet(SampleSheet = SampleSheet, runParameters = runParameters) %>%
@@ -295,11 +337,7 @@ logdf <- create_logsheet(SampleSheet = SampleSheet, runParameters = runParameter
     str_detect(amp_rep, "\\.1") ~ 2,
     str_detect(amp_rep, "\\.2") ~ 3,
     TRUE ~ 1
-  )) %>% 
-  filter(!(fcid == "CB3DR" & amp_rep > 1)) %>%
-  mutate(sample_id = paste0(fcid, "_", sample_id) %>%
-           str_remove("Sample_HLVKYDMXX_")
-           )
+  ))
 
 #Check logdf and samdf are the same length
 if(!nrow(samdf) == nrow(logdf)){
@@ -435,6 +473,7 @@ In the first part of this study, four different amplicon combinations were teste
 ```{r primer trimming , message=FALSE}
 #Load sample sheet
 samdf <- read.csv("sample_data/Sample_info.csv", stringsAsFactors = FALSE)
+logdf <- read_csv("output/logs/logdf.csv")
 
 #Demultiplex samples
 runs <- unique(samdf$fcid)
@@ -443,75 +482,125 @@ runs <- unique(samdf$fcid)
 trimmed <- vector("list", length=length(runs))
 demux <- vector("list", length=length(runs))
 
+#Check primers are present
+if(any(is.na(samdf$for_primer_seq), is.na(samdf$rev_primer_seq))){warning("Some primer sequences are missing from samdf, check manually")}
+
+# check if any samples need a second round of demultiplexing
 i=1
 for (i in 1:length(runs)){
-  path <- paste0("data/", runs[i]) # CHANGE ME to the directory containing your demultiplexed forward-read fastq files
-  qc.dir <- paste0("output/logs/", runs[i],"/" )
+  path <- paste0("data/", runs[i])
+  qc.dir <- paste0("output/logs/", runs[i])
 
   run_data <- samdf %>%
-    filter(fcid == runs[i])
+    dplyr::filter(fcid == runs[i])
   
   #Get primer sequences
   primers <- na.omit(c(unique(run_data$for_primer_seq), unique(run_data$rev_primer_seq)))
-  
+
   #Check if samples were twin tagged - these require extra round of demultiplexing
-  twintagged <- any(!is.na(run_data$twintagF))
+  twintagged <- any(str_detect(primers, ";"))
   if (twintagged == TRUE) {
-      demuxpath <- file.path(path, "00_demux") # Filtered forward files go into the path/filtered/ subdirectory
+      # Create output directory
+      demuxpath <- file.path(path, "00_demux")
       dir.create(demuxpath)
 
-      # Do each primer seperately
+      # Get list of fasta files
+      fastqFs <- sort(list.files(path, pattern="*R1_001.*", full.names = TRUE))
+      fastqRs <- sort(list.files(path, pattern="*R2_001.*", full.names = TRUE))
+        
+      # If there is multiple primer combination per run, do each seperately
       primer_runs <- unique(run_data$pcr_primers)
       for (p in 1:length(primer_runs)){
-      primer_data <- run_data %>% dplyr::filter(pcr_primers == primer_runs[p])
-      
-      fastqFs <- sort(list.files(path, pattern="R1_001.*", full.names = TRUE))
-      fastqRs <- sort(list.files(path, pattern="R2_001.*", full.names = TRUE))
-      
-      if(!any(str_detect(fastqFs, "HLVKYDMXX"))){
-        fastqFs <- fastqFs[str_detect(fastqFs, primer_runs[p])]
-        fastqRs <- fastqRs[str_detect(fastqRs, primer_runs[p])]
-      }
-    
-      demux[[i]] <- bbdemux(install="bin/bbmap", fwd=fastqFs, rev=fastqRs, Fbarcodes = unique(primer_data$twintagF),
-                    Rbarcodes = unique(primer_data$twintagR), degenerate=TRUE, out.dir=demuxpath, threads=1 ,
-                    mem=4,  hdist=0, force=TRUE)
-      }
-      demux_fastqs <- sort(list.files(paste0(demuxpath), pattern="_R1R2_", full.names = TRUE))
+        primer_data <- run_data %>% dplyr::filter(pcr_primers == primer_runs[p])
+        
+        Fprimers <- unlist(str_split(unique(primer_data$for_primer_seq), ";"))
+        Rprimers <- unlist(str_split(unique(primer_data$rev_primer_seq), ";"))
+        primer_names <- unlist(str_split(unique(primer_data$pcr_primers), ";"))
+        
+        # Subset fastqs to only those samples with target primers
+        fastqFs_primer <- fastqFs[sapply(fastqFs, function(x){any(str_detect(x, primer_data$sample_id))})]
+        fastqRs_primer <- fastqRs[sapply(fastqRs, function(x){any(str_detect(x, primer_data$sample_id))})]
+        
+        demux <- purrr::map2_dfr(fastqFs_primer, fastqRs_primer, function(x,y){
+          bbdemux2(install="bin/bbmap", fwd=x, rev=y, Fbarcodes = Fprimers, 
+                      Rbarcodes = Rprimers, names=primer_names, degenerate=TRUE, out.dir=demuxpath,
+                      threads=1 , mem=4,  hdist=0, force=TRUE)
+        })
+        
+        # Rename output files to match imappests format
+       old_names <- sort(list.files(paste0(demuxpath), pattern="_R1R2_", full.names = TRUE)) 
+       old_names <- old_names[sapply(old_names, function(x){any(str_detect(x, primer_data$sample_id))})]
+       new_names <- old_names %>%
+         basename() %>%
+         str_remove(".fastq.gz") %>%
+         str_split("_", n=Inf) %>%
+         purrr::map_chr(function(x){
+           paste0(paste0(c(x[1:2], str_replace(x[length(x)], "^.*pcr","pcr"), x[3:(length(x)-1)]), collapse = "_"),".fastq.gz")
+         }) 
+       file.remove(file.path(dirname(old_names), new_names)) # remove if they already exist
+       file.rename(old_names, file.path(dirname(old_names), new_names))
 
-      trimmed[[i]] <- bbtrim(install="bin/bbmap", fwd = demux_fastqs,
-              primers = primers, checkpairs = FALSE,
-              degenerate = TRUE, out.dir="01_trimmed", trim.end = "left", # Need to make this output up a directory
-              kmer=NULL, tpe=TRUE, tbo=TRUE,
-              ordered = TRUE, mink = FALSE, hdist = 2,
-              maxlength =(max(run_data$for_read_length, run_data$rev_read_length) - sort(nchar(primers), decreasing = FALSE)[1]) +5, 
-              force = TRUE, quality = FALSE, quiet=FALSE)
-      
-      #Re-split interleaved fastq's
-      trimmedpath <- file.path(path, "01_trimmed") 
-      trimmed_fastqs <- sort(list.files(trimmedpath, pattern="_R1R2_", full.names = TRUE))
-      bbsplit(install="bin/bbmap", files=trimmed_fastqs, force=TRUE)
-  
-      
-  } else if (twintagged == FALSE) {
-    
-    fastqFs <- sort(list.files(paste0(path), pattern="_R1_", full.names = TRUE))
-    fastqRs <- sort(list.files(paste0(path), pattern="_R2_", full.names = TRUE))
-    if(length(fastqFs) != length(fastqRs)) stop(paste0("Forward and reverse files for ",runs[i]," do not match."))
+        # Trim primers from demultiplexed fastq
+        demux_fastqs <- sort(list.files(paste0(demuxpath), pattern="_R1R2_", full.names = TRUE))
+        demux_fastqs <- demux_fastqs[sapply(demux_fastqs, function(x){any(str_detect(x, primer_data$sample_id))})]
 
-    trimpath <- file.path(path, "01_trimmed")
-      dir.create(trimpath)
-      
-  trimmed[[i]] <- bbtrim(install="bin/bbmap", fwd = fastqFs, rev = fastqRs,
-                primers = primers, checkpairs=FALSE,
-                degenerate = TRUE, out.dir="01_trimmed", trim.end = "left",
+        trimmed[[i]] <- purrr::map_dfr(demux_fastqs, function(x){
+          bbtrim2(install="bin/bbmap", fwd = x,
+                primers = c(Fprimers, Rprimers), checkpairs = FALSE,
+                degenerate = TRUE, out.dir=file.path(path, "01_trimmed"), trim.end = "left", 
                 kmer=NULL, tpe=TRUE, tbo=TRUE,
                 ordered = TRUE, mink = FALSE, hdist = 2,
-                maxlength =(max(run_data$for_read_length, run_data$rev_read_length) - sort(nchar(primers), decreasing = FALSE)[1]) +5,
-                force = TRUE, quality = FALSE, quiet=FALSE)
+                maxlength =(max(run_data$for_read_length, run_data$rev_read_length) - sort(nchar(c(Fprimers, Rprimers)), decreasing = FALSE)[1]) +5, force = TRUE, quiet=FALSE)
+        })
+        
+        # Re-split interleaved fastq's
+        trimmedpath <- file.path(path, "01_trimmed") 
+        trimmed_fastqs <- sort(list.files(trimmedpath, pattern="_R1R2_", full.names = TRUE))
+        purrr::walk(trimmed_fastqs, function(x){
+          bbsplit2(install="bin/bbmap", file=x, force=TRUE)
+        })
+        }
+    } else if (twintagged == FALSE) {
+      
+      fastqFs <- sort(list.files(paste0(path), pattern="_R1_", full.names = TRUE))
+      fastqRs <- sort(list.files(paste0(path), pattern="_R2_", full.names = TRUE))
+      if(length(fastqFs) != length(fastqRs)) stop(paste0("Forward and reverse files for ",runs[i]," do not match."))
+    
+      # If there is multiple primer combination per run, do each seperately
+      primer_runs <- unique(run_data$pcr_primers)
+      
+      for (p in 1:length(primer_runs)){
+        primer_data <- run_data %>% dplyr::filter(pcr_primers == primer_runs[p])
+        
+        Fprimers <- unlist(str_split(unique(primer_data$for_primer_seq), ";"))
+        Rprimers <- unlist(str_split(unique(primer_data$rev_primer_seq), ";"))
+        
+        # Subset fastqs to only those samples with target primers
+        fastqFs_primer <- fastqFs[sapply(fastqFs, function(x){any(str_detect(x, primer_data$sample_id))})]
+        fastqRs_primer <- fastqRs[sapply(fastqRs, function(x){any(str_detect(x, primer_data$sample_id))})]
 
+        trimmed[[i]] <- purrr::map2_dfr(fastqFs_primer, fastqRs_primer, function(x,y){
+            bbtrim2(install="bin/bbmap", fwd = x, rev = y,
+                  primers = c(Fprimers, Rprimers), checkpairs = FALSE,
+                  degenerate = TRUE, out.dir=file.path(path, "01_trimmed"), trim.end = "left", 
+                  kmer=NULL, tpe=TRUE, tbo=TRUE,
+                  ordered = TRUE, mink = FALSE, hdist = 2,
+                  maxlength =(max(run_data$for_read_length, run_data$rev_read_length) - sort(nchar(c(Fprimers, Rprimers)), decreasing = FALSE)[1]) +5, force = TRUE, quiet=FALSE)
+          })
+      }
   }
+  
+  # Check sequence lengths
+  pre_trim <- plot_lengths(dir=path, aggregate=TRUE, sample=1e5) + 
+    labs(title = runs[i], subtitle = "Pre-trimming")
+  post_trim <- plot_lengths(dir=paste0(path, "/01_trimmed/"), aggregate=TRUE, sample=1e5)+ 
+    labs(title = runs[i], subtitle = "Post-trimming")
 
+  pdf(file=file.path(qc.dir, "readlengths.pdf"), width = 11, height = 8 , paper="a4r")
+    plot(pre_trim)
+    plot(post_trim)
+  try(dev.off(), silent=TRUE)
+  
   trim_summary <- trimmed[[i]] %>% 
     mutate(perc_reads_remaining = signif(((output_reads / input_reads) * 100), 2),
            perc_bases_remaining = signif(((output_bases / input_bases) * 100), 2)
@@ -525,16 +614,38 @@ for (i in 1:length(runs)){
   
   # Print warning for each sample
   for(w in 1:nrow(trim_summary)){
-    if (trim_summary[w,]$perc_reads_remaining < 10) {message(paste0("WARNING: Less than 10% bases remaining for ",trim_summary[w,]$sample), "Check primers are correct")}
+    if (trim_summary[w,]$perc_reads_remaining < 10) {message(paste0("WARNING: Less than 10% bases remaining for ",trim_summary[w,]$sample), ", check primer sequences are correct")}
   }
 }
 
-#Update log DF
-logdf <- read_csv("output/logs/logdf.csv")
+saveRDS(trimmed, "trimmed.rds")
+
+#Update the sample sheet and logging sheet to deal with any newly demultiplexed files
+demultiplexed_samples <- samdf %>%
+  dplyr::select(sample_id, pcr_primers)
+
+samdf <- samdf %>%
+ group_by(sample_id) %>%
+ group_split() %>%
+ purrr::map(function(x){
+   if(any(str_detect(x$pcr_primers, ";"))){
+    primer_names <- unlist(str_split(unique(x$pcr_primers), ";"))
+
+   x %>% 
+     mutate(count = length(primer_names)) %>% #Replicate the samples
+     uncount(count) %>%
+     mutate(pcr_primers = unlist(str_split(unique(x$pcr_primers), ";")),
+            for_primer_seq = unlist(str_split(unique(x$for_primer_seq), ";")),
+            rev_primer_seq = unlist(str_split(unique(x$rev_primer_seq), ";")),
+            sample_id = paste0(sample_id, "_",pcr_primers)
+            ) 
+   } else (x)
+ }) %>%
+  bind_rows()
 
 # Track reads
-saveRDS(trimmed, "output/logs/trimmed.rds")
-logdf <- logdf %>% 
+logdf <- logdf %>%
+ left_join(demultiplexed_samples) %>% 
   left_join(
     trimmed %>%
     purrr::set_names(runs) %>%
@@ -642,7 +753,7 @@ truncLen <- 120
 readQC_aggregate <- TRUE
 readQC_subsample <-  12
 
-for (i in 1:length(runs)){
+for (i in 2:length(runs)){
   
    run_data <- samdf %>%
     filter(fcid == runs[i])
@@ -652,8 +763,8 @@ for (i in 1:length(runs)){
   filtpath <- paste0("data/", runs[i], "/02_filtered" ) # Filtered forward files go into the path/filtered/ subdirectory
   dir.create(filtpath)
   
-  fastqFs <- sort(list.files(path, pattern="R1_001.*"))
-  fastqRs <- sort(list.files(path, pattern="R2_001.*"))
+  fastqFs <- sort(list.files(path, pattern="_R1_001.*"))
+  fastqRs <- sort(list.files(path, pattern="_R2_001.*"))
   
   if(length(fastqFs) != length(fastqRs)) stop(paste0("Forward and reverse files for ",runs[i]," do not match."))
   
