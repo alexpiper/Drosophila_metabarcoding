@@ -119,7 +119,7 @@ exp_samples <- read_csv("data/HLVKYDMXX/SampleSheet.csv", skip = 19) %>%
     str_detect(sample_id, "SPD")  ~ "SPD",
     str_detect(sample_id, "ACV")  ~ "ACV",
     str_detect(sample_id, "DC")  ~ "DC",
-    str_detect(sample_id, "Sach")  ~ "Sachet",
+    str_detect(sample_id, "Sach")  ~ "DC",
     str_detect(sample_id, "FF")  ~ "FF",
     str_detect(sample_id, "NTC")  ~ "NTC",
     str_detect(sample_id, "DLarv")  ~ "DrosLarv",
@@ -492,7 +492,17 @@ We will filter index switching using a logistic regression model trained on the 
 # Subset to mocks
 ps_model <- ps1
 
-tax_table(ps_model)[,8] <- tax_table(ps_model)[,8] %>% str_replace(" ", "_")
+
+tax_table(ps_model)[,8] <- tax_table(ps_model)[,8]%>%
+  str_replace("Drosophila albomicans", "Drosophila immigrans") %>%
+  str_replace("Drosophila nasuta", "Drosophila immigrans") %>%
+  str_replace("Drosophila hypocausta", "Drosophila immigrans") %>%
+  str_replace("Drosophila pulaua", "Drosophila immigrans") %>%
+  str_replace("Drosophila kohkoa", "Drosophila immigrans") %>%
+  str_replace("Drosophila rubida", "Drosophila immigrans") %>%
+  str_replace("Drosophila sulfurigaster", "Drosophila immigrans") %>%
+  str_replace(" ", "_")
+  
 
 ps_model <- ps_model %>%
   speedyseq::tax_glom(taxrank = "Species") %>%
@@ -575,7 +585,8 @@ sam <- sam1%>%
 model_df <- sam %>%
   mutate(type = case_when( 
          (sample_name %in% exp$sample_name) &
-         (material_type == "DrosMock") & !str_detect(taxon, "__") ~ "train",
+         !str_detect(taxon, "__") ~ "train",
+         #(material_type == "DrosMock") & !str_detect(taxon, "__") ~ "train",
          TRUE ~ "test")) %>%
   left_join(exp, by = c("sample_name","taxon"))  %>%
   left_join(exp %>%
@@ -598,6 +609,7 @@ model_df <- sam %>%
     !pcr_primers == "fwhF2-fwhR2n" ~ as.numeric(NA), #Dont use the other primers
     TRUE ~ outcome
   )) %>%
+  filter(abundance > 0) %>%
   #filter(!is.na(outcome)) %>%
   mutate(outcome = factor(outcome, levels=c("0", "1")))
 
@@ -967,6 +979,8 @@ final_metrics <- target_det %>%
 final_metrics
 
 # Dropouts as function of community size 
+group.colors <- c(`True Positive` = "#abdda4", `False Positive` = "#d7191c", `False Negative` ="#2b83ba", `True Negative` ="#cccccc")
+
 gg.sens <- target_det %>% 
   mutate(success = case_when(
     outcome ==1 & .pred == 1 ~ "TP",
@@ -996,14 +1010,20 @@ gg.sens <- target_det %>%
          factor(levels = c("Drosophila suzukii",
                              "Drosophila subpulchrella",
                              "Drosophila biarmipes"))) %>%
-  ggplot(aes(x = expected_RA, y=abundance_RA, colour=success, shape=community, size=n_rep)) + 
-  geom_point(size=2, alpha=1, position=position_jitter(width=.001, height=0.001)) + 
+  mutate(success = case_when(
+    success == "TP" ~ "True Positive",
+    success == "FP" ~ "False Positive",
+    success == "FN" ~ "False Negative"
+  )) %>%
+  ggplot(aes(x = expected_RA, y=abundance_RA, fill=success, shape=community, size=n_rep)) + 
+  geom_point(size=2, alpha=1, position=position_jitter(width=.001, height=0.001), shape=21, colour="black") + 
   geom_abline(lty = 2, colour = "gray80", size = 1) +
   facet_wrap(taxon~.) +
   base_theme +
-  theme(legend.position = "right",
+  theme(legend.position = "none",
         strip.text.x = element_text(face="italic"))+
-  scale_colour_viridis_d()+
+  #scale_colour_viridis_d()+
+  scale_fill_manual(values = group.colors) +
   coord_cartesian(clip = "off") +
   #annotation_logticks(sides="lb", outside = TRUE) +
   scale_x_continuous(labels = scales::percent, trans = pseudo_log_trans(0.0001),
@@ -1122,10 +1142,11 @@ gg.switch_resolved <- pred_boots %>%
   facet_wrap(~fcid, ncol=2) +
   scale_y_continuous(labels = scales::percent)+ 
   scale_fill_manual(values=group.colors) + 
-  theme(legend.position = "right") +
+  theme(legend.position = "bottom",
+        axis.ticks = element_line()) +
   labs(y = NULL,
        x = NULL,
-       fill = "Outcome")
+       fill = "Detection Success")
 
 # Create multifig
 #gg.detection_multi <- gg.switch_resolved - ( gg.prob_surface / gg.sens ) + plot_annotation(tag_levels = #"A") + plot_layout(widths = c(1,2))
@@ -1138,7 +1159,7 @@ gg.detection_multi <- gg.switch_resolved / gg.sens + plot_annotation(tag_levels 
 gg.detection_multi
 
 
-pdf(file="fig/Fig3_detection.pdf", width = 11, height = 8 , paper="a4r")
+pdf(file="fig/Fig3_detection.pdf", width = 10, height = 8 , paper="a4r")
   plot(gg.detection_multi)
 try(dev.off(), silent=TRUE)
 
@@ -1154,28 +1175,6 @@ ps_run1 <- ps1
 
 tax_table(ps_run1)[,8] <- tax_table(ps_run1)[,8] %>% str_replace(" ", "_")
 # Check Drosophila_suzukii in sample D500M1 - these are definitely misplaced and ruinign the modelling
-
-#Rename taxa to match expected
-tax_table(ps_run1)[,8][which(tax_table(ps_run1)[,8]=="Drosophila_albomicans")] <-
-"Drosophila_immigrans"
-tax_table(ps_run1)[,8][which(tax_table(ps_run1)[,8]=="Drosophila_nasuta")] <-
-"Drosophila_immigrans"
-tax_table(ps_run1)[,8][which(tax_table(ps_run1)[,8]=="Drosophila_hypocausta")] <-
-"Drosophila_immigrans"
-tax_table(ps_run1)[,8][which(tax_table(ps_run1)[,8]=="Drosophila_pulaua")] <-
-"Drosophila_immigrans"
-tax_table(ps_run1)[,8][which(tax_table(ps_run1)[,8]=="Drosophila_kohkoa")] <-
-"Drosophila_immigrans"
-tax_table(ps_run1)[,8][which(tax_table(ps_run1)[,8]=="Drosophila_rubida")] <-
-"Drosophila_immigrans"
-tax_table(ps_run1)[,8][which(tax_table(ps_run1)[,8]=="Drosophila_sulfurigaster")] <-
-"Drosophila_immigrans"
-tax_table(ps_run1)[,8][which(tax_table(ps_run1)[,8]=="Drosophila_mauritiana/simulans")] <-
-"Drosophila_simulans"
-tax_table(ps_run1)[,8][which(tax_table(ps_run1)[,8]=="Carpophilus_dimidiatus/nr.dimidiatus")] <-
-"Carpophilus_nr.dimidiatus"
-tax_table(ps_run1)[,8][which(tax_table(ps_run1)[,8]=="Brachypeplus_Sp1")] <- "Brachypeplus_Sp"
-tax_table(ps_run1)[,8][which(tax_table(ps_run1)[,8]=="Brachypeplus_Sp2")] <- "Brachypeplus_Sp"
 
 ps_run1 <- ps_run1 %>%
   speedyseq::tax_glom(taxrank = "Species") %>%
@@ -1888,23 +1887,6 @@ richness <- phyloseq::estimate_richness(ps_run3, measures=c("Chao1", "Shannon", 
   rownames_to_column("sample_name") %>%
   mutate(sample_name = str_replace_all(sample_name, "\\.", "-"))
 
-# Use breakaway to check that all species have been sufficiently captured
-
-# Remove mocks
-ps_break <- subset_samples(ps_run3, type %in% c("DC", "ACV", "FF", "SPD"))
-
-richness_break <-  ps_break %>% breakaway
-
-break_traps <- summary(richness_break) %>% as_tibble
-
-rich_comparison <- break_traps %>%
-  mutate(sample_name = sample_names) %>%
-  left_join(div_table) %>%
-  mutate(estimate= round(estimate))
-
-table(rich_comparison$estimate == rich_comparison$alpha)
-# All true - can go ahead with ANOVAs 
-
 # Calculate Faith's PD-index & Species richness - with Standard errors
 sespd <- picante::ses.pd(as(phyloseq::otu_table(ps_run3), "matrix"),  phyloseq::phy_tree(ps_run3), null.model = "taxa.labels", include.root = F, runs = 9)
 
@@ -1931,6 +1913,21 @@ div_table %>%
   group_by(type) %>%
   #summarise(across(c("alpha", "pd", "Chao1", "se.chao1", "Shannon", "Simpson"), mean, na.rm=TRUE)) %>%
   summarise(mean = mean(alpha, na.rm=TRUE), se = se(alpha))
+
+# Use breakaway to check that all species have been sufficiently captured
+ps_break <- subset_samples(ps_run3, type %in% c("DC", "ACV", "FF", "SPD"))
+
+richness_break <-  ps_break %>% breakaway
+
+break_traps <- summary(richness_break) %>% as_tibble
+
+rich_comparison <- break_traps %>%
+  mutate(sample_name = sample_names) %>%
+  left_join(div_table) %>%
+  mutate(estimate= round(estimate))
+
+table(rich_comparison$estimate == rich_comparison$alpha)
+# All true - can go ahead with ANOVAs 
 
 # Difference in alpha diversity between trap types
 report::report(aov(alpha ~type, data=div_table))
@@ -2182,32 +2179,36 @@ model_res %>%
   unlist()
 
 # Use model 3 as we gain use of both factors without substantially increasing AIC
+anova_res[[3]]$table
+
+# Check for significant interaction effect in model 4
 anova_res[[4]]$table
+
 ```
 
 ### PCoA plots
 
 ```{r pca plots}
 # Get distance
-plot_dist <- as.dist(distlist$WUnifrac_rare)
+plot_dist <- as.dist(distlist$WUnifrac)
 
-plot_pcoa <- ordinate(ps_traps_rare, 'PCoA', distance=plot_dist)
+plot_pcoa <- ordinate(ps_traps, 'PCoA', distance=plot_dist)
 
-sample_data(ps_traps_rare) <- sample_data(ps_traps_rare) %>%
+sample_data(ps_traps) <- sample_data(ps_traps) %>%
   as("matrix") %>%
   as_tibble(rownames="sample") %>%
   mutate(type = type %>% str_replace("DC", "Syn")) %>%
   mutate(orchard_type = paste0(orchard, "_", type)) %>%
   column_to_rownames("sample")
   
-gg.pca <- plot_ordination(ps_traps_rare, plot_pcoa, color = "type", shape="orchard") +
-  stat_ellipse(geom = "polygon", aes(group = orchard, fill=orchard, colour=orchard), alpha=0.05) +
+gg.pca <- plot_ordination(ps_traps, plot_pcoa, color = "type", shape="orchard") +
+  #stat_ellipse(geom = "polygon", aes(group = orchard, fill=orchard, colour=orchard), alpha=0.05) +
   scale_fill_viridis_d()+
   scale_colour_viridis_d()+
   new_scale_fill() +
   new_scale_colour() +
   geom_point(size=4, alpha=1, aes(colour=type, shape=orchard)) +
-  stat_ellipse(geom = "polygon", aes(group = type, fill=type, colour=type), alpha=0.05) +
+  #stat_ellipse(geom = "polygon", aes(group = type, fill=type, colour=type), alpha=0.05) +
   scale_colour_brewer(palette="Paired") +
   scale_fill_brewer(palette="Paired") +
   geom_hline(yintercept = 0, linetype=2, alpha=0.5) +  
@@ -2228,7 +2229,7 @@ p3 <- ggtree(dend) +
   theme_tree2()
 
 colours_p3 <- p3$data %>%
-  left_join(as_data_frame(sample_data(ps_traps_rare)) %>%
+  left_join(as_data_frame(sample_data(ps_traps)) %>%
               dplyr::select(sample_id, type, orchard) %>%
   dplyr::rename(label = sample_id) %>%
     mutate(label = label %>%
@@ -2269,11 +2270,12 @@ plot_dat <- speedyseq::psmelt(ps_run3) %>%
   )) %>%
     dplyr::filter(type %in% c("ACV", "DC", "FF", "SPD")) %>%
   mutate(type = case_when(
+    
     type == "DC" ~ "Syn",
     TRUE ~ type
   )) %>%
   mutate(type = factor(type, levels = c("ACV", "Syn", "SPD", "FF"))) %>%
-  filter(!OTU %in% c("F__Drosophilidae", "C__Insecta")) 
+  filter(!str_detect(OTU, "__")) 
 
 p1dat <- plot_dat %>%
   mutate(Abundance = case_when(
@@ -2291,11 +2293,11 @@ p1dat <- plot_dat %>%
               values_fill = 0) %>%
   column_to_rownames("OTU") 
 
-tree <- drop.tip(tree, tree$tip.label[!tree$tip.label %in% plot_dat$OTU])
+tree <- drop.tip( , tree$tip.label[!tree$tip.label %in% plot_dat$OTU])
 
 circ <- ggtree(tree, layout = "circular", aes(color=Order))+
   geom_tippoint()+
-  geom_tiplab(offset=0.66, align=TRUE, size=3.5, colour="black")
+  geom_tiplab(offset=0.7, align=TRUE, size=2.5, colour="black")
 
 circ_dat <- circ$data %>%
   left_join(speedyseq::psmelt(ps_run3)  %>%
@@ -2329,7 +2331,7 @@ p2dat <- plot_dat %>%
 
   
 p2 <- p1 + new_scale_fill()
-gg.phylo <- gheatmap(p2, p2dat, offset=0.32, width=.3,
+gg.phylo <- gheatmap(p2, p2dat, offset=0.34, width=.3,
          colnames_angle=90, colnames_offset_y = .1, color="gray20") +
     scale_fill_viridis_c(option="D", name="Stonefruit Abundance", trans="log10", label= scales::percent) +
 theme(legend.position = "bottom")
@@ -2339,7 +2341,7 @@ gg.phylo
 
 # FInal phylo fig
 gg.Fig4a <- (gg.trapall + theme(strip.text.y = element_blank(), axis.title.y= element_blank(),
-                                )) / gg.alpha_rare_rich / gg.alpha_rare_shan 
+                                )) / gg.alpha_rich / gg.alpha_shan 
 gg.Fig4 <- gg.phylo - gg.Fig4a + plot_layout(widths = c(2,1.5)) + plot_annotation(tag_levels = "A")
 
 gg.Fig4
@@ -2349,4 +2351,64 @@ pdf(file="fig/Fig4_diversity.pdf", width = 11, height = 8 , paper="a4r")
   plot(gg.Fig4)
 try(dev.off(), silent=TRUE)
   
+```
+
+# Check presence of taxa in Australia
+```{r}
+# Check presence on AFD
+afd_check <- ps2 %>%
+  speedyseq::psmelt() %>%
+  filter(!str_detect(Species, "Synthetic")) %>%
+  dplyr::filter(type %in% c("ACV", "DC", "FF", "SPD")) %>%
+  dplyr::group_by(Family, Genus, Species) %>%
+  summarise(metabarcoding_reads = sum(Abundance)) %>%
+  filter(metabarcoding_reads > 0) %>%
+  filter(!str_detect(Species, "__")) %>%
+  mutate(Species = Species %>% str_replace_all("_", " ")) %>%
+  mutate(
+    Family_present = afdscraper::check_afd_presence(Family),
+    Genus_present = afdscraper::check_afd_presence(Genus),
+    Species_present = afdscraper::check_afd_presence(Species)
+  ) %>%
+  dplyr::select(Family, Family_present, Genus, Genus_present, 
+                Species, Species_present, metabarcoding_reads)
+    
+write_csv(afd_check, "output/afd_check.csv")
+
+# Check presence on ALA
+# First we need to set some data quality filters for ALA
+# To view available filters, run: find_field_values("basis_of_record")
+ala_quality_filter <- galah::select_filters(
+      basisOfRecord = c("PreservedSpecimen", "LivingSpecimen",
+                      "MaterialSample", "NomenclaturalChecklist"),
+      profile = "ALA")
+
+ala_check <- ps2 %>%
+  speedyseq::psmelt() %>%
+  filter(!str_detect(Species, "Synthetic")) %>%
+  dplyr::filter(type %in% c("ACV", "DC", "FF", "SPD")) %>%
+  dplyr::group_by(Family, Genus, Species) %>%
+  summarise(metabarcoding_reads = sum(Abundance)) %>%
+    filter(metabarcoding_reads > 0) %>%
+  filter(!str_detect(Species, "__")) %>%
+  mutate(Species = Species %>% str_replace_all("_", " ")) %>%
+  mutate(
+    species_present = purrr::map(Species, function(x){
+    # first check name
+    query <- select_taxa(x) %>% 
+      as_tibble()%>%
+      dplyr::filter(across(any_of("match_type"), ~!.x == "higherMatch"))
+    # Then get occurance counts
+    if(!is.null(query$scientific_name)){
+      ala_occur <- ala_counts(taxa=query, filters=ala_quality_filter)
+      return(data.frame(Species_present = ifelse(ala_occur > 0, TRUE, FALSE), ALA_counts = ala_occur))
+    } else {
+      return(data.frame(Species_present = FALSE, ALA_counts = 0))
+    }
+    })) %>%
+  unnest(species_present) %>%
+  dplyr::select(Family, Genus, Species, Species_present, ALA_counts, metabarcoding_reads)
+
+write_csv(ala_check, "output/ala_check.csv")
+
 ```

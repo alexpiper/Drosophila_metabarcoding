@@ -1473,13 +1473,6 @@ cat(sprintf("Tree has %d nodes, %d tips and %d edges\n",Nnodes,Ntips,nrow(tree$e
 # Get taxonomy again
 tax <- readRDS("output/rds/final_tax.rds")
 
-
-# 
-#table(tax[,4])
-
-#Rename synthetic orders
-#tax[,2][which(str_detect(tax[,8], "Synthetic"))] <- "Arthropoda"
-
 # Filter taxonomy table
 tax <- tax %>% 
   as_tibble(rownames="OTU") %>%
@@ -1567,10 +1560,13 @@ samdf <- read.csv("sample_data/sample_info.csv", header=TRUE) %>%
   ) %>%
   mutate(type = case_when(
     str_detect(sample_id, "D[0-9][0-9][0-9]M|D[0-9][0-9][0-9][0-9]M|DM[0-9]")  ~ "DrosMock",
+    TRUE ~ NA_character_
+  ),
+  type = case_when(
     str_detect(sample_id, "SPD")  ~ "SPD",
     str_detect(sample_id, "ACV")  ~ "ACV",
     str_detect(sample_id, "DC")  ~ "DC",
-    str_detect(sample_id, "Sach")  ~ "Sachet",
+    str_detect(sample_id, "Sach")  ~ "DC",
     str_detect(sample_id, "FF")  ~ "FF",
     str_detect(sample_id, "NTC")  ~ "NTC",
     str_detect(sample_id, "DLarv")  ~ "DrosLarv",
@@ -1579,7 +1575,8 @@ samdf <- read.csv("sample_data/sample_info.csv", header=TRUE) %>%
     str_detect(sample_id, "pcrblank")  ~ "PCRblank",
     str_detect(sample_id, "CT")  ~ "CarpTrap",
     str_detect(sample_id, "CM[0-9]")  ~ "CarpMock",
-    str_detect(sample_id, "CML[0-9]")  ~ "CarpLarval"
+    str_detect(sample_id, "CML[0-9]")  ~ "CarpLarval",
+    TRUE ~ type
   )) %>%
   magrittr::set_rownames(.$sample_id)
 
