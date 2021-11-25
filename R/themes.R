@@ -9,6 +9,7 @@ base_theme <- theme_minimal()+
     plot.background = element_blank(),
     text = element_text(size=9, family = ""),
     axis.text = element_text(size=8, family = ""),
+    axis.ticks = element_line(),
     legend.position = "none",
     panel.border = element_rect(colour = "black", fill=NA, size=0.5),
     panel.grid = element_line(size = rel(0.5))

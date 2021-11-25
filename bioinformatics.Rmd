@@ -1030,7 +1030,6 @@ if(length(seqtabs) > 1){
 #Remove chimeras
 seqtab_nochim <- removeBimeraDenovo(st_all, method="consensus", multithread=TRUE, verbose=TRUE)
 message(paste(sum(seqtab_nochim)/sum(st_all),"of the abundance remaining after chimera removal"))
-saveRDS(seqtab_nochim, "output/rds/seqtab_nochim.rds")
 
 
 #cut to expected size allowing for some codon indels
@@ -1039,7 +1038,6 @@ message(paste0("Identified ",
                length(colnames(seqtab_nochim))  - length(colnames(seqtab_cut)),
                " incorrectly sized sequences out of ", length(colnames(seqtab_nochim)) , " input sequences."))
 message(paste(sum(seqtab_cut)/sum(seqtab_nochim),"of the abundance remaining after cutting to expected size"))
-saveRDS(seqtab_cut, "output/rds/seqtab_cut.rds")
 
 #Filter for homology with the target marker
 model <- taxreturn::subset_model(readRDS("reference/folmer_fullength_model.rds"),
@@ -1341,7 +1339,7 @@ pdf(paste0("output/logs/top_hit_comparison.pdf"), width = 11, height = 8 , paper
 try(dev.off(), silent=TRUE)
 
 # Plot haplotype curves per species
-test <- joint %>%
+haps <- joint %>%
   dplyr::select(OTU, Species, Abundance) %>%
   group_by(Species) %>%
   mutate(prop = Abundance) %>%
@@ -1351,25 +1349,10 @@ test <- joint %>%
   ungroup() %>%
   filter(!is.na(Species)) 
   
-test %>%
+haps %>%
   ggplot(aes(x = rank, y = prop, colour=Species)) +# Relative abundance?
   geom_line() +
   theme(legend.position = "none")
-
-
-# Look at the tax unclassified at higher levels
-joint %>%
-  filter(pident == 100, !lowest=="Species") %>% 
-  pull(OTU)
-
-test <- joint %>%
-  filter(Species == "Ahasverus advena")
-
-# write out
-seqs <- taxreturn::char2DNAbin(test$OTU)
-names(seqs) <- test$Species %>% str_replace_all(" ", "_")
-
-write.FASTA(seqs, "test.fa")
 
 ``` 
 
@@ -1405,7 +1388,7 @@ alignment <- taxreturn::map_to_model(seqs, model = model, min_score = 100, min_l
 nogaps <- as.list(ape::del.colgapsonly(as.matrix(alignment), threshold=0.95))
 
 # Write out an alignment
-taxreturn::write_fasta(nogaps, "output/alignment.fa", compress = FALSE)
+taxreturn::write_fasta(nogaps, "output/fasta/alignment.fa", compress = FALSE)
 
 # Constrain by taxonomy at the order level and Force multifurcations to bifurications 
 tax_constraints <- tax %>%
@@ -1512,7 +1495,6 @@ if(any(tree2$edge.length==0)){
 
 # Write out rerooted tree
 write.tree(tree2, "output/unconstrained_tree_rerooted.nwk")
-
 ```
 
 # Make Phyloseq object
@@ -1644,7 +1626,7 @@ seqateurs::summarise_taxa(ps, "Genus", "sample_name") %>%
   write.csv(file = "output/csv/unfiltered/gen_sum.csv")
 
 ##Output fasta of all ASV's - Name each one by abundance + taxonomic assignment
-seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta", "Species")
+seqateurs::ps_to_fasta(ps, "output/fasta/all_taxa.fasta", "Species")
 
 ```
 
@@ -1917,6 +1899,9 @@ setdiff(sample_names(ps0), sample_names(ps1))
 
 ```{r save filt}
 saveRDS(ps1, "output/rds/ps1.rds")
+
+##Output fasta of filtered ASV's - Name each one by abundance + taxonomic assignment
+seqateurs::ps_to_fasta(ps1, "output/fasta/filtered_taxa.fasta", "Species")
 ```
 
 ## Look at accumulation of errors in synthetics

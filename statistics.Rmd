@@ -2303,7 +2303,7 @@ p1dat <- plot_dat %>%
               values_fill = 0) %>%
   column_to_rownames("OTU") 
 
-tree <- drop.tip( , tree$tip.label[!tree$tip.label %in% plot_dat$OTU])
+tree <- drop.tip(tree, tree$tip.label[!tree$tip.label %in% plot_dat$OTU])
 
 circ <- ggtree(tree, layout = "circular", aes(color=Order))+
   geom_tippoint()+

@@ -904,7 +904,7 @@ pred_boots <- fit_boots %>%
   )) %>%
   filter(!is.na(outcome_post))
 
-#saveRDS(pred_boots, file="output/index_switch_bootstraps.rds")
+saveRDS(pred_boots, file="output/index_switch_bootstraps.rds")
 
 group.colors <- c(`True Positive` = "#abdda4", `False Positive` = "#d7191c", `False Negative` ="#2b83ba", `True Negative` ="#cccccc")
 
