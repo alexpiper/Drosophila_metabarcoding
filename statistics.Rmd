@@ -2188,12 +2188,25 @@ model_res %>%
   purrr::map(~pluck(.x,"AICsum")) %>%
   unlist()
 
-# Use model 3 as we gain use of both factors without substantially increasing AIC
-anova_res[[3]]$table
+# Check residuals
+plot(model_res[[4]])
 
-# Check for significant interaction effect in model 4
+# Use model 4 as we see a significant interaction effectC
 anova_res[[4]]$table
 
+# Look at the significant species
+univa_tests <- as_tibble(univa_res[[4]][["uni.test"]], rownames ="term" ) %>%
+  pivot_longer(-term,
+               names_to = "species",
+               values_to="test") %>%
+  left_join(
+    as_tibble(univa_res[[4]][["uni.p"]], rownames ="term" ) %>%
+      pivot_longer(-term,
+                   names_to = "species",
+                   values_to="pval") 
+  ) %>%
+  dplyr::filter(!term == "(Intercept)") %>%
+  mutate(signif = pval < 0.05)
 ```
 
 ### PCoA plots

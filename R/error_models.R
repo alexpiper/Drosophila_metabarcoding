@@ -301,6 +301,10 @@ for (i in 1:length(runs)){
                         errorEstimationFunction = get(err_funs[e]),
                         verbose=TRUE)
     
+    # Write out fit error modes
+    saveRDS(errF, paste0(runs[i],"_",err_funs[e], "_errF.rds"))
+    saveRDS(errR, paste0(runs[i],"_",err_funs[e], "_errR.rds"))
+    
     #output error plots to see how well the algorithm modelled the errors in the different runs
     p1 <- plotErrors(errF, nominalQ = TRUE) + ggtitle(paste0(runs[i], " Forward Reads, errorfun:", err_funs[e]))
     p2 <- plotErrors(errR, nominalQ = TRUE) + ggtitle(paste0(runs[i], " Reverse Reads, errorfun:", err_funs[e]))
