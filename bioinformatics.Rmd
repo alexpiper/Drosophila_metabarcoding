@@ -1262,17 +1262,6 @@ replacements <- syn_tax %>%
     Species ==  "Brachypeplus Sp2" ~ "Brachypeplus Sp",
     Species ==  "Carpophilus nr.dimidiatus" ~ "Carpophilus truncatus",
     TRUE ~ replacement
-  ),
-  replacement = case_when(
-  # Resolve taxa in mock communities that were mislabelled as immigrans
-    Species ==  "Drosophila albomicans" ~ "Drosophila immigrans",
-    Species ==  "Drosophila nasuta" ~ "Drosophila immigrans",
-    Species ==  "Drosophila hypocausta" ~ "Drosophila immigrans",
-    Species ==  "Drosophila pulaua" ~ "Drosophila immigrans",
-    Species ==  "Drosophila kohkoa" ~ "Drosophila immigrans",
-    Species ==  "Drosophila rubida" ~ "Drosophila immigrans",
-    Species ==  "Drosophila sulfurigaster" ~ "Drosophila immigrans",
-    TRUE ~ replacement
   )) %>%
   filter(!is.na(replacement))
 
@@ -1538,6 +1527,25 @@ rownames(seqtab)  <- rownames(seqtab) %>%
   str_replace("_$", "_1") %>%
   str_replace("1in10", "1:10")
 
+# Rename mock samples that were sequenced with the wrong indices
+rownames(seqtab)  <- rownames(seqtab) %>%
+  str_replace_all("D250M1-", "D250M4REP-") %>% 
+  str_replace_all("D250M4-", "D250M2REP-") %>%
+  str_replace_all("D250M5-", "D250M3REP-") %>% 
+  str_replace_all("D250M3-", "D250M1REP-") %>% 
+  str_replace_all("D250M2-", "D250M5REP-") %>% 
+  str_replace_all("D500M1-", "D500M4REP-") %>% 
+  str_replace_all("D500M4-", "D500M1REP-") %>% 
+  str_replace_all("D500M5-", "D500M2REP-") %>% 
+  str_replace_all("D500M3-", "D500M3REP-") %>% 
+  str_replace_all("D500M2-", "D500M5REP-") %>% 
+  str_replace_all("D1000M1-", "D1000M3REP-") %>% 
+  str_replace_all("D1000M4-", "D1000M1REP-") %>% 
+  str_replace_all("D1000M5-", "D1000M2REP-") %>% 
+  str_replace_all("D1000M3-", "D1000M5REP-") %>% 
+  str_replace_all("D1000M2-", "D1000M4REP-") %>%
+  str_replace_all("REP", "")
+
 tax <- readRDS("output/rds/final_tax.rds") 
 seqs <- DNAStringSet(colnames(seqtab))
 names(seqs) <- seqs
@@ -1637,9 +1645,6 @@ seqateurs::summarise_taxa(ps, "Genus", "sample_name") %>%
 
 ##Output fasta of all ASV's - Name each one by abundance + taxonomic assignment
 seqateurs::ps_to_fasta(ps, "output/all_taxa.fasta", "Species")
-
-# Align the all_taxa
-
 
 ```
 

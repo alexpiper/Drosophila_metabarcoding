@@ -492,7 +492,6 @@ We will filter index switching using a logistic regression model trained on the 
 # Subset to mocks
 ps_model <- ps1
 
-
 tax_table(ps_model)[,8] <- tax_table(ps_model)[,8]%>%
   str_replace("Drosophila albomicans", "Drosophila immigrans") %>%
   str_replace("Drosophila nasuta", "Drosophila immigrans") %>%
@@ -585,8 +584,7 @@ sam <- sam1%>%
 model_df <- sam %>%
   mutate(type = case_when( 
          (sample_name %in% exp$sample_name) &
-         !str_detect(taxon, "__") ~ "train",
-         #(material_type == "DrosMock") & !str_detect(taxon, "__") ~ "train",
+         (material_type == "DrosMock") & !str_detect(taxon, "__") ~ "train",
          TRUE ~ "test")) %>%
   left_join(exp, by = c("sample_name","taxon"))  %>%
   left_join(exp %>%
@@ -609,7 +607,7 @@ model_df <- sam %>%
     !pcr_primers == "fwhF2-fwhR2n" ~ as.numeric(NA), #Dont use the other primers
     TRUE ~ outcome
   )) %>%
-  filter(abundance > 0) %>%
+  #filter(abundance > 0) %>%
   #filter(!is.na(outcome)) %>%
   mutate(outcome = factor(outcome, levels=c("0", "1")))
 
@@ -957,6 +955,11 @@ problem <- target_det %>%
   filter(abundance  > 0) %>%
   filter(.pred == 1 & is.na(outcome))
 
+#Disagreements with mock
+diss <- final_predictions_glm %>% 
+  mutate(diff = !outcome  == .pred) %>%
+  filter(diff)
+
 # Number of samples
 target_det %>% 
   filter(abundance  >0) %>%
@@ -1173,8 +1176,15 @@ try(dev.off(), silent=TRUE)
 # Subset to mocks
 ps_run1 <- ps1
 
-tax_table(ps_run1)[,8] <- tax_table(ps_run1)[,8] %>% str_replace(" ", "_")
-# Check Drosophila_suzukii in sample D500M1 - these are definitely misplaced and ruinign the modelling
+tax_table(ps_run1)[,8] <- tax_table(ps_run1)[,8]%>%
+  str_replace("Drosophila albomicans", "Drosophila immigrans") %>%
+  str_replace("Drosophila nasuta", "Drosophila immigrans") %>%
+  str_replace("Drosophila hypocausta", "Drosophila immigrans") %>%
+  str_replace("Drosophila pulaua", "Drosophila immigrans") %>%
+  str_replace("Drosophila kohkoa", "Drosophila immigrans") %>%
+  str_replace("Drosophila rubida", "Drosophila immigrans") %>%
+  str_replace("Drosophila sulfurigaster", "Drosophila immigrans") %>%
+  str_replace(" ", "_")
 
 ps_run1 <- ps_run1 %>%
   speedyseq::tax_glom(taxrank = "Species") %>%

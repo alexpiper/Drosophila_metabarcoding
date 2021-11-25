@@ -242,8 +242,15 @@ ps1 <- readRDS("output/rds/ps1.rds")
 # Subset to mocks
 ps_model <- ps1
 
-tax_table(ps_model)[,8] <- tax_table(ps_model)[,8] %>% str_replace(" ", "_")
-# Check Drosophila_suzukii in sample D500M1 - these are definitely misplaced and ruining the modelling
+tax_table(ps_model)[,8] <- tax_table(ps_model)[,8]%>%
+  str_replace("Drosophila albomicans", "Drosophila immigrans") %>%
+  str_replace("Drosophila nasuta", "Drosophila immigrans") %>%
+  str_replace("Drosophila hypocausta", "Drosophila immigrans") %>%
+  str_replace("Drosophila pulaua", "Drosophila immigrans") %>%
+  str_replace("Drosophila kohkoa", "Drosophila immigrans") %>%
+  str_replace("Drosophila rubida", "Drosophila immigrans") %>%
+  str_replace("Drosophila sulfurigaster", "Drosophila immigrans") %>%
+  str_replace(" ", "_")
 
 ps_model <- ps_model %>%
   speedyseq::tax_glom(taxrank = "Species") %>%
@@ -897,7 +904,7 @@ pred_boots <- fit_boots %>%
   )) %>%
   filter(!is.na(outcome_post))
 
-saveRDS(pred_boots, file="output/index_switch_bootstraps.rds")
+#saveRDS(pred_boots, file="output/index_switch_bootstraps.rds")
 
 group.colors <- c(`True Positive` = "#abdda4", `False Positive` = "#d7191c", `False Negative` ="#2b83ba", `True Negative` ="#cccccc")
 
