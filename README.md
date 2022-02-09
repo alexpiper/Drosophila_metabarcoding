@@ -1,4 +1,4 @@
-# Drosophila metabarcoding
+# Spotted wing drosophila metabarcoding
 
 This repository contains the code required for reproducing the analyses presented in our manuscript:
 
