@@ -25,6 +25,27 @@ knitr::opts_chunk$set(echo = TRUE, eval=FALSE, message=FALSE,error=FALSE, fig.sh
 opts_chunk$set(dev = 'png')
 ```
 
+# Introduction
+
+We will evaluate 6 different methods to estimate the cross contamination rate:
+
+* The ‘unassigned indices’ method used the abundance ratio of valid (applied during library preparation) to invalid (pairs that could only arise due to switching) index combinations as per Wilcox et al. (2018).
+
+* The ‘positive control’ method used the abundance ratio of synthetic COI sequences that were correctly assigned to the positive control libraries to those that were found in other samples. 
+
+* The ‘mock community’ method used the abundance ratio of expected to unexpected taxon observations across all mock communities. 
+
+* The ‘logistic regression’ method fit a logistic model of the per-sample RRA of each detection, trained on the expected and unexpected taxon observations within the mock communities, with the sequencing run included as an additional covariate to account for run-specific variation in contamination rates. With this method the predictive equation from the logistic model describes the probability of each observation being a true positive, and all observations with probability ≥50% were considered detections.
+
+* The 'logistic regression + reps' method used the same logistic regression model but included both the number of DNA extraction and PCR replicates that each observation was detected in as additional covariates. 
+
+* The random forest method uses the same structure as the logistic regression + reps, but with an RF model
+
+
+To evaluate the predictive performance of each approach, all taxon observations within the mock communities will be randomly split into 80% training and 20% test sets and the logistic regression classifiers and all detection thresholds compared for their ability to remove cross contamination within the test dataset. 
+
+To ensure the comparisons were robust to whichever observations were assigned to the training and test sets, the random splitting, training, and evaluation will be repeated 1,000 times and the results averaged.
+
 # Load packages
 ```{r load packages}
 #Set required packages
@@ -67,26 +88,6 @@ source('R/themes.R')
 
 ```
 
-
-# Introduction
-
-We will evaluate 5 different methods to estimate the cross contamination rate:
-
-* The ‘unassigned indices’ method used the abundance ratio of valid (applied during library preparation) to invalid (pairs that could only arise due to switching) index combinations as per Wilcox et al. (2018).
-
-* The ‘positive control’ method used the abundance ratio of synthetic COI sequences that were correctly assigned to the positive control libraries to those that were found in other samples. 
-
-* The ‘mock community’ method used the abundance ratio of expected to unexpected taxon observations across all mock communities. 
-
-* The ‘logistic regression’ method fit a logistic model of the per-sample RRA of each detection, trained on the expected and unexpected taxon observations within the mock communities, with the sequencing run included as an additional covariate to account for run-specific variation in contamination rates. With this method the predictive equation from the logistic model describes the probability of each observation being a true positive, and all observations with probability ≥50% were considered detections.
-
-* The final method used the same logistic regression model but included both the number of DNA extraction and PCR replicates that each observation was detected in as additional covariates. 
-
-
-To evaluate the predictive performance of each approach, all taxon observations within the mock communities will be randomly split into 80% training and 20% test sets and the logistic regression classifiers and all detection thresholds compared for their ability to remove cross contamination within the test dataset. 
-
-To ensure the comparisons were robust to whichever observations were assigned to the training and test sets, the random splitting, training, and evaluation will be repeated 1,000 times and the results averaged.
-
 # Unassigned indices
 
 ```{R switching missasigned}
@@ -124,6 +125,7 @@ indices <- outlist %>%
 #write_rds(indices, "output/indices.rds")
 
 indices <- readRDS("output/indices.rds")
+
 # Get all possible combinations
 combos <- indices %>% 
   dplyr::filter(!str_detect(sample_name, "Undetermined")) %>%
@@ -289,10 +291,9 @@ group_by(otu, sample_name,sample_id, taxon, pcr_primers, fcid, material_type, n_
   ungroup()
 
 repcounts <- sam1 %>%
- # filter(abundance > 0) %>% 
   group_by(sample_name, otu, fcid) %>%
   mutate(
-    n_extract = case_when( # Need this to only count reps they were detected in!
+    n_extract = case_when( # only count reps they were detected in
     abundance > 0 ~ extract_id,
     TRUE ~ as.character(NA)
   ),
@@ -323,6 +324,7 @@ mocks <- sam %>%
   )) 
 
 #Make a heatmap
+
 #Run CB3DR
 group.colors <- c(TP = "#abdda4", FP = "#d7191c", FN ="#2b83ba")
 mocks %>%
@@ -383,7 +385,6 @@ sam1 <- speedyseq::psmelt(ps_model) %>%
   filter(fcid %in% c("CB3DR", "HLVKYDMXX"))  %>%
   group_by(sample_id,fcid, pcr_primers)  %>%
   dplyr::mutate(abundance_RA = abundance, total_seq = sum(abundance)) %>%
-  #mutate(abundance_RA = abundance_RA + 0.5) %>% # Add pseudocount
   mutate_at(vars(abundance_RA), ~ . / sum(.) ) %>%
   group_by(sample_id, fcid, pcr_primers)  %>%
   mutate(abundance_clr = abundance_RA) %>%
@@ -393,7 +394,6 @@ sam1 <- speedyseq::psmelt(ps_model) %>%
   distinct() 
 
 repcounts <- sam1 %>%
- # filter(abundance > 0) %>% 
   group_by(sample_name, otu, fcid) %>%
   mutate(
     n_extract = case_when( # Need this to only count reps they were detected in!
@@ -432,7 +432,6 @@ mock_dat <- sam %>%
   filter(!is.na(outcome))%>%
   group_by(sample_id, pcr_primers, fcid) %>%
   dplyr::mutate(abundance_RA = abundance) %>%
-  #mutate(abundance_RA = abundance_RA + 0.5) %>% # Add pseudocount
   mutate_at(vars(abundance_RA), ~ . / sum(.) ) %>%
   mutate(abundance_clr = abundance_RA) %>%
   mutate_at(vars(abundance_clr ), ~seqateurs::clr(.) ) %>%
@@ -473,23 +472,20 @@ mock_dat %>%
   facet_grid(~fcid) +
   base_theme  
 
-# Create dataset split
-set.seed(seed = 66) #245
+# Create training / test split
+set.seed(seed = 66)
 
 mock_split <- initial_split(mock_dat, strata = outcome, prop=0.8)
 mock_train <- training(mock_split)
 mock_test <- testing(mock_split)
 
-# Cross validations
-#mock_cv <-  group_vfold_cv(data = mock_train, group = sample_id, strata = fcid, v = 10)
+# Cross validation folds
 mock_cv <- vfold_cv(mock_train, v = 10)
 
 # Create modelling recipe
 switch_recipe <- recipe(outcome ~ abundance_RA + fcid, data = mock_train) %>%
-  #update_role(sample_id, sample_name,fcid, taxon, new_role = "ID") %>%
   step_novel(all_nominal(), -all_outcomes()) %>% 
   step_dummy(fcid, one_hot = FALSE) %>% 
-  #themis::step_upsample(outcome) %>%
   step_zv(all_predictors()) %>%
   step_log(abundance_RA, base=10, offset = 0.00001) %>%
   step_normalize(abundance_RA) 
@@ -580,10 +576,8 @@ gg.roc_curve
 ```{r logistic regression with replicates}
 # Create modelling recipe
 switch_recipe_reps <- recipe(outcome ~ abundance_RA + fcid + n_extract + n_rep, data = mock_train) %>%
-  #update_role(sample_id, sample_name,fcid, taxon, new_role = "ID") %>%
   step_novel(all_nominal(), -all_outcomes()) %>% 
   step_dummy(fcid, one_hot = FALSE) %>% 
-  #themis::step_upsample(outcome) %>%
   step_zv(all_predictors()) %>%
   step_log(abundance_RA, base=10, offset = 0.0001) %>%
   step_normalize(n_rep, n_extract, abundance_RA) 
@@ -592,7 +586,7 @@ switch_recipe_reps <- recipe(outcome ~ abundance_RA + fcid + n_extract + n_rep, 
 juice(prep(switch_recipe_reps))
 
 # Define model
-glm_spec <- logistic_reg() %>%  #penalty = tune(), mixture = tune()
+glm_spec <- logistic_reg() %>% 
   set_mode("classification") %>% 
   set_engine("glm") 
 
@@ -600,17 +594,6 @@ glm_spec <- logistic_reg() %>%  #penalty = tune(), mixture = tune()
 glm_reps_wf <- workflow() %>%
   add_recipe(switch_recipe_reps) %>%
   add_model(glm_spec)
-
-# Tune workflow
-#Tune grid using a latin hypercube design
-#cv <- vfold_cv(mock_train, v = 5) # Should i do group to ensure samples are kept together?
-#
-#glm_tune <- tune_grid(glm_reps_wf, resamples = cv, grid = 20)
-#tune_res <- collect_metrics(glm_tune)
-#
-#autoplot(glm_tune)
-#
-#glm_reps_wf_tuned <- finalize_workflow(glm_reps_wf, glm_tune %>% select_best("roc_auc"))
 
 glm_reps_wf_tuned <- glm_reps_wf 
 
@@ -687,13 +670,11 @@ gg.roc_curve
 
 # Random forest + Replicates
 
-```{r logistic regression with replicates}
+```{r Random forest with replicates}
 # Create modelling recipe
 rf_recipe <- recipe(outcome ~ abundance_RA + abundance + fcid + n_extract + n_rep, data = mock_train) %>%
-  #update_role(sample_id, sample_name,fcid, taxon, new_role = "ID") %>%
   step_novel(all_nominal(), -all_outcomes()) %>% 
   step_dummy(fcid, one_hot = FALSE) %>% 
-  #themis::step_upsample(outcome) %>%
   step_zv(all_predictors()) %>%
   step_log(abundance_RA, base=10, offset = 0.0001) %>%
   step_normalize(all_numeric()) 
@@ -721,7 +702,7 @@ rf_tune <- tune_grid(rf_wf, resamples = mock_cv, grid = 20)
 tune_res <- collect_metrics(rf_tune)
 
 autoplot(rf_tune)
-#
+
 rf_wf_tuned <- finalize_workflow(rf_wf, rf_tune %>% select_best("roc_auc"))
 
 rf_resamp <- fit_resamples(rf_wf_tuned, resamples = mock_cv) %>% 
@@ -741,7 +722,6 @@ predictions_rf <- rf_reps %>%
 rf_reps  %>%
   pull_workflow_fit()%>%
   vip::vi() %>%
-  #group_by(Sign) %>%
   top_n(20, wt = abs(Importance)) %>%
   ungroup() %>%
   mutate(
@@ -798,7 +778,6 @@ gg.roc_curve
 
 ```{R comparison}
 # Fit model to bootstrap resamples
-#set.seed(556)
 set.seed(123)
 boots <- bootstraps(mock_dat, times = 1000, strata=fcid, apparent = FALSE)
 
